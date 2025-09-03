@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const userService = require('../services/user.service');
-const { authenticateToken, checkRole } = require('../middleware/auth.middleware');
+const { authenticateToken, checkRole, getBootToken } = require('../middleware/auth.middleware');
 
 /**
  * @swagger
@@ -170,6 +170,53 @@ const { authenticateToken, checkRole } = require('../middleware/auth.middleware'
 
 /**
  * @swagger
+ * /auth/firstsetup:
+ *   get:
+ *     summary: Get first setup token
+ *     description: Returns the boot token if it exists in the token file, otherwise returns null. Used for initial system setup.
+ *     tags: [Authentication]
+ *     responses:
+ *       200:
+ *         description: First setup token status
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 firstsetup:
+ *                   type: string
+ *                   nullable: true
+ *                   description: Boot token if exists, null otherwise
+ *                   example: "a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456"
+ *             examples:
+ *               with_token:
+ *                 summary: Token exists
+ *                 value:
+ *                   firstsetup: "a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456"
+ *               no_token:
+ *                 summary: No token
+ *                 value:
+ *                   firstsetup: null
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+router.get('/firstsetup', async (req, res) => {
+  try {
+    const bootToken = await getBootToken();
+    res.json({
+      firstsetup: bootToken
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
  * /auth/login:
  *   post:
  *     summary: User login
@@ -261,7 +308,7 @@ router.post('/login', async (req, res) => {
 router.post('/users', authenticateToken, checkRole(['admin']), async (req, res) => {
   try {
     const { username, password, role, language, primary_color, darkmode, samba_user } = req.body;
-    const user = await userService.createUser(username, password, role, language, primary_color, darkmode, samba_user);
+    const user = await userService.createUser(username, password, role, language, primary_color, darkmode, samba_user, req.user);
     res.status(201).json(user);
   } catch (error) {
     res.status(400).json({ error: error.message });

@@ -7,7 +7,8 @@ const BOOT_TOKEN_PATH = '/boot/config/api/token';
 const getBootToken = async () => {
   try {
     const token = await fs.readFile(BOOT_TOKEN_PATH, 'utf8');
-    return token.trim();
+    const trimmedToken = token.trim();
+    return trimmedToken.length > 0 ? trimmedToken : null;
   } catch (error) {
     return null;
   }

@@ -170,7 +170,7 @@ class UserService {
     return this._sanitizeUsers(filteredUsers);
   }
 
-  async createUser(username, password, role = 'user', language = 'en', primary_color = '#607d8b', darkmode = false, samba_user = false) {
+  async createUser(username, password, role = 'user', language = 'en', primary_color = '#607d8b', darkmode = false, samba_user = false, requestingUser = null) {
     const users = await this.loadUsers();
 
     if (users.some(u => u.username === username)) {
@@ -218,6 +218,18 @@ class UserService {
 
     users.push(newUser);
     await this.saveUsers(users);
+
+    // Check if any user was created with boot token - if so, delete the boot token
+    if (requestingUser && requestingUser.isBootToken) {
+      try {
+        // Clear the token file directly without checking (we know it exists since we used it)
+        const tokenFile = config.tokenFilePath;
+        await fs.writeFile(tokenFile, '', { mode: 0o600 });
+        console.log('Boot token deleted after user creation');
+      } catch (error) {
+        console.warn('Failed to delete boot token after user creation:', error.message);
+      }
+    }
 
     return this._sanitizeUser(newUser);
   }
@@ -890,6 +902,36 @@ class UserService {
       }
 
       throw error;
+    }
+  }
+
+  /**
+   * Delete boot token from file and invalidate in memory
+   * @returns {Promise<boolean>} Success status
+   */
+  async _deleteBootToken() {
+    try {
+      const tokenFile = config.tokenFilePath;
+      
+      // Check if token file already empty to avoid unnecessary writes
+      try {
+        const currentToken = await fs.readFile(tokenFile, 'utf8');
+        if (!currentToken.trim()) {
+          // Token already cleared, no need to write
+          return true;
+        }
+      } catch (error) {
+        // File doesn't exist, nothing to delete
+        return true;
+      }
+      
+      // Clear the token file (write empty string)
+      await fs.writeFile(tokenFile, '', { mode: 0o600 });
+      
+      console.log('Boot token file cleared');
+      return true;
+    } catch (error) {
+      throw new Error(`Failed to delete boot token: ${error.message}`);
     }
   }
 
