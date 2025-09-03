@@ -173,8 +173,9 @@ const { authenticateToken, checkRole, getBootToken } = require('../middleware/au
  * /auth/firstsetup:
  *   get:
  *     summary: Get first setup token
- *     description: Returns the boot token if it exists in the token file, otherwise returns null. Used for initial system setup.
+ *     description: Returns the boot token if it exists in the token file, otherwise returns null. Used for initial system setup. This endpoint requires no authentication.
  *     tags: [Authentication]
+ *     security: []
  *     responses:
  *       200:
  *         description: First setup token status
