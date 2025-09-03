@@ -1,0 +1,882 @@
+const express = require('express');
+const router = express.Router();
+const userService = require('../services/user.service');
+const { authenticateToken, checkRole } = require('../middleware/auth.middleware');
+
+/**
+ * @swagger
+ * tags:
+ *   name: Authentication
+ *   description: User authentication, JWT settings and admin token management
+ *
+ * components:
+ *   schemas:
+ *     Error:
+ *       type: object
+ *       properties:
+ *         error:
+ *           type: string
+ *           description: Error message
+ *     LoginRequest:
+ *       type: object
+ *       required:
+ *         - username
+ *         - password
+ *       properties:
+ *         username:
+ *           type: string
+ *           description: Username
+ *           example: "admin"
+ *         password:
+ *           type: string
+ *           description: Password
+ *           example: "password123"
+ *     LoginResponse:
+ *       type: object
+ *       properties:
+ *         token:
+ *           type: string
+ *           description: JWT Access Token
+ *           example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+ *         user:
+ *           $ref: '#/components/schemas/User'
+ *     User:
+ *       type: object
+ *       properties:
+ *         id:
+ *           type: string
+ *           description: User ID
+ *           example: "123"
+ *         username:
+ *           type: string
+ *           description: Username
+ *           example: "admin"
+ *         role:
+ *           type: string
+ *           enum: [admin, user, samba_only]
+ *           description: User role
+ *           example: "admin"
+ *         samba_user:
+ *           type: boolean
+ *           description: Whether user has SMB/CIFS access
+ *           example: false
+ *     CreateUserRequest:
+ *       type: object
+ *       required:
+ *         - username
+ *         - password
+ *         - role
+ *       properties:
+ *         username:
+ *           type: string
+ *           description: Username
+ *           example: "newuser"
+ *         password:
+ *           type: string
+ *           description: Password
+ *           example: "securepassword"
+ *         role:
+ *           type: string
+ *           enum: [admin, user, samba_only]
+ *           description: User role
+ *           example: "user"
+ *         samba_user:
+ *           type: boolean
+ *           description: Create SMB/CIFS user for file sharing (automatically true for samba_only role)
+ *           default: false
+ *           example: false
+ *     UpdateUserRequest:
+ *       type: object
+ *       properties:
+ *         username:
+ *           type: string
+ *           description: Username
+ *         password:
+ *           type: string
+ *           description: New password
+ *         role:
+ *           type: string
+ *           enum: [admin, user, samba_only]
+ *           description: User role
+ *         samba_user:
+ *           type: boolean
+ *           description: Enable/disable SMB/CIFS user for file sharing
+ *     JwtSettings:
+ *       type: object
+ *       properties:
+ *         jwt_expiry_days:
+ *           type: integer
+ *           description: JWT token expiry in days
+ *           example: 7
+ *         jwt_expiry_string:
+ *           type: string
+ *           description: JWT token expiry as string
+ *           example: "7d"
+ *     UpdateJwtExpiryRequest:
+ *       type: object
+ *       required:
+ *         - days
+ *       properties:
+ *         days:
+ *           type: integer
+ *           minimum: 1
+ *           maximum: 365
+ *           description: Number of days for JWT expiry
+ *           example: 7
+ *     AdminToken:
+ *       type: object
+ *       properties:
+ *         id:
+ *           type: string
+ *           description: Token ID
+ *           example: "1640995200000"
+ *         name:
+ *           type: string
+ *           description: Token name
+ *           example: "CI/CD Pipeline"
+ *         description:
+ *           type: string
+ *           description: Token description
+ *           example: "Token for automated deployments"
+ *         token:
+ *           type: string
+ *           description: Sanitized token (only shown on creation)
+ *           example: "abcd1234...wxyz9876"
+ *         createdAt:
+ *           type: string
+ *           format: date-time
+ *           description: Creation timestamp
+ *         lastUsed:
+ *           type: string
+ *           format: date-time
+ *           description: Last usage timestamp
+ *         isActive:
+ *           type: boolean
+ *           description: Token active status
+ *     CreateAdminTokenRequest:
+ *       type: object
+ *       required:
+ *         - name
+ *       properties:
+ *         name:
+ *           type: string
+ *           description: Descriptive name for the token
+ *           example: "API Integration"
+ *         description:
+ *           type: string
+ *           description: Optional description
+ *           example: "Token for third-party API integration"
+ */
+
+/**
+ * @swagger
+ * /auth/login:
+ *   post:
+ *     summary: User login
+ *     tags: [Authentication]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/LoginRequest'
+ *     responses:
+ *       200:
+ *         description: Login successful
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/LoginResponse'
+ *             example:
+ *               token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+ *               user:
+ *                 id: "1"
+ *                 username: "admin"
+ *                 role: "admin"
+ *       401:
+ *         description: Invalid credentials
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *             example:
+ *               error: "Invalid username or password"
+ *       400:
+ *         description: Bad request
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+router.post('/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    const result = await userService.authenticate(username, password);
+    res.json(result);
+  } catch (error) {
+    res.status(401).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /auth/users:
+ *   post:
+ *     summary: Create new user (admin only)
+ *     tags: [Authentication]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/CreateUserRequest'
+ *     responses:
+ *       201:
+ *         description: User created successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/User'
+ *       400:
+ *         description: Bad request
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+router.post('/users', authenticateToken, checkRole(['admin']), async (req, res) => {
+  try {
+    const { username, password, role, language, primary_color, darkmode, samba_user } = req.body;
+    const user = await userService.createUser(username, password, role, language, primary_color, darkmode, samba_user);
+    res.status(201).json(user);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /auth/users:
+ *   get:
+ *     summary: Get users (admin sees all, user sees only themselves)
+ *     description: Retrieve users - admins can see all users with optional filtering, normal users only see their own profile (both return arrays)
+ *     tags: [Authentication]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: samba_user
+ *         schema:
+ *           type: boolean
+ *         description: Filter users by samba_user status (admin only). Set to true to get only Samba users, false to get only non-Samba users.
+ *         example: true
+ *     responses:
+ *       200:
+ *         description: Users retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 $ref: '#/components/schemas/User'
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+router.get('/users', authenticateToken, async (req, res) => {
+  try {
+    if (req.user.role === 'admin' || req.user.isBootToken || req.user.isAdminToken) {
+      // Admin can see all users with optional filtering
+      const filters = {};
+
+      // Parse samba_user filter from query parameters
+      if (req.query.samba_user !== undefined) {
+        if (req.query.samba_user === 'true') {
+          filters.samba_user = true;
+        } else if (req.query.samba_user === 'false') {
+          filters.samba_user = false;
+        }
+      }
+
+      const users = await userService.getUsers(filters);
+      res.json(users);
+    } else {
+      // Regular user can only see their own profile (no filtering allowed)
+      const users = await userService.loadUsers();
+      const user = users.find(u => u.id === req.user.id);
+
+      if (!user) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      res.json([userService._sanitizeUser(user)]);
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /auth/users/{id}:
+ *   put:
+ *     summary: Update user (admin can update any user, users can update themselves)
+ *     description: Update user information - admins can update any user, normal users can only update their own profile with limited fields
+ *     tags: [Authentication]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: User ID
+ *         example: "123"
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/UpdateUserRequest'
+ *     responses:
+ *       200:
+ *         description: User updated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/User'
+ *       400:
+ *         description: Bad request
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: No permission to update this user
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+router.put('/users/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updates = req.body;
+
+    // Check if user is trying to update their own profile
+    if (req.user.id === id) {
+      // User updating their own profile
+      const user = await userService.updateUser(id, updates, req.user);
+      res.json(user);
+    } else {
+      // Only admins can update other users
+      if (req.user.role !== 'admin' && !req.user.isBootToken && !req.user.isAdminToken) {
+        return res.status(403).json({
+          error: 'You can only update your own profile'
+        });
+      }
+
+      const user = await userService.updateUser(id, updates, req.user);
+      res.json(user);
+    }
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /auth/profile:
+ *   get:
+ *     summary: Get own user profile
+ *     tags: [Authentication]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: User profile retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/User'
+ *             example:
+ *               id: "1"
+ *               username: "admin"
+ *               role: "admin"
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: User not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+router.get('/profile', authenticateToken, async (req, res) => {
+  try {
+    const users = await userService.loadUsers();
+    const user = users.find(u => u.id === req.user.id);
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json(userService._sanitizeUser(user));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /auth/users/{id}:
+ *   delete:
+ *     summary: Delete user (admin only)
+ *     tags: [Authentication]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: User ID
+ *         example: "123"
+ *     responses:
+ *       204:
+ *         description: User deleted successfully
+ *       400:
+ *         description: Bad request (e.g., cannot delete yourself)
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+router.delete('/users/:id', authenticateToken, checkRole(['admin']), async (req, res) => {
+  try {
+    const { id } = req.params;
+    await userService.deleteUser(id);
+    res.status(204).send();
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /auth/logout:
+ *   post:
+ *     summary: User logout
+ *     description: Invalidate the current session. Note that JWT tokens cannot be truly invalidated server-side, but this endpoint provides a consistent logout mechanism.
+ *     tags: [Authentication]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Logout successful
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: "Logout successful"
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+router.post('/logout', authenticateToken, async (req, res) => {
+  try {
+    // JWTs are stateless, so we cannot invalidate them server-side
+    // The client should delete the token
+    res.json({
+      message: 'Logout successful. Please delete the token on client side.'
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// JWT Settings Management
+
+/**
+ * @swagger
+ * /auth/jwt-settings:
+ *   get:
+ *     summary: Get JWT settings
+ *     description: Retrieve current JWT token expiry settings (admin only)
+ *     tags: [Authentication]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: JWT settings retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/JwtSettings'
+ *       401:
+ *         description: Not authenticated
+ *       403:
+ *         description: Admin permission required
+ *       500:
+ *         description: Server error
+ */
+router.get('/jwt-settings', authenticateToken, checkRole(['admin']), async (req, res) => {
+  try {
+    const settings = await userService.getJwtSettings();
+    res.json(settings);
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * @swagger
+ * /auth/jwt-settings/expiry:
+ *   put:
+ *     summary: Update JWT expiry time
+ *     description: Update JWT token expiry time in days (admin only)
+ *     tags: [Authentication]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/UpdateJwtExpiryRequest'
+ *     responses:
+ *       200:
+ *         description: JWT expiry updated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "JWT expiry updated to 7 day(s)"
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     jwt_expiry_days:
+ *                       type: integer
+ *                       example: 7
+ *                     updated_at:
+ *                       type: string
+ *                       format: date-time
+ *       400:
+ *         description: Bad request - validation failed
+ *       401:
+ *         description: Not authenticated
+ *       403:
+ *         description: Admin permission required
+ *       500:
+ *         description: Server error
+ */
+router.put('/jwt-settings/expiry', authenticateToken, checkRole(['admin']), async (req, res) => {
+  try {
+    const { days } = req.body;
+
+    if (!days || !Number.isInteger(days)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Days must be provided as an integer'
+      });
+    }
+
+    const result = await userService.updateJwtExpiryDays(days);
+    res.json(result);
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Admin Token Management
+
+/**
+ * @swagger
+ * /auth/admin-tokens:
+ *   get:
+ *     summary: Get all admin tokens
+ *     description: Retrieve list of all admin API tokens (admin only)
+ *     tags: [Authentication]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Admin tokens retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 $ref: '#/components/schemas/AdminToken'
+ *       401:
+ *         description: Not authenticated
+ *       403:
+ *         description: Admin permission required
+ *       500:
+ *         description: Server error
+ */
+router.get('/admin-tokens', authenticateToken, checkRole(['admin']), async (req, res) => {
+  try {
+    const tokens = await userService.getAdminTokens();
+    res.json(tokens);
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * @swagger
+ * /auth/admin-tokens:
+ *   post:
+ *     summary: Create admin token
+ *     description: Create a new permanent admin API token (admin only)
+ *     tags: [Authentication]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/CreateAdminTokenRequest'
+ *     responses:
+ *       201:
+ *         description: Admin token created successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "Admin token created successfully"
+ *                 data:
+ *                   $ref: '#/components/schemas/AdminToken'
+ *       400:
+ *         description: Bad request - validation failed
+ *       401:
+ *         description: Not authenticated
+ *       403:
+ *         description: Admin permission required
+ *       500:
+ *         description: Server error
+ */
+router.post('/admin-tokens', authenticateToken, checkRole(['admin']), async (req, res) => {
+  try {
+    const { name, description } = req.body;
+
+    if (!name || typeof name !== 'string' || name.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Token name is required and must be a non-empty string'
+      });
+    }
+
+    const result = await userService.createAdminToken(name.trim(), description || '');
+    res.status(201).json(result);
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * @swagger
+ * /auth/admin-tokens/{id}:
+ *   delete:
+ *     summary: Delete admin token
+ *     description: Permanently delete an admin API token (admin only)
+ *     tags: [Authentication]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Token ID
+ *     responses:
+ *       200:
+ *         description: Admin token deleted successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "Admin token deleted successfully"
+ *       400:
+ *         description: Bad request - token not found
+ *       401:
+ *         description: Not authenticated
+ *       403:
+ *         description: Admin permission required
+ *       500:
+ *         description: Server error
+ */
+router.delete('/admin-tokens/:id', authenticateToken, checkRole(['admin']), async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!id) {
+      return res.status(400).json({
+        success: false,
+        error: 'Token ID is required'
+      });
+    }
+
+    const result = await userService.deleteAdminToken(id);
+    res.json(result);
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * @swagger
+ * /auth/admin-tokens/{id}/deactivate:
+ *   put:
+ *     summary: Deactivate admin token
+ *     description: Deactivate an admin API token without deleting it (admin only)
+ *     tags: [Authentication]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Token ID
+ *     responses:
+ *       200:
+ *         description: Admin token deactivated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "Admin token deactivated successfully"
+ *       400:
+ *         description: Bad request - token not found
+ *       401:
+ *         description: Not authenticated
+ *       403:
+ *         description: Admin permission required
+ *       500:
+ *         description: Server error
+ */
+router.put('/admin-tokens/:id/deactivate', authenticateToken, checkRole(['admin']), async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!id) {
+      return res.status(400).json({
+        success: false,
+        error: 'Token ID is required'
+      });
+    }
+
+    const result = await userService.deactivateAdminToken(id);
+    res.json(result);
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+module.exports = router; 
