@@ -464,7 +464,7 @@ class DockerService {
       this.validateContainerTemplate(template);
 
       // Create filename
-      const fileName = `${template.name.replace(/[^A-Za-z0-9\-_]/g, '_')}.json`;
+      const fileName = `${template.name.replace(/[^A-Za-z0-9\-_.]/g, '_')}.json`;
       const filePath = path.join('/boot/config/system/docker/templates', fileName);
 
       // Check if file already exists to determine if we need recreate_container parameter
