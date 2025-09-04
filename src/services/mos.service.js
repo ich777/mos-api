@@ -783,7 +783,25 @@ class MosService {
   async getSystemSettings() {
     try {
       const data = await fs.readFile('/boot/config/system.json', 'utf8');
-      return JSON.parse(data);
+      const settings = JSON.parse(data);
+      
+      // Ensure notification_sound defaults are present
+      if (!settings.notification_sound) {
+        settings.notification_sound = {
+          startup: true,
+          reboot: true,
+          shutdown: true
+        };
+        
+        // Write back the updated settings with defaults
+        try {
+          await fs.writeFile('/boot/config/system.json', JSON.stringify(settings, null, 2), 'utf8');
+        } catch (writeError) {
+          console.warn('Warning: Could not write notification_sound defaults to system.json:', writeError.message);
+        }
+      }
+      
+      return settings;
     } catch (error) {
       if (error.code === 'ENOENT') {
         throw new Error('system.json nicht gefunden');
@@ -808,7 +826,7 @@ class MosService {
         if (error.code !== 'ENOENT') throw error;
       }
       // Only allowed fields are updated
-      const allowed = ['hostname', 'global_spindown', 'keymap', 'timezone', 'ntp'];
+      const allowed = ['hostname', 'global_spindown', 'keymap', 'timezone', 'ntp', 'notification_sound'];
       let ntpChanged = false;
       let keymapChanged = false;
       let timezoneChanged = false;
@@ -849,6 +867,25 @@ class MosService {
             timezoneChanged = true;
           }
           current[key] = updates[key];
+        } else if (key === 'notification_sound') {
+          // Initialize notification_sound with defaults if not present
+          if (!current.notification_sound) {
+            current.notification_sound = {
+              startup: true,
+              reboot: true,
+              shutdown: true
+            };
+          }
+          
+          // Update notification_sound settings
+          if (typeof updates.notification_sound === 'object' && updates.notification_sound !== null) {
+            // Merge with existing settings, keeping defaults for missing values
+            current.notification_sound = {
+              startup: updates.notification_sound.startup !== undefined ? updates.notification_sound.startup : current.notification_sound.startup,
+              reboot: updates.notification_sound.reboot !== undefined ? updates.notification_sound.reboot : current.notification_sound.reboot,
+              shutdown: updates.notification_sound.shutdown !== undefined ? updates.notification_sound.shutdown : current.notification_sound.shutdown
+            };
+          }
         } else {
           current[key] = updates[key];
         }

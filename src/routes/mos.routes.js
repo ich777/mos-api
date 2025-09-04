@@ -219,6 +219,22 @@ const { checkRole } = require('../middleware/auth.middleware');
  *           type: boolean
  *           description: Global disk spindown setting
  *           example: true
+ *         notification_sound:
+ *           type: object
+ *           description: System notification sound settings
+ *           properties:
+ *             startup:
+ *               type: boolean
+ *               description: Enable sound notification on system startup
+ *               example: true
+ *             reboot:
+ *               type: boolean
+ *               description: Enable sound notification on system reboot
+ *               example: true
+ *             shutdown:
+ *               type: boolean
+ *               description: Enable sound notification on system shutdown
+ *               example: true
  *     Keymap:
  *       type: object
  *       properties:
@@ -834,7 +850,7 @@ router.post('/settings/network', async (req, res) => {
  *               $ref: '#/components/schemas/Error'
  *   post:
  *     summary: Update system settings
- *     description: Update system configuration - only hostname and global_spindown allowed (admin only)
+ *     description: Update system configuration - hostname, global_spindown, and notification_sound allowed (admin only)
  *     tags: [MOS]
  *     security:
  *       - bearerAuth: []
@@ -847,6 +863,10 @@ router.post('/settings/network', async (req, res) => {
  *           example:
  *             hostname: "new-mos-server"
  *             global_spindown: false
+ *             notification_sound:
+ *               startup: true
+ *               reboot: false
+ *               shutdown: true
  *     responses:
  *       200:
  *         description: System settings updated successfully
