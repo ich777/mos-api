@@ -934,38 +934,92 @@ class PoolsService {
   }
 
   /**
+   * Check if a device path is a partition
+   */
+  _isPartitionPath(device) {
+    // Check for partition patterns:
+    // /dev/sdb1, /dev/sdc2, etc. (SATA/SCSI)
+    // /dev/nvme0n1p1, /dev/nvme0n1p2, etc. (NVMe)
+    return /\/dev\/(sd[a-z]+\d+|nvme\d+n\d+p\d+|hd[a-z]+\d+|vd[a-z]+\d+)$/.test(device);
+  }
+
+  /**
+   * Get the partition path for a device and partition number
+   */
+  _getPartitionPath(device, partitionNumber) {
+    // Handle NVMe devices (e.g., /dev/nvme0n1 -> /dev/nvme0n1p1)
+    if (device.includes('nvme')) {
+      return `${device}p${partitionNumber}`;
+    }
+    // Handle regular SATA/SCSI devices (e.g., /dev/sdb -> /dev/sdb1)
+    return `${device}${partitionNumber}`;
+  }
+
+  /**
    * Format a device with the specified filesystem
+   * Creates a partition first if device is a whole disk
    */
   async formatDevice(device, filesystem = 'xfs') {
     console.log(`Formatting ${device} with ${filesystem}...`);
 
-    // Check if device is already formatted with the requested filesystem
-    const deviceInfo = await this.checkDeviceFilesystem(device);
-
-    if (deviceInfo.isFormatted && deviceInfo.filesystem === filesystem) {
-      return {
-        success: true,
-        message: `Device ${device} is already formatted with ${filesystem}`,
-        device,
-        filesystem,
-        uuid: deviceInfo.uuid,
-        alreadyFormatted: true
-      };
-    }
-
-    // Format based on filesystem type
     try {
+      // Check if device is a partition or a whole disk
+      const isPartition = this._isPartitionPath(device);
+      let targetDevice = device;
+      
+      if (!isPartition) {
+        // This is a whole disk - create partition table and partition first
+        console.log(`${device} is a whole disk, creating partition table and partition...`);
+        
+        // Create GPT partition table
+        await execPromise(`parted -s ${device} mklabel gpt`);
+        
+        // Create a single partition using the entire disk
+        await execPromise(`parted -s ${device} mkpart primary 2048s 100%`);
+        
+        // Wait a moment for the partition to be recognized by the kernel
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        // Inform kernel about partition table changes
+        try {
+          await execPromise(`partprobe ${device}`);
+        } catch (error) {
+          // partprobe might fail on some systems, but that's usually not critical
+          console.warn(`partprobe failed: ${error.message}`);
+        }
+        
+        // Determine partition path
+        targetDevice = this._getPartitionPath(device, 1);
+        
+        console.log(`Created partition: ${targetDevice}`);
+      }
+
+      // Check if the target device (partition) is already formatted with the requested filesystem
+      const deviceInfo = await this.checkDeviceFilesystem(targetDevice);
+
+      if (deviceInfo.isFormatted && deviceInfo.filesystem === filesystem) {
+        return {
+          success: true,
+          message: `Device ${targetDevice} is already formatted with ${filesystem}`,
+          device: targetDevice,
+          filesystem,
+          uuid: deviceInfo.uuid,
+          alreadyFormatted: true
+        };
+      }
+
+      // Format the partition with the specified filesystem
       let command;
 
       switch (filesystem) {
         case 'ext4':
-          command = `mkfs.ext4 -F ${device}`;
+          command = `mkfs.ext4 -F ${targetDevice}`;
           break;
         case 'xfs':
-          command = `mkfs.xfs -f ${device}`;
+          command = `mkfs.xfs -f ${targetDevice}`;
           break;
         case 'btrfs':
-          command = `mkfs.btrfs -f ${device}`;
+          command = `mkfs.btrfs -f ${targetDevice}`;
           break;
         default:
           throw new Error(`Unsupported filesystem type: ${filesystem}. Supported types are: ext4, xfs, btrfs`);
@@ -978,13 +1032,13 @@ class PoolsService {
       await execPromise(command);
 
       // Get the UUID after formatting
-      const { stdout } = await execPromise(`blkid -o export ${device}`);
+      const { stdout } = await execPromise(`blkid -o export ${targetDevice}`);
       const uuid = stdout.match(/UUID="?([^"\n]+)"?/)?.[1] || null;
 
       return {
         success: true,
-        message: `Device ${device} successfully formatted with ${filesystem}`,
-        device,
+        message: `Device ${device} successfully ${!isPartition ? 'partitioned and ' : ''}formatted with ${filesystem}`,
+        device: targetDevice,
         filesystem,
         uuid,
         alreadyFormatted: false

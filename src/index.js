@@ -24,6 +24,7 @@ const iscsiInitiatorRoutes = require('./routes/iscsi-initiator.routes');
 const usersRoutes = require('./routes/users.routes');
 const cronRoutes = require('./routes/cron.routes');
 const terminalRoutes = require('./routes/terminal.routes');
+const notificationsRoutes = require('./routes/notifications.routes');
 
 // Middleware
 const { authenticateToken } = require('./middleware/auth.middleware');
@@ -147,6 +148,7 @@ async function startServer() {
   app.use('/api/v1/users', authenticateToken, usersRoutes);
   app.use('/api/v1/cron', authenticateToken, cronRoutes);
   app.use('/api/v1/terminal', authenticateToken, terminalRoutes);
+  app.use('/api/v1/notifications', authenticateToken, notificationsRoutes);
 
   // Error Handling
   app.use(errorHandler);
