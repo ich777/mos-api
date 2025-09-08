@@ -924,7 +924,7 @@ class LxcService {
    */
   async getAvailableImages() {
     try {
-      const cacheDir = '/tmp/lxc';
+      const cacheDir = '/var/mos/lxc';
       const cacheFile = path.join(cacheDir, 'container_index.json');
       const oneHourAgo = Date.now() - (60 * 60 * 1000); // 1 hour in milliseconds
 
