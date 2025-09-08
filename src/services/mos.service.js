@@ -17,14 +17,14 @@ class MosService {
     try {
       const poolsService = require('./pools.service');
       const pools = await poolsService._readPools();
-      
+
       // Find first mounted non-mergerfs pool
-      const suitablePool = pools.find(pool => 
-        pool.type !== 'mergerfs' && 
-        pool.status && 
+      const suitablePool = pools.find(pool =>
+        pool.type !== 'mergerfs' &&
+        pool.status &&
         pool.status.mounted
       );
-      
+
       return suitablePool ? suitablePool.name : null;
     } catch (error) {
       console.warn('Could not determine default pool for path suggestions:', error.message);
@@ -39,7 +39,7 @@ class MosService {
    */
   _generateDefaultPaths(poolName) {
     if (!poolName) return {};
-    
+
     return {
       docker: {
         directory: `/mnt/${poolName}/system/docker`,
@@ -219,7 +219,7 @@ class MosService {
     try {
       const data = await fs.readFile(this.settingsPath, 'utf8');
       const settings = JSON.parse(data);
-      
+
       // Set default paths if values are null
       if (settings.directory === null || settings.appdata === null) {
         const defaultPoolName = await this._getFirstNonMergerFSPool();
@@ -233,7 +233,7 @@ class MosService {
           }
         }
       }
-      
+
       return settings;
     } catch (error) {
       if (error.code === 'ENOENT') {
@@ -419,7 +419,7 @@ class MosService {
     try {
       const data = await fs.readFile('/boot/config/lxc.json', 'utf8');
       const settings = JSON.parse(data);
-      
+
       // Set default path if directory is null
       if (settings.directory === null) {
         const defaultPoolName = await this._getFirstNonMergerFSPool();
@@ -428,7 +428,7 @@ class MosService {
           settings.directory = defaultPaths.lxc.directory;
         }
       }
-      
+
       return settings;
     } catch (error) {
       if (error.code === 'ENOENT') {
@@ -522,7 +522,7 @@ class MosService {
     try {
       const data = await fs.readFile('/boot/config/vm.json', 'utf8');
       const settings = JSON.parse(data);
-      
+
       // Set default paths if values are null
       if (settings.directory === null || settings.vdisk_directory === null) {
         const defaultPoolName = await this._getFirstNonMergerFSPool();
@@ -536,7 +536,7 @@ class MosService {
           }
         }
       }
-      
+
       return settings;
     } catch (error) {
       if (error.code === 'ENOENT') {
