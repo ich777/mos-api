@@ -12,9 +12,11 @@ class MosService {
   /**
    * Checks if a directory path is mounted on a pool
    * @param {string} dirPath - The directory path to check
+   * @param {string} serviceType - The service type (docker, lxc, vm) for specific validations
+   * @param {string} fieldName - The field name (directory, appdata, vdisk_directory) for specific validations
    * @returns {Promise<Object>} The result of the check
    */
-  async _checkDirectoryMountStatus(dirPath) {
+  async _checkDirectoryMountStatus(dirPath, serviceType = null, fieldName = null) {
     try {
       // Normalize the path
       const normalizedPath = path.resolve(dirPath);
@@ -54,6 +56,32 @@ class MosService {
           throw new Error(`Pool "${poolName}" not found`);
         }
 
+        // Check if pool is mergerfs and restrict only core service directories
+        // Allow appdata (docker) and VM storage paths on mergerfs, but not core service directories
+        const restrictedCombinations = [
+          { serviceType: 'docker', fieldName: 'directory' },  // Docker core directory
+          { serviceType: 'lxc', fieldName: 'directory' }      // LXC core directory
+          // VM directories and Docker appdata are allowed on mergerfs
+        ];
+
+        const isRestricted = pool.type === 'mergerfs' &&
+          restrictedCombinations.some(combo =>
+            combo.serviceType === serviceType && combo.fieldName === fieldName
+          );
+
+        if (isRestricted) {
+          return {
+            isOnPool: true,
+            isValid: false,
+            poolName,
+            poolPath: `/mnt/${poolName}`,
+            userPath: normalizedPath,
+            poolType: pool.type,
+            error: `${serviceType.toUpperCase()} core directories cannot be placed on MergerFS pools. MergerFS pools are designed for data storage, not for system services.`,
+            suggestion: `Use a single or multi device BTRFS, XFS, or EXT4 pool for ${serviceType.toUpperCase()} core directories instead.`
+          };
+        }
+
         if (!pool.status.mounted) {
           return {
             isOnPool: true,
@@ -61,6 +89,7 @@ class MosService {
             poolName,
             poolPath: `/mnt/${poolName}`,
             userPath: normalizedPath,
+            poolType: pool.type,
             error: `Pool "${poolName}" is not mounted. Service directory would not be available.`,
             suggestion: `Mount the pool "${poolName}" first or choose a different path.`
           };
@@ -72,7 +101,8 @@ class MosService {
           poolName,
           poolPath: `/mnt/${poolName}`,
           userPath: normalizedPath,
-          message: `Pool "${poolName}" is mounted - Path is available`
+          poolType: pool.type,
+          message: `Pool "${poolName}" (${pool.type}) is mounted - Path is available`
         };
 
       } catch (poolError) {
@@ -103,9 +133,10 @@ class MosService {
   /**
    * Checks multiple directory paths at once
    * @param {Object} pathsToCheck - Object with paths {fieldName: path}
+   * @param {string} serviceType - The service type (docker, lxc, vm) for specific validations
    * @returns {Promise<Object>} Summary of the check results
    */
-  async _checkMultipleDirectories(pathsToCheck) {
+  async _checkMultipleDirectories(pathsToCheck, serviceType = null) {
     const results = {};
     const errors = [];
 
@@ -114,7 +145,7 @@ class MosService {
         continue; // Skip empty/invalid paths
       }
 
-      const check = await this._checkDirectoryMountStatus(dirPath);
+      const check = await this._checkDirectoryMountStatus(dirPath, serviceType, fieldName);
       results[fieldName] = check;
 
       if (!check.isValid) {
@@ -180,7 +211,7 @@ class MosService {
       }
 
       if (Object.keys(pathsToCheck).length > 0) {
-        const directoryCheck = await this._checkMultipleDirectories(pathsToCheck);
+        const directoryCheck = await this._checkMultipleDirectories(pathsToCheck, 'docker');
 
         if (directoryCheck.hasErrors) {
           const errorDetails = directoryCheck.errors.map(error =>
@@ -360,7 +391,7 @@ class MosService {
       }
 
       if (Object.keys(pathsToCheck).length > 0) {
-        const directoryCheck = await this._checkMultipleDirectories(pathsToCheck);
+        const directoryCheck = await this._checkMultipleDirectories(pathsToCheck, 'lxc');
 
         if (directoryCheck.hasErrors) {
           const errorDetails = directoryCheck.errors.map(error =>
@@ -455,7 +486,7 @@ class MosService {
       }
 
       if (Object.keys(pathsToCheck).length > 0) {
-        const directoryCheck = await this._checkMultipleDirectories(pathsToCheck);
+        const directoryCheck = await this._checkMultipleDirectories(pathsToCheck, 'vm');
 
         if (directoryCheck.hasErrors) {
           const errorDetails = directoryCheck.errors.map(error =>
@@ -784,7 +815,7 @@ class MosService {
     try {
       const data = await fs.readFile('/boot/config/system.json', 'utf8');
       const settings = JSON.parse(data);
-      
+
       // Ensure notification_sound defaults are present
       if (!settings.notification_sound) {
         settings.notification_sound = {
@@ -792,7 +823,7 @@ class MosService {
           reboot: true,
           shutdown: true
         };
-        
+
         // Write back the updated settings with defaults
         try {
           await fs.writeFile('/boot/config/system.json', JSON.stringify(settings, null, 2), 'utf8');
@@ -800,7 +831,7 @@ class MosService {
           console.warn('Warning: Could not write notification_sound defaults to system.json:', writeError.message);
         }
       }
-      
+
       return settings;
     } catch (error) {
       if (error.code === 'ENOENT') {
@@ -876,7 +907,7 @@ class MosService {
               shutdown: true
             };
           }
-          
+
           // Update notification_sound settings
           if (typeof updates.notification_sound === 'object' && updates.notification_sound !== null) {
             // Merge with existing settings, keeping defaults for missing values

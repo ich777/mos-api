@@ -14,12 +14,12 @@ class NotificationsService {
     try {
       const data = await fs.readFile(this.notificationsPath, 'utf8');
       const notifications = JSON.parse(data);
-      
+
       // Ensure it's an array
       if (!Array.isArray(notifications)) {
         throw new Error('Notifications file does not contain a valid array');
       }
-      
+
       // Sort by timestamp (newest first)
       return notifications.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
     } catch (error) {
@@ -39,23 +39,23 @@ class NotificationsService {
   async deleteNotification(timestamp) {
     try {
       const notifications = await this.getNotifications();
-      
+
       // Find the notification with the matching timestamp
       const initialLength = notifications.length;
-      const filteredNotifications = notifications.filter(notification => 
+      const filteredNotifications = notifications.filter(notification =>
         notification.timestamp !== timestamp
       );
-      
+
       if (filteredNotifications.length === initialLength) {
         return {
           success: false,
           message: `Notification with timestamp ${timestamp} not found`
         };
       }
-      
+
       // Write the filtered notifications back to the file
       await this._writeNotifications(filteredNotifications);
-      
+
       return {
         success: true,
         message: `Notification with timestamp ${timestamp} deleted successfully`,
@@ -73,7 +73,7 @@ class NotificationsService {
   async deleteAllNotifications() {
     try {
       await this._writeNotifications([]);
-      
+
       return {
         success: true,
         message: 'All notifications deleted successfully',
@@ -95,11 +95,11 @@ class NotificationsService {
       // Ensure the directory exists
       const dir = path.dirname(this.notificationsPath);
       await fs.mkdir(dir, { recursive: true });
-      
+
       // Write the notifications to the file
       await fs.writeFile(
-        this.notificationsPath, 
-        JSON.stringify(notifications, null, 2), 
+        this.notificationsPath,
+        JSON.stringify(notifications, null, 2),
         'utf8'
       );
     } catch (error) {
@@ -120,7 +120,7 @@ class NotificationsService {
       typeof notification.title === 'string' &&
       typeof notification.message === 'string' &&
       typeof notification.timestamp === 'string' &&
-      (notification.priority === undefined || 
+      (notification.priority === undefined ||
        ['high', 'normal', 'low'].includes(notification.priority))
     );
   }

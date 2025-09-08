@@ -166,13 +166,13 @@ router.get('/', async (req, res) => {
 router.delete('/:timestamp', async (req, res) => {
   try {
     const { timestamp } = req.params;
-    
+
     if (!timestamp) {
       return res.status(400).json({ error: 'Timestamp parameter is required' });
     }
-    
+
     const result = await notificationsService.deleteNotification(timestamp);
-    
+
     if (result.success) {
       res.json(result);
     } else {

@@ -912,7 +912,7 @@ class UserService {
   async _deleteBootToken() {
     try {
       const tokenFile = config.tokenFilePath;
-      
+
       // Check if token file already empty to avoid unnecessary writes
       try {
         const currentToken = await fs.readFile(tokenFile, 'utf8');
@@ -924,10 +924,10 @@ class UserService {
         // File doesn't exist, nothing to delete
         return true;
       }
-      
+
       // Clear the token file (write empty string)
       await fs.writeFile(tokenFile, '', { mode: 0o600 });
-      
+
       console.log('Boot token file cleared');
       return true;
     } catch (error) {

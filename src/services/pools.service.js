@@ -114,8 +114,15 @@ class PoolsService {
       const deviceResult = await this._checkSingleDeviceFilesystem(device);
 
       // If the device has a filesystem that's not a partition table, return it
+      // BUT: For single device pools, we should prefer partitions over whole disk filesystems
       if (deviceResult.isFormatted && !['dos', 'gpt', 'mbr'].includes(deviceResult.filesystem)) {
-        return deviceResult;
+        // Check if we have partitions - if yes, prefer them over whole disk filesystem
+        const partitions = await this._getDevicePartitions(device);
+        if (partitions.length === 0) {
+          // No partitions, use whole disk filesystem
+          return deviceResult;
+        }
+        // Continue to check partitions below
       }
 
       // If the device has a partition table or no filesystem, check its partitions
@@ -129,8 +136,7 @@ class PoolsService {
             // Return the partition info but include the partition path
             return {
               ...partitionResult,
-              actualDevice: partition, // The actual device/partition that has the filesystem
-              originalDevice: device   // The original device that was requested
+              actualDevice: partition // The actual device/partition that has the filesystem
             };
           }
         }
@@ -433,8 +439,41 @@ class PoolsService {
       const mountPoint = path.join(this.mountBasePath, name);
       await fs.mkdir(mountPoint, { recursive: true });
 
-      // Format with BTRFS and specified RAID level
-      let deviceArgs = devices.join(' ');
+      // Prepare devices for BTRFS formatting (create partitions if needed)
+      const preparedDevices = [];
+      for (const device of devices) {
+        const isPartition = this._isPartitionPath(device);
+        if (!isPartition) {
+          // Create partition table and partition for whole disks
+          console.log(`${device} is a whole disk, creating partition table and partition...`);
+
+          // Create GPT partition table
+          await execPromise(`parted -s ${device} mklabel gpt`);
+
+          // Create a single partition using the entire disk
+          await execPromise(`parted -s ${device} mkpart primary 2048s 100%`);
+
+          // Wait a moment for the partition to be recognized by the kernel
+          await new Promise(resolve => setTimeout(resolve, 1000));
+
+          // Inform kernel about partition table changes
+          try {
+            await execPromise(`partprobe ${device}`);
+          } catch (error) {
+            console.warn(`partprobe failed: ${error.message}`);
+          }
+
+          // Determine partition path
+          const partitionPath = this._getPartitionPath(device, 1);
+          preparedDevices.push(partitionPath);
+          console.log(`Created partition: ${partitionPath}`);
+        } else {
+          preparedDevices.push(device);
+        }
+      }
+
+      // Format with BTRFS and specified RAID level using prepared devices (partitions)
+      let deviceArgs = preparedDevices.join(' ');
       let formatCommand = `mkfs.btrfs -f -d ${raidLevel} -m ${raidLevel} -L "${name}" ${deviceArgs}`;
 
       // Check if any device is already formatted and user didn't specify format: true
@@ -444,15 +483,15 @@ class PoolsService {
       if (options.format === true) {
         needsFormatting = true;
       } else {
-        for (const device of devices) {
-          const deviceInfo = await this.checkDeviceFilesystem(device);
+        for (const preparedDevice of preparedDevices) {
+          const deviceInfo = await this.checkDeviceFilesystem(preparedDevice);
           if (deviceInfo.isFormatted) {
             // If the device is already formatted with BTRFS, it's OK for a BTRFS pool
             if (deviceInfo.filesystem !== 'btrfs') {
-              throw new Error(`Device ${device} is already formatted with ${deviceInfo.filesystem}, but BTRFS is required for multi-device pools. Use format: true to overwrite.`);
+              throw new Error(`Device ${preparedDevice} is already formatted with ${deviceInfo.filesystem}, but BTRFS is required for multi-device pools. Use format: true to overwrite.`);
             }
             // Device is already formatted with BTRFS - perfect for a BTRFS pool
-            console.log(`Device ${device} is already formatted with BTRFS - will be used as-is`);
+            console.log(`Device ${preparedDevice} is already formatted with BTRFS - will be used as-is`);
           } else {
             // At least one device is not formatted
             allDevicesAreBtrfs = false;
@@ -480,12 +519,13 @@ class PoolsService {
 
       for (let i = 0; i < devices.length; i++) {
         const device = devices[i];
-        const deviceUuid = await this.getDeviceUuid(device);
+        const actualDevice = preparedDevices[i]; // Use the prepared device (partition)
+        const deviceUuid = await this.getDeviceUuid(actualDevice);
 
         dataDevices.push({
           slot: (i + 1).toString(),
           id: deviceUuid,
-          device,
+          device: actualDevice, // Store the actual partition path
           filesystem,
           spindown: null
         });
@@ -518,8 +558,8 @@ class PoolsService {
       // Mount the pool if automount is true
       if (newPool.automount) {
         try {
-          // Use the first device for mounting BTRFS
-          await this.mountDevice(devices[0], mountPoint, { mountOptions: `device=${devices[0]}` });
+          // Use the first prepared device (partition) for mounting BTRFS
+          await this.mountDevice(preparedDevices[0], mountPoint, { mountOptions: `device=${preparedDevices[0]}` });
 
           // Update status after mounting
           const spaceInfo = await this.getDeviceSpace(mountPoint);
@@ -712,29 +752,28 @@ class PoolsService {
 
 
 
+      let actualDevice = device;
       if (!deviceInfo.isFormatted || options.format === true) {
-        await this.formatDevice(actualDeviceToUse, existingFilesystem);
-        const uuid = await this.getDeviceUuid(actualDeviceToUse);
+        const formatResult = await this.formatDevice(device, existingFilesystem);
+        actualDevice = formatResult.device; // Use the partition created by formatDevice
+        const uuid = await this.getDeviceUuid(actualDevice);
         formattedDevices.push({
-          device: actualDeviceToUse,
+          device: actualDevice,
           filesystem: existingFilesystem,
           uuid,
-          isUsingPartition
+          isUsingPartition: actualDevice !== device
         });
       } else if (deviceInfo.filesystem !== existingFilesystem) {
         const deviceDisplayName = isUsingPartition ? `${device} (partition ${actualDeviceToUse})` : device;
         throw new Error(`Device ${deviceDisplayName} has filesystem ${deviceInfo.filesystem}, expected ${existingFilesystem}. Use format: true to reformat.`);
       } else {
         // Always get UUID from the actual device being used to ensure we have the correct one
-
         let uuid = await this.getDeviceUuid(actualDeviceToUse);
         if (!uuid) {
-
           // Fallback: try to get UUID from deviceInfo if getDeviceUuid failed
           uuid = deviceInfo.uuid;
         }
         if (!uuid) {
-
           throw new Error(`No filesystem UUID found for device ${actualDeviceToUse}. Device may not be properly formatted.`);
         }
 
@@ -750,7 +789,7 @@ class PoolsService {
     // Mount and add new devices to MergerFS
     const newDataDevices = [];
     for (let i = 0; i < formattedDevices.length; i++) {
-      const { device, originalDevice, filesystem, uuid, isUsingPartition } = formattedDevices[i];
+      const { device, filesystem, uuid, isUsingPartition } = formattedDevices[i];
       const diskIndex = pool.data_devices.length + i + 1;
       const diskMountPoint = path.join(mergerfsBasePath, `disk${diskIndex}`);
 
@@ -758,7 +797,7 @@ class PoolsService {
 
       // Create mount point and mount device
       await fs.mkdir(diskMountPoint, { recursive: true });
-      await this.mountDevice(originalDevice || device, diskMountPoint); // Use original device for mounting (mountDevice will handle partition detection)
+      await this.mountDevice(device, diskMountPoint); // Mount the actual device (partition)
 
       // Ensure we get the correct UUID from the actual device being used
       let finalUuid = uuid;
@@ -769,7 +808,7 @@ class PoolsService {
       newDataDevices.push({
         slot: diskIndex.toString(),
         id: finalUuid, // UUID of the actual partition/device being used
-        device: formattedDevices[i].device, // The actual device/partition path
+        device: device, // The actual device/partition path
         filesystem,
         spindown: null
       });
@@ -1293,7 +1332,7 @@ class PoolsService {
       let deviceInfo = await this.checkDeviceFilesystem(device);
 
       // Determine the actual device to use (could be a partition)
-      const actualDeviceToUse = deviceInfo.actualDevice || device;
+      let actualDeviceToUse = deviceInfo.actualDevice || device;
       const isUsingPartition = deviceInfo.actualDevice && deviceInfo.actualDevice !== device;
 
       // Format the device if it is not formatted or if the filesystem does not match
@@ -1303,14 +1342,14 @@ class PoolsService {
           // Warning: The existing filesystem does not match the specified one
           if (options.format === true) {
             // Only format if explicitly requested
-            const formatResult = await this.formatDevice(actualDeviceToUse, filesystem);
+            const formatResult = await this.formatDevice(device, filesystem);
             deviceInfo = {
               isFormatted: true,
               filesystem,
               uuid: formatResult.uuid,
-              actualDevice: actualDeviceToUse,
-              originalDevice: device
+              actualDevice: formatResult.device // Use the actual formatted device (partition)
             };
+            actualDeviceToUse = formatResult.device;
           } else {
             // Otherwise cancel to prevent data loss
             const deviceDisplayName = isUsingPartition ? `${device} (partition ${actualDeviceToUse})` : device;
@@ -1327,14 +1366,14 @@ class PoolsService {
         } else {
           // Format with specified or default filesystem (xfs as default if nothing specified)
           filesystem = filesystem || 'xfs';
-          const formatResult = await this.formatDevice(actualDeviceToUse, filesystem);
+          const formatResult = await this.formatDevice(device, filesystem);
           deviceInfo = {
             isFormatted: true,
             filesystem,
             uuid: formatResult.uuid,
-            actualDevice: actualDeviceToUse,
-            originalDevice: device
+            actualDevice: formatResult.device // Use the actual formatted device (partition)
           };
+          actualDeviceToUse = formatResult.device;
         }
       }
 
@@ -2000,11 +2039,32 @@ class PoolsService {
   }
 
   /**
-   * List all pools
+   * List all pools with optional filtering
+   * @param {Object} filters - Optional filters to apply
+   * @param {string} filters.type - Filter by pool type (e.g., 'mergerfs', 'btrfs', 'xfs')
+   * @param {string} filters.exclude_type - Exclude pools of specific type (e.g., 'mergerfs')
    */
-  async listPools() {
+  async listPools(filters = {}) {
     try {
-      const pools = await this._readPools();
+      let pools = await this._readPools();
+
+      // Apply type filtering if specified
+      if (filters.type) {
+        pools = pools.filter(pool => {
+          // Check pool.type first, then fallback to checking filesystem type of first data device
+          const poolType = pool.type || (pool.data_devices?.[0]?.filesystem);
+          return poolType === filters.type;
+        });
+      }
+
+      // Apply type exclusion if specified
+      if (filters.exclude_type) {
+        pools = pools.filter(pool => {
+          // Check pool.type first, then fallback to checking filesystem type of first data device
+          const poolType = pool.type || (pool.data_devices?.[0]?.filesystem);
+          return poolType !== filters.exclude_type;
+        });
+      }
 
       // For each pool, update its mounted status and space info
       for (const pool of pools) {
@@ -2908,8 +2968,10 @@ if (snapraidDevice) {
         const deviceInfo = await this.checkDeviceFilesystem(device);
         const expectedFilesystem = pool.data_devices.length > 0 ? pool.data_devices[0].filesystem : 'xfs';
 
+        let actualDevice = device;
         if (!deviceInfo.isFormatted || options.format === true) {
-          await this.formatDevice(device, expectedFilesystem);
+          const formatResult = await this.formatDevice(device, expectedFilesystem);
+          actualDevice = formatResult.device; // Use the partition created by formatDevice
         } else if (deviceInfo.filesystem !== expectedFilesystem) {
           throw new Error(`Device ${device} has filesystem ${deviceInfo.filesystem}, expected ${expectedFilesystem}. Use format: true to reformat.`);
         }
@@ -2923,18 +2985,28 @@ if (snapraidDevice) {
         const snapraidPoolPath = path.join(this.snapraidBasePath, pool.name);
         const parityMountPoint = path.join(snapraidPoolPath, `parity${parityIndex}`);
 
-        // Create mount point and mount device
-        await fs.mkdir(parityMountPoint, { recursive: true });
-        await this.mountDevice(device, parityMountPoint);
+        // Get the actual device (partition) to use
+        let actualDevice = device;
+        const deviceInfo = await this.checkDeviceFilesystem(device);
+        const expectedFilesystem = pool.data_devices.length > 0 ? pool.data_devices[0].filesystem : 'xfs';
 
-        // Get device UUID
-        const deviceUuid = await this.getDeviceUuid(device);
+        if (!deviceInfo.isFormatted || options.format === true) {
+          const formatResult = await this.formatDevice(device, expectedFilesystem);
+          actualDevice = formatResult.device; // Use the partition created by formatDevice
+        }
+
+        // Create mount point and mount the actual device (partition)
+        await fs.mkdir(parityMountPoint, { recursive: true });
+        await this.mountDevice(actualDevice, parityMountPoint);
+
+        // Get device UUID from the actual device (partition)
+        const deviceUuid = await this.getDeviceUuid(actualDevice);
 
         newParityDevices.push({
           slot: parityIndex.toString(),
           id: deviceUuid,
-          device,
-          filesystem: pool.data_devices.length > 0 ? pool.data_devices[0].filesystem : 'xfs',
+          device: actualDevice, // Store the partition path
+          filesystem: expectedFilesystem,
           spindown: null
         });
       }

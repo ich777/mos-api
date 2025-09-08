@@ -528,6 +528,23 @@ class DisksService {
   }
 
   /**
+   * Prüft ob ein Device eine Partition eines anderen Devices ist (NVMe-kompatibel)
+   */
+  _isPartitionOfDevice(partitionDevice, parentDevice) {
+    // Standard SATA/SCSI: /dev/sdb1 ist Partition von /dev/sdb
+    if (partitionDevice.startsWith(parentDevice) && partitionDevice !== parentDevice) {
+      return true;
+    }
+
+    // NVMe: /dev/nvme0n1p1 ist Partition von /dev/nvme0n1
+    if (parentDevice.includes('nvme') && partitionDevice.startsWith(parentDevice + 'p')) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
    * Prüft ob eine Disk bereits verwendet wird (gemountet oder in Pool)
    */
   async _isDiskInUse(device) {
@@ -544,9 +561,9 @@ class DisksService {
         };
       }
 
-      // Prüfe Partitions-Mounts
+      // Prüfe Partitions-Mounts (NVMe-kompatibel)
       for (const [mountedDevice, mountInfo] of mounts) {
-        if (mountedDevice.startsWith(device) && mountedDevice !== device) {
+        if (this._isPartitionOfDevice(mountedDevice, device)) {
           return {
             inUse: true,
             reason: 'mounted_partition',
@@ -563,15 +580,46 @@ class DisksService {
         return btrfsUsage;
       }
 
-      // Prüfe Pool-Zugehörigkeit
+      // Prüfe Pool-Zugehörigkeit - erweitert für Partitionen
       try {
         const pools = await poolsService.getAllPools();
         for (const pool of pools) {
+          // Prüfe data_devices
+          if (pool.data_devices) {
+            for (const poolDevice of pool.data_devices) {
+              // Direkte Übereinstimmung oder Partition der Disk (NVMe-kompatibel)
+              if (poolDevice.device === device || this._isPartitionOfDevice(poolDevice.device, device)) {
+                return {
+                  inUse: true,
+                  reason: 'in_pool_data',
+                  poolName: pool.name || 'unknown',
+                  poolDevice: poolDevice.device
+                };
+              }
+            }
+          }
+
+          // Prüfe parity_devices (SnapRAID)
+          if (pool.parity_devices) {
+            for (const parityDevice of pool.parity_devices) {
+              // Direkte Übereinstimmung oder Partition der Disk (NVMe-kompatibel)
+              if (parityDevice.device === device || this._isPartitionOfDevice(parityDevice.device, device)) {
+                return {
+                  inUse: true,
+                  reason: 'in_pool_parity',
+                  poolName: pool.name || 'unknown',
+                  poolDevice: parityDevice.device
+                };
+              }
+            }
+          }
+
+          // Legacy: Prüfe alte disks Struktur falls vorhanden
           if (pool.disks && pool.disks.some(poolDisk =>
             poolDisk.device === device || device.endsWith(poolDisk.name))) {
             return {
               inUse: true,
-              reason: 'in_pool',
+              reason: 'in_pool_legacy',
               poolName: pool.name || 'unknown'
             };
           }

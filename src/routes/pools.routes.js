@@ -375,13 +375,28 @@ const poolsService = require('../services/pools.service');
  * /pools:
  *   get:
  *     summary: List all storage pools
- *     description: Retrieve all storage pools with status information
+ *     description: Retrieve all storage pools with status information, with optional filtering by type
  *     tags: [Pools]
  *     security:
  *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: type
+ *         schema:
+ *           type: string
+ *           enum: [mergerfs, btrfs, xfs, ext4]
+ *         description: Filter pools by type (e.g., 'mergerfs', 'btrfs', 'xfs', 'ext4')
+ *         example: mergerfs
+ *       - in: query
+ *         name: exclude_type
+ *         schema:
+ *           type: string
+ *           enum: [mergerfs, btrfs, xfs, ext4]
+ *         description: Exclude pools of specific type (e.g., 'mergerfs')
+ *         example: mergerfs
  *     responses:
  *       200:
- *         description: A list of all pools with their status
+ *         description: A list of pools with their status (filtered if parameters provided)
  *         content:
  *           application/json:
  *             schema:
@@ -395,10 +410,21 @@ const poolsService = require('../services/pools.service');
  *             schema:
  *               $ref: '#/components/schemas/Error'
  */
-// List all pools
+// List all pools with optional filtering
 router.get('/', async (req, res) => {
   try {
-    const pools = await poolsService.listPools();
+    const { type, exclude_type } = req.query;
+
+    // Build filters object
+    const filters = {};
+    if (type) {
+      filters.type = type;
+    }
+    if (exclude_type) {
+      filters.exclude_type = exclude_type;
+    }
+
+    const pools = await poolsService.listPools(filters);
     res.json(pools);
   } catch (error) {
     res.status(500).json({ error: error.message });
