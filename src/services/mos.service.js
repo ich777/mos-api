@@ -10,6 +10,52 @@ class MosService {
   }
 
   /**
+   * Finds the first available non-MergerFS pool for default path suggestions
+   * @returns {Promise<string|null>} The pool name or null if no suitable pool found
+   */
+  async _getFirstNonMergerFSPool() {
+    try {
+      const poolsService = require('./pools.service');
+      const pools = await poolsService._readPools();
+      
+      // Find first mounted non-mergerfs pool
+      const suitablePool = pools.find(pool => 
+        pool.type !== 'mergerfs' && 
+        pool.status && 
+        pool.status.mounted
+      );
+      
+      return suitablePool ? suitablePool.name : null;
+    } catch (error) {
+      console.warn('Could not determine default pool for path suggestions:', error.message);
+      return null;
+    }
+  }
+
+  /**
+   * Generates default paths for services based on the first available non-MergerFS pool
+   * @param {string} poolName - The pool name to use for paths
+   * @returns {Object} Default paths for all services
+   */
+  _generateDefaultPaths(poolName) {
+    if (!poolName) return {};
+    
+    return {
+      docker: {
+        directory: `/mnt/${poolName}/system/docker`,
+        appdata: `/mnt/${poolName}/appdata`
+      },
+      lxc: {
+        directory: `/mnt/${poolName}/system/lxc`
+      },
+      vm: {
+        directory: `/mnt/${poolName}/system/vm`,
+        vdisk_directory: `/mnt/${poolName}/vms`
+      }
+    };
+  }
+
+  /**
    * Checks if a directory path is mounted on a pool
    * @param {string} dirPath - The directory path to check
    * @param {string} serviceType - The service type (docker, lxc, vm) for specific validations
@@ -172,7 +218,23 @@ class MosService {
   async getDockerSettings() {
     try {
       const data = await fs.readFile(this.settingsPath, 'utf8');
-      return JSON.parse(data);
+      const settings = JSON.parse(data);
+      
+      // Set default paths if values are null
+      if (settings.directory === null || settings.appdata === null) {
+        const defaultPoolName = await this._getFirstNonMergerFSPool();
+        if (defaultPoolName) {
+          const defaultPaths = this._generateDefaultPaths(defaultPoolName);
+          if (settings.directory === null) {
+            settings.directory = defaultPaths.docker.directory;
+          }
+          if (settings.appdata === null) {
+            settings.appdata = defaultPaths.docker.appdata;
+          }
+        }
+      }
+      
+      return settings;
     } catch (error) {
       if (error.code === 'ENOENT') {
         throw new Error('docker.json nicht gefunden');
@@ -356,7 +418,18 @@ class MosService {
   async getLxcSettings() {
     try {
       const data = await fs.readFile('/boot/config/lxc.json', 'utf8');
-      return JSON.parse(data);
+      const settings = JSON.parse(data);
+      
+      // Set default path if directory is null
+      if (settings.directory === null) {
+        const defaultPoolName = await this._getFirstNonMergerFSPool();
+        if (defaultPoolName) {
+          const defaultPaths = this._generateDefaultPaths(defaultPoolName);
+          settings.directory = defaultPaths.lxc.directory;
+        }
+      }
+      
+      return settings;
     } catch (error) {
       if (error.code === 'ENOENT') {
         throw new Error('lxc.json not found');
@@ -448,7 +521,23 @@ class MosService {
   async getVmSettings() {
     try {
       const data = await fs.readFile('/boot/config/vm.json', 'utf8');
-      return JSON.parse(data);
+      const settings = JSON.parse(data);
+      
+      // Set default paths if values are null
+      if (settings.directory === null || settings.vdisk_directory === null) {
+        const defaultPoolName = await this._getFirstNonMergerFSPool();
+        if (defaultPoolName) {
+          const defaultPaths = this._generateDefaultPaths(defaultPoolName);
+          if (settings.directory === null) {
+            settings.directory = defaultPaths.vm.directory;
+          }
+          if (settings.vdisk_directory === null) {
+            settings.vdisk_directory = defaultPaths.vm.vdisk_directory;
+          }
+        }
+      }
+      
+      return settings;
     } catch (error) {
       if (error.code === 'ENOENT') {
         throw new Error('vm.json not found');
