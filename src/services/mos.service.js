@@ -1269,7 +1269,7 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
       }
 
       // Read JSON file
-      const releasesPath = '/tmp/mos-update/releases.json';
+      const releasesPath = '/var/mos-update/releases.json';
 
       try {
         const releasesData = await fs.readFile(releasesPath, 'utf8');
