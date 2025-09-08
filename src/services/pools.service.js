@@ -660,11 +660,10 @@ class PoolsService {
       }
     }
 
-    // Update pool status
-    const spaceInfo = await this.getDeviceSpace(mountPoint);
-    pool.status = spaceInfo;
+    // Don't persist dynamic status info to pools.json
+    // Status will be calculated dynamically when pools are retrieved
 
-    // Write updated pool data
+    // Write updated pool data (without status)
     pools[poolIndex] = pool;
     await this._writePools(pools);
 
@@ -801,11 +800,10 @@ class PoolsService {
       await this.updateSnapRAIDConfig(pool);
     }
 
-    // Update pool status
-    const spaceInfo = await this.getDeviceSpace(mountPoint);
-    pool.status = spaceInfo;
+    // Don't persist dynamic status info to pools.json
+    // Status will be calculated dynamically when pools are retrieved
 
-    // Write updated pool data
+    // Write updated pool data (without status)
     pools[poolIndex] = pool;
     await this._writePools(pools);
 
@@ -916,11 +914,10 @@ class PoolsService {
         });
       }
 
-      // Update pool status
-      const spaceInfo = await this.getDeviceSpace(mountPoint);
-      pool.status = spaceInfo;
+      // Don't persist dynamic status info to pools.json
+      // Status will be calculated dynamically when pools are retrieved
 
-      // Write updated pool data
+      // Write updated pool data (without status)
       await this._writePools(pools);
 
       return {
@@ -966,20 +963,20 @@ class PoolsService {
       // Check if device is a partition or a whole disk
       const isPartition = this._isPartitionPath(device);
       let targetDevice = device;
-      
+
       if (!isPartition) {
         // This is a whole disk - create partition table and partition first
         console.log(`${device} is a whole disk, creating partition table and partition...`);
-        
+
         // Create GPT partition table
         await execPromise(`parted -s ${device} mklabel gpt`);
-        
+
         // Create a single partition using the entire disk
         await execPromise(`parted -s ${device} mkpart primary 2048s 100%`);
-        
+
         // Wait a moment for the partition to be recognized by the kernel
         await new Promise(resolve => setTimeout(resolve, 1000));
-        
+
         // Inform kernel about partition table changes
         try {
           await execPromise(`partprobe ${device}`);
@@ -987,10 +984,10 @@ class PoolsService {
           // partprobe might fail on some systems, but that's usually not critical
           console.warn(`partprobe failed: ${error.message}`);
         }
-        
+
         // Determine partition path
         targetDevice = this._getPartitionPath(device, 1);
-        
+
         console.log(`Created partition: ${targetDevice}`);
       }
 
@@ -1246,8 +1243,11 @@ class PoolsService {
         return {
           mounted: true,
           totalSpace,
+          totalSpace_human: this._bytesToHuman(totalSpace),
           usedSpace,
+          usedSpace_human: this._bytesToHuman(usedSpace),
           freeSpace,
+          freeSpace_human: this._bytesToHuman(freeSpace),
           health: "healthy"
         };
       }
@@ -1459,9 +1459,8 @@ class PoolsService {
           mountOptions: options.mountOptions
         });
 
-        // Update status
-        const spaceInfo = await this.getDeviceSpace(mountPoint);
-        pool.status = spaceInfo;
+        // Don't persist dynamic status info to pools.json
+        // Status will be calculated dynamically when pools are retrieved
 
         // Update in file
         const poolIndex = pools.findIndex(p => p.id === poolId);
@@ -1772,6 +1771,235 @@ class PoolsService {
   }
 
   /**
+   * Get df data and create UUID to storage mapping
+   */
+  async _getDfData() {
+    try {
+      const { stdout } = await execPromise('df -B1');
+      const lines = stdout.trim().split('\n').slice(1); // Skip header
+      const dfData = {};
+
+      for (const line of lines) {
+        const parts = line.trim().split(/\s+/);
+        if (parts.length >= 6) {
+          const [filesystem, totalSpace, usedSpace, freeSpace, , mountPoint] = parts;
+          dfData[mountPoint] = {
+            filesystem,
+            totalSpace: parseInt(totalSpace),
+            usedSpace: parseInt(usedSpace),
+            freeSpace: parseInt(freeSpace),
+            usagePercent: Math.round((parseInt(usedSpace) / parseInt(totalSpace)) * 100)
+          };
+        }
+      }
+
+      return dfData;
+    } catch (error) {
+      console.warn(`Warning: Could not get df data: ${error.message}`);
+      return {};
+    }
+  }
+
+  /**
+   * Convert bytes to human readable format
+   */
+  _bytesToHuman(bytes) {
+    if (!bytes || bytes === 0) return '0 B';
+
+    const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+    const k = 1024;
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + units[i];
+  }
+
+  /**
+   * Generate expected mount point for a device based on pool type
+   */
+  _generateExpectedMountPoint(pool, device, deviceType = 'data') {
+    switch(pool.type) {
+      case 'mergerfs':
+        if (deviceType === 'parity') {
+          return `/var/snapraid/${pool.name}/parity${device.slot}`;
+        }
+        return `/var/mergerfs/${pool.name}/disk${device.slot}`;
+
+      case 'btrfs':
+      case 'ext4':
+      case 'xfs':
+      default:
+        return `/mnt/${pool.name}`;
+    }
+  }
+
+  /**
+   * Filter out system devices (root disk, boot partitions, etc.) from device list
+   */
+  async _filterSystemDevices(devices, configuredDevices = []) {
+    const systemDevices = new Set();
+
+    try {
+      // Get root filesystem device
+      const { stdout: rootDevice } = await execPromise(`df / | tail -1 | awk '{print $1}'`);
+      if (rootDevice.trim()) {
+        const baseRootDevice = rootDevice.trim().replace(/\d+$/, '').replace(/p\d+$/, '');
+        systemDevices.add(baseRootDevice);
+      }
+
+      // Get boot filesystem device
+      const { stdout: bootDevice } = await execPromise(`df /boot 2>/dev/null | tail -1 | awk '{print $1}' || echo ""`);
+      if (bootDevice.trim()) {
+        const baseBootDevice = bootDevice.trim().replace(/\d+$/, '').replace(/p\d+$/, '');
+        systemDevices.add(baseBootDevice);
+      }
+    } catch (error) {
+      console.warn(`Could not detect system devices: ${error.message}`);
+    }
+
+    return devices.filter(dev => {
+      // Skip if it's a system device or partition of system device
+      const baseDevice = dev.replace(/\d+$/, '').replace(/p\d+$/, '');
+      if (systemDevices.has(baseDevice) || systemDevices.has(dev)) {
+        return false;
+      }
+
+      // Skip if it's a partition of an already configured device
+      return !configuredDevices.some(configured => {
+        const configuredBase = configured.replace(/\d+$/, '').replace(/p\d+$/, '');
+        return dev.startsWith(configuredBase) && dev !== configured;
+      });
+    });
+  }
+
+  /**
+   * Inject storage information directly into pool devices (no disk access)
+   */
+  async _injectStorageInfoIntoDevices(pool) {
+    const dfData = await this._getDfData();
+
+    // For BTRFS pools, get all physical devices from btrfs filesystem show
+    let btrfsDevices = [];
+    if (pool.type === 'btrfs' && pool.data_devices && pool.data_devices.length > 0) {
+      try {
+        const mountPoint = this._generateExpectedMountPoint(pool, pool.data_devices[0], 'data');
+        const { stdout } = await execPromise(`btrfs filesystem show ${mountPoint} 2>/dev/null || echo ""`);
+
+        // Parse btrfs filesystem show output to get all devices
+        const deviceMatches = stdout.match(/devid\s+\d+\s+size\s+[\d.]+[KMGT]iB\s+used\s+[\d.]+[KMGT]iB\s+path\s+(\/dev\/[^\s]+)/g);
+        if (deviceMatches) {
+          btrfsDevices = deviceMatches.map(match => {
+            const pathMatch = match.match(/path\s+(\/dev\/[^\s]+)/);
+            return pathMatch ? pathMatch[1] : null;
+          }).filter(Boolean);
+
+          // Cross-reference with df output to get the actual mounted partitions
+          const dfData = await this._getDfData();
+          const mountedDevices = Object.values(dfData).map(data => data.device).filter(Boolean);
+
+          // Replace whole disk devices with their mounted partitions if they exist
+          btrfsDevices = btrfsDevices.map(device => {
+            // Check if there's a mounted partition for this device
+            const matchingMountedDevice = mountedDevices.find(mounted =>
+              mounted.startsWith(device) && mounted !== device
+            );
+            return matchingMountedDevice || device;
+          });
+        }
+      } catch (error) {
+        console.warn(`Could not get BTRFS device list for pool ${pool.name}: ${error.message}`);
+      }
+    }
+
+    // Inject storage info into data devices
+    for (const device of pool.data_devices || []) {
+      const expectedMountPoint = this._generateExpectedMountPoint(pool, device, 'data');
+      const storageData = dfData[expectedMountPoint];
+
+      if (storageData) {
+        device.storage = {
+          totalSpace: storageData.totalSpace,
+          totalSpace_human: this._bytesToHuman(storageData.totalSpace),
+          usedSpace: storageData.usedSpace,
+          usedSpace_human: this._bytesToHuman(storageData.usedSpace),
+          freeSpace: storageData.freeSpace,
+          freeSpace_human: this._bytesToHuman(storageData.freeSpace),
+          usagePercent: storageData.usagePercent
+        };
+        device.mountPoint = expectedMountPoint;
+        device.storageStatus = 'mounted';
+      } else {
+        device.storage = null;
+        device.mountPoint = expectedMountPoint;
+        device.storageStatus = 'unmounted_or_not_found';
+      }
+
+      // For BTRFS pools, mark as shared storage since all devices share the same filesystem
+      device.isSharedStorage = pool.type === 'btrfs';
+    }
+
+    // For BTRFS pools, inject missing devices that are part of the filesystem but not in config
+    if (pool.type === 'btrfs' && btrfsDevices.length > 0) {
+      const configuredDevices = pool.data_devices.map(d => d.device);
+      let missingDevices = btrfsDevices.filter(dev => !configuredDevices.includes(dev));
+
+      // Filter out root disk and system partitions
+      missingDevices = await this._filterSystemDevices(missingDevices, configuredDevices);
+
+      for (const missingDevice of missingDevices) {
+        try {
+          const deviceUuid = await this.getDeviceUuid(missingDevice);
+          const deviceInfo = await this.checkDeviceFilesystem(missingDevice);
+
+          const injectedDevice = {
+            slot: (pool.data_devices.length + missingDevices.indexOf(missingDevice) + 1).toString(),
+            id: deviceUuid,
+            device: missingDevice,
+            filesystem: deviceInfo.filesystem || 'btrfs',
+            spindown: null,
+            _injected: true, // Mark as dynamically injected
+            storage: pool.data_devices[0]?.storage || null, // Share storage info from first device
+            mountPoint: this._generateExpectedMountPoint(pool, { device: missingDevice }, 'data'),
+            storageStatus: pool.data_devices[0]?.storageStatus || 'mounted',
+            isSharedStorage: true
+          };
+
+          // Enrich with disk type info
+          const enrichedDevice = await this._enrichDeviceWithDiskTypeInfo(injectedDevice);
+          pool.data_devices.push(enrichedDevice);
+        } catch (error) {
+          console.warn(`Could not inject missing BTRFS device ${missingDevice}: ${error.message}`);
+        }
+      }
+    }
+
+    // Inject storage info into parity devices
+    for (const device of pool.parity_devices || []) {
+      const expectedMountPoint = this._generateExpectedMountPoint(pool, device, 'parity');
+      const storageData = dfData[expectedMountPoint];
+
+      if (storageData) {
+        device.storage = {
+          totalSpace: storageData.totalSpace,
+          totalSpace_human: this._bytesToHuman(storageData.totalSpace),
+          usedSpace: storageData.usedSpace,
+          usedSpace_human: this._bytesToHuman(storageData.usedSpace),
+          freeSpace: storageData.freeSpace,
+          freeSpace_human: this._bytesToHuman(storageData.freeSpace),
+          usagePercent: storageData.usagePercent
+        };
+        device.mountPoint = expectedMountPoint;
+        device.storageStatus = 'mounted';
+      } else {
+        device.storage = null;
+        device.mountPoint = expectedMountPoint;
+        device.storageStatus = 'unmounted_or_not_found';
+      }
+
+      device.isSharedStorage = false; // Parity devices are always individual
+    }
+  }
+
+  /**
    * List all pools
    */
   async listPools() {
@@ -1799,10 +2027,16 @@ class PoolsService {
           const spaceInfo = await this.getDeviceSpace(mountPoint);
           pool.status = spaceInfo;
         }
+
+        // Inject storage information directly into device objects
+        await this._injectStorageInfoIntoDevices(pool);
+
+        // Inject power status into individual device objects
+        await this._injectPowerStatusIntoDevices(pool);
       }
 
-      // Write back updated status (but not the disk type infos, as they are dynamic)
-      await this._writePools(pools);
+      // Note: We don't write back to pools.json for read-only operations
+      // The status and storage info are dynamic and should not be persisted
 
       return pools;
     } catch (error) {
@@ -1841,14 +2075,15 @@ class PoolsService {
         const spaceInfo = await this.getDeviceSpace(mountPoint);
         pool.status = spaceInfo;
 
-        // Write back updated status
-        const updatedPools = await this._readPools();
-        const poolIndex = updatedPools.findIndex(p => p.id === poolId);
-        if (poolIndex !== -1) {
-          updatedPools[poolIndex].status = spaceInfo;
-          await this._writePools(updatedPools);
-        }
+        // Note: We don't write back status to pools.json for read-only operations
+        // The status info is dynamic and should not be persisted
       }
+
+      // Inject storage information directly into device objects
+      await this._injectStorageInfoIntoDevices(pool);
+
+      // Inject power status into individual device objects
+      await this._injectPowerStatusIntoDevices(pool);
 
       return pool;
     } catch (error) {
@@ -2133,11 +2368,10 @@ class PoolsService {
     // Update the pool data structure
     pool.data_devices = pool.data_devices.filter(d => !devicesToRemove.includes(d.device));
 
-    // Update pool status
-    const spaceInfo = await this.getDeviceSpace(mountPoint);
-    pool.status = spaceInfo;
+    // Don't persist dynamic status info to pools.json
+    // Status will be calculated dynamically when pools are retrieved
 
-    // Save updated pool configuration
+    // Save updated pool configuration (without status)
     await this._writePools(pools);
 
     return {
@@ -2241,11 +2475,10 @@ class PoolsService {
         pool.data_devices[deviceIndex].id = newDeviceUuid;
       }
 
-      // Update pool status
-      const spaceInfo = await this.getDeviceSpace(mountPoint);
-      pool.status = spaceInfo;
+      // Don't persist dynamic status info to pools.json
+      // Status will be calculated dynamically when pools are retrieved
 
-      // Save updated pool configuration
+      // Save updated pool configuration (without status)
       const pools = await this._readPools();
       const poolIndex = pools.findIndex(p => p.id === pool.id);
       if (poolIndex !== -1) {
@@ -2590,9 +2823,8 @@ if (snapraidDevice) {
     await fs.writeFile(snapraidConfigPath, snapraidConfig);
   }
 
-      // Update pool space information
-      const spaceInfo = await this.getDeviceSpace(mountPoint);
-      pool.status = { ...pool.status, ...spaceInfo };
+      // Don't persist dynamic status info to pools.json
+      // Status will be calculated dynamically when pools are retrieved
 
       // Save the pool
       pools.push(pool);
@@ -2740,44 +2972,38 @@ if (snapraidDevice) {
   }
 
   /**
-   * Replace a parity device in a MergerFS pool
+   * Replace a parity device in a pool
    * @param {string} poolId - Pool ID
-   * @param {string} oldDevice - Old parity device path to replace
+   * @param {string} oldDevice - Current parity device path
    * @param {string} newDevice - New parity device path
-   * @param {Object} options - Additional options
-   * @returns {Promise<Object>} - Result object
+   * @param {Object} options - Options including format flag
+   * @returns {Promise<Object>} - Operation result
    */
   async replaceParityDeviceInPool(poolId, oldDevice, newDevice, options = {}) {
     try {
+      // Load pools data
       const pools = await this._readPools();
-      const pool = pools.find(p => p.id === poolId);
+      const poolIndex = pools.findIndex(p => p.id === poolId);
 
-      if (!pool) {
-        throw new Error(`Pool with ID "${poolId}" not found`);
+      if (poolIndex === -1) {
+        throw new Error(`Pool with ID ${poolId} not found`);
       }
 
-      if (pool.type !== 'mergerfs') {
-        throw new Error('Only MergerFS pools support parity devices');
-      }
+      const pool = pools[poolIndex];
 
-      // Check if old parity device exists in pool
-      const oldParityIndex = pool.parity_devices.findIndex(d => d.device === oldDevice);
+      // Find the old parity device
+      const oldParityIndex = pool.parity_devices.findIndex(device => device.device === oldDevice);
+
       if (oldParityIndex === -1) {
-        throw new Error(`Parity device ${oldDevice} is not part of pool ${pool.name}`);
+        throw new Error(`Parity device ${oldDevice} not found in pool`);
       }
 
       // Check if new device exists
       await fs.access(newDevice).catch(() => {
-        throw new Error(`New device ${newDevice} does not exist`);
+        throw new Error(`Device ${newDevice} does not exist`);
       });
 
-      // Check if new device is already mounted
-      const newDeviceMountStatus = await this._isDeviceMounted(newDevice);
-      if (newDeviceMountStatus.isMounted) {
-        throw new Error(`New device ${newDevice} is already mounted at ${newDeviceMountStatus.mountPoint}. Please unmount it first before replacing.`);
-      }
-
-      // Check if new device is already part of the pool
+      // Check if new device is already part of this pool
       const isInPool = pool.data_devices.some(d => d.device === newDevice) ||
                       pool.parity_devices.some(d => d.device === newDevice);
       if (isInPool) {
@@ -2841,11 +3067,8 @@ if (snapraidDevice) {
       await this.updateSnapRAIDConfig(pool);
 
       // Save updated pool configuration
-      const poolIndex = pools.findIndex(p => p.id === poolId);
-      if (poolIndex !== -1) {
-        pools[poolIndex] = pool;
-        await this._writePools(pools);
-      }
+      pools[poolIndex] = pool;
+      await this._writePools(pools);
 
       return {
         success: true,
@@ -2854,6 +3077,319 @@ if (snapraidDevice) {
       };
     } catch (error) {
       throw new Error(`Error replacing parity device: ${error.message}`);
+    }
+  }
+
+  /**
+   * ===== SIMPLE POOL POWER MANAGEMENT =====
+   */
+
+  /**
+   * Get disk status by UUID
+   * @param {string} poolId - Pool ID
+   * @param {string} diskUuid - Disk UUID
+   * @returns {Promise<Object>} - Disk status
+   */
+  async getDiskStatus(poolId, diskUuid) {
+    try {
+      const pools = await this._readPools();
+      const pool = pools.find(p => p.id === poolId);
+
+      if (!pool) {
+        throw new Error(`Pool ${poolId} not found`);
+      }
+
+      const allDisks = [...pool.data_devices, ...pool.parity_devices];
+      const disk = allDisks.find(d => d.id === diskUuid);
+
+      if (!disk) {
+        throw new Error(`Disk ${diskUuid} not found in pool`);
+      }
+
+      // Check power status with hdparm
+      let powerStatus = 'unknown';
+      try {
+        const { stdout } = await execPromise(`hdparm -C ${disk.device} 2>/dev/null`);
+        if (stdout.includes('active/idle')) powerStatus = 'wake';
+        else if (stdout.includes('standby')) powerStatus = 'standby';
+        else if (stdout.includes('sleeping')) powerStatus = 'standby';
+      } catch (error) {
+        // If hdparm fails, assume it's wake for NVMe/SSD devices
+        powerStatus = disk.device.includes('nvme') || disk.device.includes('ssd') ? 'wake' : 'unknown';
+      }
+
+      return {
+        poolId,
+        poolName: pool.name,
+        diskUuid,
+        device: disk.device,
+        slot: disk.slot,
+        diskType: pool.data_devices.some(d => d.id === diskUuid) ? 'data' : 'parity',
+        powerStatus
+      };
+
+    } catch (error) {
+      throw new Error(`Failed to get disk status: ${error.message}`);
+    }
+  }
+
+  /**
+   * Wake or sleep a single disk by UUID
+   * @param {string} poolId - Pool ID
+   * @param {string} diskUuid - Disk UUID
+   * @param {string} action - 'wake', 'standby', or 'sleep'
+   * @returns {Promise<Object>} - Operation result
+   */
+  async controlDisk(poolId, diskUuid, action) {
+    try {
+      const pools = await this._readPools();
+      const pool = pools.find(p => p.id === poolId);
+
+      if (!pool) {
+        throw new Error(`Pool ${poolId} not found`);
+      }
+
+      const allDisks = [...pool.data_devices, ...pool.parity_devices];
+      const disk = allDisks.find(d => d.id === diskUuid);
+
+      if (!disk) {
+        throw new Error(`Disk ${diskUuid} not found in pool`);
+      }
+
+      if (action === 'wake') {
+        // Wake with dd command
+        await execPromise(`dd if=${disk.device} of=/dev/null bs=512 count=1 iflag=direct 2>/dev/null`);
+      } else if (action === 'standby' || action === 'sleep') {
+        // NVMe devices don't reliably support power management via nvme-cli
+        // Many NVMe controllers don't implement the power management features properly
+        if (disk.device.includes('nvme')) {
+          return {
+            success: false,
+            message: 'NVMe devices do not reliably support standby mode',
+            device: disk.device
+          };
+        } else if (disk.device.includes('ssd')) {
+          // Regular SSD - try hdparm but don't fail if it doesn't work
+          try {
+            const command = action === 'sleep' ? `hdparm -Y ${disk.device}` : `hdparm -y ${disk.device}`;
+            await execPromise(command);
+          } catch (error) {
+            return {
+              success: false,
+              message: 'SSD device does not support standby mode'
+            };
+          }
+        } else {
+          // Traditional HDD
+          const command = action === 'sleep' ? `hdparm -Y ${disk.device}` : `hdparm -y ${disk.device}`;
+          await execPromise(command);
+        }
+      } else {
+        throw new Error('Invalid action. Use wake, standby, or sleep');
+      }
+
+      return {
+        poolId,
+        poolName: pool.name,
+        diskUuid,
+        device: disk.device,
+        slot: disk.slot,
+        action,
+        message: `Disk ${action} successful`
+      };
+
+    } catch (error) {
+      throw new Error(`Failed to ${action} disk: ${error.message}`);
+    }
+  }
+
+  /**
+   * Wake or sleep entire pool
+   * @param {string} poolId - Pool ID
+   * @param {string} action - 'wake', 'standby', or 'sleep'
+   * @returns {Promise<Object>} - Operation results
+   */
+  async controlPool(poolId, action) {
+    try {
+      const pools = await this._readPools();
+      const pool = pools.find(p => p.id === poolId);
+
+      if (!pool) {
+        throw new Error(`Pool ${poolId} not found`);
+      }
+
+      const allDisks = [...pool.data_devices, ...pool.parity_devices];
+      const results = [];
+
+      for (const disk of allDisks) {
+        try {
+          const result = await this.controlDisk(poolId, disk.id, action);
+          results.push(result);
+        } catch (error) {
+          results.push({
+            success: false,
+            diskUuid: disk.id,
+            device: disk.device,
+            slot: disk.slot,
+            action,
+            message: error.message
+          });
+        }
+      }
+
+      return results;
+
+    } catch (error) {
+      throw new Error(`Failed to ${action} pool: ${error.message}`);
+    }
+  }
+
+  /**
+   * Inject power status information directly into pool devices
+   */
+  async _injectPowerStatusIntoDevices(pool) {
+    // Inject power status into data devices
+    for (const device of pool.data_devices || []) {
+      try {
+        const { stdout } = await execPromise(`hdparm -C ${device.device} 2>/dev/null`);
+
+        let powerStatus = 'unknown';
+        if (stdout.includes('active/idle')) {
+          powerStatus = 'wake';
+        } else if (stdout.includes('standby')) {
+          powerStatus = 'standby';
+        } else if (stdout.includes('sleeping')) {
+          powerStatus = 'standby';
+        }
+
+        device.powerStatus = powerStatus;
+      } catch (error) {
+        // If hdparm fails, assume it's wake for NVMe/SSD devices
+        device.powerStatus = device.device.includes('nvme') || device.device.includes('ssd') ? 'wake' : 'unknown';
+      }
+    }
+
+    // Inject power status into parity devices
+    for (const device of pool.parity_devices || []) {
+      try {
+        const { stdout } = await execPromise(`hdparm -C ${device.device} 2>/dev/null`);
+
+        let powerStatus = 'unknown';
+        if (stdout.includes('active/idle')) {
+          powerStatus = 'wake';
+        } else if (stdout.includes('standby')) {
+          powerStatus = 'standby';
+        } else if (stdout.includes('sleeping')) {
+          powerStatus = 'standby';
+        }
+
+        device.powerStatus = powerStatus;
+      } catch (error) {
+        // If hdparm fails, assume it's wake for NVMe/SSD devices
+        device.powerStatus = device.device.includes('nvme') || device.device.includes('ssd') ? 'wake' : 'unknown';
+      }
+    }
+  }
+
+  /**
+   * Get overall pool power status (wake/standby)
+   * @param {string} poolId - Pool ID
+   * @returns {Promise<string>} Overall power status: 'wake', 'standby', 'mixed', or 'unknown'
+   */
+  async _getPoolPowerStatus(poolId) {
+    try {
+      const pools = await this._readPools();
+      const pool = pools.find(p => p.id === poolId);
+
+      if (!pool) {
+        return 'unknown';
+      }
+
+      const allDisks = [...pool.data_devices, ...pool.parity_devices];
+      if (allDisks.length === 0) {
+        return 'unknown';
+      }
+
+      const powerStatuses = [];
+
+      for (const disk of allDisks) {
+        try {
+          const { stdout } = await execPromise(`hdparm -C ${disk.device} 2>/dev/null`);
+
+          let powerStatus = 'unknown';
+          if (stdout.includes('active/idle')) {
+            powerStatus = 'active';
+          } else if (stdout.includes('standby')) {
+            powerStatus = 'standby';
+          } else if (stdout.includes('sleeping')) {
+            powerStatus = 'standby';
+          }
+
+          powerStatuses.push(powerStatus);
+        } catch (error) {
+          powerStatuses.push('unknown');
+        }
+      }
+
+      // Determine overall status
+      const uniqueStatuses = [...new Set(powerStatuses)];
+
+      if (uniqueStatuses.length === 1) {
+        const status = uniqueStatuses[0];
+        if (status === 'active') return 'wake';
+        if (status === 'standby') return 'standby';
+        return 'unknown';
+      } else if (uniqueStatuses.includes('active') && uniqueStatuses.includes('standby')) {
+        return 'mixed';
+      } else {
+        return 'unknown';
+      }
+
+    } catch (error) {
+      return 'unknown';
+    }
+  }
+
+  /**
+   * Get power status for all disks in a pool
+   * @param {string} poolId - Pool ID
+   * @returns {Promise<Object>} Power status for all disks
+   */
+  async getPoolDisksPowerStatus(poolId) {
+    try {
+      const pools = await this._readPools();
+      const pool = pools.find(p => p.id === poolId);
+
+      if (!pool) {
+        throw new Error(`Pool with ID ${poolId} not found`);
+      }
+
+      const allDisks = [...pool.data_devices, ...pool.parity_devices];
+      const results = [];
+
+      for (const disk of allDisks) {
+        try {
+          const diskStatus = await this.getDiskStatus(poolId, disk.id);
+          results.push(diskStatus);
+        } catch (error) {
+          results.push({
+            success: false,
+            poolId,
+            poolName: pool.name,
+            diskUuid: disk.id,
+            device: disk.device,
+            slot: disk.slot,
+            diskType: pool.data_devices.find(d => d.id === disk.id) ? 'data' : 'parity',
+            powerStatus: 'error',
+            message: error.message
+          });
+        }
+      }
+
+      return results;
+
+    } catch (error) {
+      throw new Error(`Failed to get pool disks power status: ${error.message}`);
     }
   }
 

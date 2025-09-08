@@ -1221,20 +1221,31 @@ class DisksService {
     try {
       const devicePath = device.startsWith('/dev/') ? device : `/dev/${device}`;
 
-      // NVMe/SSD devices können nicht in Standby versetzt werden
-      if (device.includes('nvme') || device.includes('ssd')) {
+      // NVMe devices don't reliably support power management via nvme-cli
+      // Many NVMe controllers don't implement the power management features properly
+      if (device.includes('nvme')) {
         return {
           success: false,
-          message: 'NVMe/SSD devices cannot be put to standby',
+          message: 'NVMe devices do not reliably support standby mode',
           device: device
         };
+      } else if (device.includes('ssd')) {
+        // Regular SSD - try hdparm but don't fail if it doesn't work
+        try {
+          const command = mode === 'sleep' ? `hdparm -Y ${devicePath}` : `hdparm -y ${devicePath}`;
+          await execPromise(command);
+        } catch (error) {
+          return {
+            success: false,
+            message: 'SSD device does not support standby mode',
+            device: device
+          };
+        }
+      } else {
+        // Traditional HDD
+        const command = mode === 'sleep' ? `hdparm -Y ${devicePath}` : `hdparm -y ${devicePath}`;
+        await execPromise(command);
       }
-
-      const command = mode === 'sleep' ?
-        `hdparm -Y ${devicePath}` :
-        `hdparm -y ${devicePath}`;
-
-      await execPromise(command);
 
       return {
         success: true,

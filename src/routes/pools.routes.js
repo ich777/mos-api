@@ -68,6 +68,55 @@ const poolsService = require('../services/pools.service');
  *                 type: string
  *                 description: Spindown configuration
  *                 example: null
+ *               storage:
+ *                 type: object
+ *                 description: Storage information for the device
+ *                 properties:
+ *                   totalSpace:
+ *                     type: number
+ *                     description: Total space in bytes
+ *                     example: 2000398934016
+ *                   totalSpace_human:
+ *                     type: string
+ *                     description: Human-readable total space
+ *                     example: "1.82 TB"
+ *                   usedSpace:
+ *                     type: number
+ *                     description: Used space in bytes
+ *                     example: 500000000000
+ *                   usedSpace_human:
+ *                     type: string
+ *                     description: Human-readable used space
+ *                     example: "465.66 GB"
+ *                   freeSpace:
+ *                     type: number
+ *                     description: Free space in bytes
+ *                     example: 1500398934016
+ *                   freeSpace_human:
+ *                     type: string
+ *                     description: Human-readable free space
+ *                     example: "1.36 TB"
+ *                   usagePercent:
+ *                     type: number
+ *                     description: Usage percentage
+ *                     example: 25.0
+ *               mountPoint:
+ *                 type: string
+ *                 description: Expected mount point for the device
+ *                 example: "/var/mergerfs/media/disk1"
+ *               storageStatus:
+ *                 type: string
+ *                 enum: ["mounted", "unmounted_or_not_found"]
+ *                 description: Storage status of the device
+ *                 example: "mounted"
+ *               isSharedStorage:
+ *                 type: boolean
+ *                 description: Whether the device shares storage with other devices (e.g., BTRFS RAID)
+ *                 example: false
+ *               _injected:
+ *                 type: boolean
+ *                 description: Whether this device was dynamically injected (for BTRFS multi-device pools)
+ *                 example: false
  *         parity_devices:
  *           type: array
  *           description: Array of parity devices for SnapRAID
@@ -94,6 +143,51 @@ const poolsService = require('../services/pools.service');
  *                 type: string
  *                 description: Spindown configuration
  *                 example: null
+ *               storage:
+ *                 type: object
+ *                 description: Storage information for the device
+ *                 properties:
+ *                   totalSpace:
+ *                     type: number
+ *                     description: Total space in bytes
+ *                     example: 2000398934016
+ *                   totalSpace_human:
+ *                     type: string
+ *                     description: Human-readable total space
+ *                     example: "1.82 TB"
+ *                   usedSpace:
+ *                     type: number
+ *                     description: Used space in bytes
+ *                     example: 500000000000
+ *                   usedSpace_human:
+ *                     type: string
+ *                     description: Human-readable used space
+ *                     example: "465.66 GB"
+ *                   freeSpace:
+ *                     type: number
+ *                     description: Free space in bytes
+ *                     example: 1500398934016
+ *                   freeSpace_human:
+ *                     type: string
+ *                     description: Human-readable free space
+ *                     example: "1.36 TB"
+ *                   usagePercent:
+ *                     type: number
+ *                     description: Usage percentage
+ *                     example: 25.0
+ *               mountPoint:
+ *                 type: string
+ *                 description: Expected mount point for the device
+ *                 example: "/var/snapraid/media/parity1"
+ *               storageStatus:
+ *                 type: string
+ *                 enum: ["mounted", "unmounted_or_not_found"]
+ *                 description: Storage status of the device
+ *                 example: "mounted"
+ *               isSharedStorage:
+ *                 type: boolean
+ *                 description: Whether the device shares storage with other devices (e.g., BTRFS RAID)
+ *                 example: false
 
  *         config:
  *           type: object
@@ -187,14 +281,26 @@ const poolsService = require('../services/pools.service');
  *               type: number
  *               description: Total space in bytes
  *               example: 0
+ *             totalSpace_human:
+ *               type: string
+ *               description: Human-readable total space
+ *               example: "2.73 TB"
  *             usedSpace:
  *               type: number
  *               description: Used space in bytes
  *               example: 0
+ *             usedSpace_human:
+ *               type: string
+ *               description: Human-readable used space
+ *               example: "1.2 TB"
  *             freeSpace:
  *               type: number
  *               description: Free space in bytes
  *               example: 0
+ *             freeSpace_human:
+ *               type: string
+ *               description: Human-readable free space
+ *               example: "1.53 TB"
  *     CreateSingleDevicePoolRequest:
  *       type: object
  *       required:
@@ -1911,6 +2017,420 @@ router.post('/:id/parity/replace', checkRole(['admin']), async (req, res) => {
 });
 
 /**
+ * @swagger
+ * /pools/{id}/disk/{uuid}/power:
+ *   get:
+ *     summary: Get disk power status by UUID
+ *     description: Get power status and info for a specific disk in a pool using its UUID
+ *     tags: [Pools]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - name: id
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Pool ID
+ *       - name: uuid
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Disk UUID
+ *     responses:
+ *       200:
+ *         description: Disk power status retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 poolId:
+ *                   type: string
+ *                 poolName:
+ *                   type: string
+ *                 diskUuid:
+ *                   type: string
+ *                 device:
+ *                   type: string
+ *                 slot:
+ *                   type: string
+ *                 diskType:
+ *                   type: string
+ *                   enum: [data, parity]
+ *                 powerStatus:
+ *                   type: string
+ *                   enum: [active, standby, sleeping, unknown]
+ *       404:
+ *         description: Pool or disk not found
+ *       500:
+ *         description: Server error
  */
+router.get('/:id/disk/:uuid/power', async (req, res) => {
+  try {
+    const result = await poolsService.getDiskStatus(req.params.id, req.params.uuid);
+    res.json(result);
+  } catch (error) {
+    console.error(error);
+    if (error.message.includes('not found')) {
+      return res.status(404).json({ error: error.message });
+    }
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /pools/{id}/disk/{uuid}/wake:
+ *   post:
+ *     summary: Wake up a single disk in pool
+ *     description: Wake up a specific disk in a pool using its UUID (admin only)
+ *     tags: [Pools]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - name: id
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Pool ID
+ *       - name: uuid
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Disk UUID
+ *     responses:
+ *       200:
+ *         description: Disk wake operation completed
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 poolId:
+ *                   type: string
+ *                 poolName:
+ *                   type: string
+ *                 diskUuid:
+ *                   type: string
+ *                 device:
+ *                   type: string
+ *                 slot:
+ *                   type: string
+ *                 action:
+ *                   type: string
+ *                 message:
+ *                   type: string
+ *       404:
+ *         description: Pool or disk not found
+ *       500:
+ *         description: Server error
+ */
+router.post('/:id/disk/:uuid/wake', checkRole(['admin']), async (req, res) => {
+  try {
+    const result = await poolsService.controlDisk(req.params.id, req.params.uuid, 'wake');
+    res.json(result);
+  } catch (error) {
+    console.error(error);
+    if (error.message.includes('not found')) {
+      return res.status(404).json({ error: error.message });
+    }
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /pools/{id}/disk/{uuid}/sleep:
+ *   post:
+ *     summary: Put a single disk in pool to sleep
+ *     description: Put a specific disk in a pool to standby/sleep using its UUID (admin only)
+ *     tags: [Pools]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - name: id
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Pool ID
+ *       - name: uuid
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Disk UUID
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               mode:
+ *                 type: string
+ *                 enum: [standby, sleep]
+ *                 default: standby
+ *                 description: Sleep mode
+ *     responses:
+ *       200:
+ *         description: Disk sleep operation completed
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 poolId:
+ *                   type: string
+ *                 poolName:
+ *                   type: string
+ *                 diskUuid:
+ *                   type: string
+ *                 device:
+ *                   type: string
+ *                 slot:
+ *                   type: string
+ *                 action:
+ *                   type: string
+ *                 message:
+ *                   type: string
+ *       404:
+ *         description: Pool or disk not found
+ *       500:
+ *         description: Server error
+ */
+router.post('/:id/disk/:uuid/sleep', checkRole(['admin']), async (req, res) => {
+  try {
+    const { mode = 'standby' } = req.body || {};
+    const result = await poolsService.controlDisk(req.params.id, req.params.uuid, mode);
+    res.json(result);
+  } catch (error) {
+    console.error(error);
+    if (error.message.includes('not found')) {
+      return res.status(404).json({ error: error.message });
+    }
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /pools/{id}/wake:
+ *   post:
+ *     summary: Wake up entire pool
+ *     description: Wake up all disks in a pool (admin only)
+ *     tags: [Pools]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - name: id
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Pool ID
+ *     responses:
+ *       200:
+ *         description: Pool wake operation completed
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 poolId:
+ *                   type: string
+ *                 poolName:
+ *                   type: string
+ *                 action:
+ *                   type: string
+ *                 totalDisks:
+ *                   type: number
+ *                 successCount:
+ *                   type: number
+ *                 results:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                 message:
+ *                   type: string
+ *       404:
+ *         description: Pool not found
+ *       500:
+ *         description: Server error
+ */
+router.post('/:id/wake', checkRole(['admin']), async (req, res) => {
+  try {
+    const result = await poolsService.controlPool(req.params.id, 'wake');
+    res.json(result);
+  } catch (error) {
+    console.error(error);
+    if (error.message.includes('not found')) {
+      return res.status(404).json({ error: error.message });
+    }
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /pools/{id}/sleep:
+ *   post:
+ *     summary: Put entire pool to sleep
+ *     description: Put all disks in a pool to standby/sleep (admin only)
+ *     tags: [Pools]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - name: id
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Pool ID
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               mode:
+ *                 type: string
+ *                 enum: [standby, sleep]
+ *                 default: standby
+ *                 description: Sleep mode for all disks
+ *     responses:
+ *       200:
+ *         description: Pool sleep operation completed
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 poolId:
+ *                   type: string
+ *                 poolName:
+ *                   type: string
+ *                 action:
+ *                   type: string
+ *                 totalDisks:
+ *                   type: number
+ *                 successCount:
+ *                   type: number
+ *                 results:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                 message:
+ *                   type: string
+ *       404:
+ *         description: Pool not found
+ *       500:
+ *         description: Server error
+ */
+router.post('/:id/sleep', checkRole(['admin']), async (req, res) => {
+  try {
+    const { mode = 'standby' } = req.body || {};
+    const result = await poolsService.controlPool(req.params.id, mode);
+    res.json(result);
+  } catch (error) {
+    console.error(error);
+    if (error.message.includes('not found')) {
+      return res.status(404).json({ error: error.message });
+    }
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /pools/{id}/power:
+ *   get:
+ *     summary: Get power status for all disks in pool
+ *     description: Get power status and info for all disks in a pool
+ *     tags: [Pools]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - name: id
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Pool ID
+ *     responses:
+ *       200:
+ *         description: Pool disks power status retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 poolId:
+ *                   type: string
+ *                 poolName:
+ *                   type: string
+ *                 totalDisks:
+ *                   type: number
+ *                 successCount:
+ *                   type: number
+ *                 results:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       poolId:
+ *                         type: string
+ *                       poolName:
+ *                         type: string
+ *                       diskUuid:
+ *                         type: string
+ *                       device:
+ *                         type: string
+ *                       slot:
+ *                         type: string
+ *                       diskType:
+ *                         type: string
+ *                         enum: [data, parity]
+ *                       powerStatus:
+ *                         type: string
+ *                         enum: [active, standby, sleeping, unknown, error]
+ *                       message:
+ *                         type: string
+ *                 message:
+ *                   type: string
+ *       404:
+ *         description: Pool not found
+ *       500:
+ *         description: Server error
+ */
+router.get('/:id/power', async (req, res) => {
+  try {
+    const result = await poolsService.getPoolDisksPowerStatus(req.params.id);
+    res.json(result);
+  } catch (error) {
+    console.error(error);
+    if (error.message.includes('not found')) {
+      return res.status(404).json({ error: error.message });
+    }
+    return res.status(500).json({ error: error.message });
+  }
+});
 
 module.exports = router;
