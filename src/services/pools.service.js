@@ -151,7 +151,7 @@ class PoolsService {
           uuid: null
         };
       }
-      
+
       return deviceResult;
 
     } catch (error) {
