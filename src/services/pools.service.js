@@ -142,7 +142,16 @@ class PoolsService {
         }
       }
 
-      // If no filesystem found on device or partitions, return the original device result
+      // If no filesystem found on device or partitions, return unformatted
+      // Don't return partition table types as "formatted"
+      if (deviceResult.isFormatted && ['dos', 'gpt', 'mbr'].includes(deviceResult.filesystem)) {
+        return {
+          isFormatted: false,
+          filesystem: null,
+          uuid: null
+        };
+      }
+      
       return deviceResult;
 
     } catch (error) {
