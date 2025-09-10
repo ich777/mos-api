@@ -91,10 +91,11 @@ class CronService {
    * Creates a script for a cron job
    * @param {string} name - Cron job name
    * @param {string} scriptContent - Script content
+   * @param {boolean} convertToUnix - Whether to convert the script to Unix format using dos2unix (default: false)
    * @returns {Promise<string>} Path to the created script
    * @private
    */
-  async _createCronScript(name, scriptContent) {
+  async _createCronScript(name, scriptContent, convertToUnix = false) {
     try {
       const scriptsDir = '/boot/optional/scripts/cron';
 
@@ -129,6 +130,15 @@ class CronService {
       // Create script and make it executable
       await fs.writeFile(scriptPath, fullScriptContent, 'utf8');
       await execPromise(`chmod +x "${scriptPath}"`);
+
+      // Convert to Unix format if requested
+      if (convertToUnix) {
+        try {
+          await execPromise(`dos2unix "${scriptPath}"`);
+        } catch (error) {
+          console.warn(`Warning: dos2unix conversion failed for ${scriptPath}: ${error.message}`);
+        }
+      }
 
       return scriptPath;
     } catch (error) {
@@ -176,11 +186,16 @@ class CronService {
     if (jobData.script && jobData.scriptPath) {
       throw new Error('Cannot specify both script content and scriptPath. Use either script to create a new script or scriptPath to reference an existing script.');
     }
+
+    // Validate convert_to_unix if provided
+    if (jobData.convert_to_unix !== undefined && typeof jobData.convert_to_unix !== 'boolean') {
+      throw new Error('convert_to_unix must be a boolean value');
+    }
   }
 
   /**
    * Creates a new cron job
-   * @param {Object} jobData - Cron job data {name, schedule, command, script?, scriptPath?, enabled?}
+   * @param {Object} jobData - Cron job data {name, schedule, command, script?, scriptPath?, enabled?, convert_to_unix?}
    * @returns {Promise<Object>} Created cron job
    */
   async createCronJob(jobData) {
@@ -200,7 +215,8 @@ class CronService {
 
       // If script content is provided, create the script
       if (jobData.script) {
-        scriptPath = await this._createCronScript(jobData.name, jobData.script);
+        const convertToUnix = jobData.convert_to_unix || false;
+        scriptPath = await this._createCronScript(jobData.name, jobData.script, convertToUnix);
         // Set the command to the created script
         finalCommand = `bash ${scriptPath}`;
       }
@@ -299,7 +315,8 @@ class CronService {
             }
           }
 
-          newScriptPath = await this._createCronScript(updates.name || cronJobs[jobIndex].name, updates.script);
+          const convertToUnix = updates.convert_to_unix || false;
+          newScriptPath = await this._createCronScript(updates.name || cronJobs[jobIndex].name, updates.script, convertToUnix);
           newCommand = `bash ${newScriptPath}`;
         }
 

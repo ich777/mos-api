@@ -98,6 +98,10 @@ const { checkRole } = require('../middleware/auth.middleware');
  *           type: string
  *           description: Optional path to existing script file (mutually exclusive with script)
  *           example: "/boot/optional/scripts/cron/existing_script.sh"
+ *         convert_to_unix:
+ *           type: boolean
+ *           description: Optional flag to convert script to Unix format using dos2unix (default false)
+ *           example: true
  *     UpdateCronJobRequest:
  *       type: object
  *       properties:
@@ -125,6 +129,10 @@ const { checkRole } = require('../middleware/auth.middleware');
  *           type: string
  *           description: New path to existing script file (mutually exclusive with script)
  *           example: "/boot/optional/scripts/cron/new_script.sh"
+ *         convert_to_unix:
+ *           type: boolean
+ *           description: Optional flag to convert script to Unix format using dos2unix (default false)
+ *           example: true
  *     CronJobResponse:
  *       type: object
  *       properties:
@@ -212,6 +220,7 @@ const { checkRole } = require('../middleware/auth.middleware');
  *             schedule: "0 2 * * *"
  *             command: "/usr/local/bin/backup-db.sh"
  *             script: "#!/bin/bash\necho 'Starting database backup...'\n/usr/bin/backup-tool --database\necho 'Backup completed'"
+ *             convert_to_unix: true
  *     responses:
  *       201:
  *         description: Cron job created successfully
@@ -699,7 +708,7 @@ router.get('/:identifier', async (req, res) => {
 // Create new cron job (admin only)
 router.post('/', checkRole(['admin']), async (req, res) => {
   try {
-    const { name, schedule, command, script, scriptPath, enabled } = req.body;
+    const { name, schedule, command, script, scriptPath, enabled, convert_to_unix } = req.body;
 
     if (!name || !schedule || !command) {
       return res.status(400).json({
@@ -714,7 +723,8 @@ router.post('/', checkRole(['admin']), async (req, res) => {
       command,
       script,
       scriptPath,
-      enabled
+      enabled,
+      convert_to_unix
     });
 
     res.status(201).json({
@@ -842,7 +852,7 @@ router.post('/', checkRole(['admin']), async (req, res) => {
 // Update cron job by ID or name (admin only)
 router.put('/:identifier', checkRole(['admin']), async (req, res) => {
   try {
-    const { name, schedule, command, enabled, script, scriptPath } = req.body;
+    const { name, schedule, command, enabled, script, scriptPath, convert_to_unix } = req.body;
     const updates = {};
 
     // Only include provided fields in updates
@@ -852,11 +862,12 @@ router.put('/:identifier', checkRole(['admin']), async (req, res) => {
     if (enabled !== undefined) updates.enabled = enabled;
     if (script !== undefined) updates.script = script;
     if (scriptPath !== undefined) updates.scriptPath = scriptPath;
+    if (convert_to_unix !== undefined) updates.convert_to_unix = convert_to_unix;
 
     if (Object.keys(updates).length === 0) {
       return res.status(400).json({
         success: false,
-        error: 'At least one field (name, schedule, command, enabled, script or scriptPath) must be provided'
+        error: 'At least one field (name, schedule, command, enabled, script, scriptPath or convert_to_unix) must be provided'
       });
     }
 
