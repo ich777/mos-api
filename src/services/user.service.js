@@ -140,10 +140,7 @@ class UserService {
 
   _sanitizeAdminToken(token) {
     const sanitized = { ...token };
-    // Hide token completely for security
-    if (sanitized.token) {
-      sanitized.token = 'SECRET';
-    }
+    // Return token as-is (no longer hiding for admin visibility)
     return sanitized;
   }
 
