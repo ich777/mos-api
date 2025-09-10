@@ -26,6 +26,10 @@ const options = {
         description: 'Storage Pool Management'
       },
       {
+        name: 'Pools WebSocket',
+        description: 'Real-time pool monitoring via WebSocket'
+      },
+      {
         name: 'iSCSI Targets',
         description: 'iSCSI Target Management'
       },
@@ -103,4 +107,4 @@ const options = {
 
 const specs = swaggerJSDoc(options);
 
-module.exports = specs; 
+module.exports = specs;

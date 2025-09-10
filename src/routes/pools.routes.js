@@ -3,6 +3,10 @@ const router = express.Router();
 const { checkRole } = require('../middleware/auth.middleware');
 const poolsService = require('../services/pools.service');
 
+// Include WebSocket routes
+const poolsWebSocketRoutes = require('./pools.websocket.routes');
+router.use('/', poolsWebSocketRoutes);
+
 /**
  * @swagger
  * tags:
@@ -32,7 +36,7 @@ const poolsService = require('../services/pools.service');
  *         type:
  *           type: string
  *           enum: ["ext4", "xfs", "btrfs", "mergerfs"]
- *           description: Pool type (filesystem for single-device pools)
+ *           description: Pool type - automatically determined (filesystem for single-device, 'btrfs' for multi-device, 'mergerfs' for MergerFS pools)
  *           example: "mergerfs"
  *         automount:
  *           type: boolean
@@ -318,7 +322,7 @@ const poolsService = require('../services/pools.service');
  *         filesystem:
  *           type: string
  *           enum: ["ext4", "xfs", "btrfs"]
- *           description: Filesystem to format the device with
+ *           description: Filesystem to format the device with (becomes the pool type for single-device pools)
  *           default: "xfs"
  *           example: "xfs"
  *         format:
@@ -354,7 +358,7 @@ const poolsService = require('../services/pools.service');
  *         raidLevel:
  *           type: string
  *           enum: ["single", "raid0", "raid1", "raid10"]
- *           description: BTRFS RAID level for the pool
+ *           description: BTRFS RAID level for the pool (pool type will automatically be set to 'btrfs')
  *           example: "raid1"
  *         format:
  *           type: boolean
@@ -482,7 +486,7 @@ router.get('/:id', async (req, res) => {
  * /pools/single:
  *   post:
  *     summary: Create single device pool
- *     description: Create a new storage pool using a single device (admin only)
+ *     description: Create a new storage pool using a single device. Pool type is automatically set to the filesystem type. (admin only)
  *     tags: [Pools]
  *     security:
  *       - bearerAuth: []
@@ -582,7 +586,7 @@ router.post('/single', checkRole(['admin']), async (req, res) => {
  * /pools/mergerfs:
  *   post:
  *     summary: Create a MergerFS pool with optional SnapRAID parity
- *     description: Creates a new MergerFS pool using multiple devices with optional SnapRAID parity protection.
+ *     description: Creates a new MergerFS pool using multiple devices with optional SnapRAID parity protection. Pool type is automatically set to 'mergerfs'.
  *     tags: [Pools]
  *     security:
  *       - bearerAuth: []
@@ -609,7 +613,7 @@ router.post('/single', checkRole(['admin']), async (req, res) => {
  *               filesystem:
  *                 type: string
  *                 enum: ["ext4", "xfs"]
- *                 description: Filesystem to format the devices with
+ *                 description: Filesystem to format the devices with (pool type will automatically be set to 'mergerfs')
  *                 default: "xfs"
  *                 example: "xfs"
  *               format:
@@ -763,7 +767,7 @@ router.post('/mergerfs', checkRole(['admin']), async (req, res) => {
  * /pools/multi:
  *   post:
  *     summary: Create a multi-device BTRFS pool with RAID support
- *     description: Creates a new storage pool using multiple devices with BTRFS RAID support (raid0, raid1, raid10 or single).
+ *     description: Creates a new storage pool using multiple devices with BTRFS RAID support (raid0, raid1, raid10 or single). Pool type is automatically set to 'btrfs'.
  *       Single-device pools (with filesystem type as pool type) can later be upgraded to multi-device using the add devices endpoint.
  *     tags: [Pools]
  *     security:

@@ -248,20 +248,37 @@ async function startServer() {
   // Create HTTP server for Socket.io
   const server = http.createServer(app);
 
-  // Initialize Socket.io - über /api/ Path - CORS disabled
+  // Initialize Socket.io - Standard Path - CORS disabled
   const io = new Server(server, {
-    path: "/api/socket.io/",
+    path: "/socket.io/",
     cors: {
       origin: "*",
       methods: ["GET", "POST"]
     }
   });
 
-  // Setup Socket.io terminal handlers
+  // Setup Socket.io handlers
   const terminalService = require('./services/terminal.service');
+  const poolsService = require('./services/pools.service');
+  const { PoolsService } = poolsService;
+  const PoolWebSocketManager = require('./websockets/pools.websocket');
+
+  // Initialize event emitter for service communication
+  const EventEmitter = require('events');
+  const serviceEventEmitter = new EventEmitter();
+
+  // Initialize pool WebSocket manager with event-driven architecture
+  const poolsServiceInstance = new PoolsService(serviceEventEmitter);
+  const poolWebSocketManager = new PoolWebSocketManager(io, poolsServiceInstance);
+
+  // Make WebSocket manager available to routes
+  app.locals.poolWebSocketManager = poolWebSocketManager;
 
   io.on('connection', (socket) => {
-    logger.info(`Terminal WebSocket client connected: ${socket.id}`);
+    logger.info(`WebSocket client connected: ${socket.id}`);
+
+    // Handle pool monitoring connections
+    poolWebSocketManager.handleConnection(socket);
 
     // Join a terminal session
     socket.on('join-session', async (data) => {
@@ -361,7 +378,7 @@ async function startServer() {
     });
   });
 
-  server.listen(PORT, async () => {
+  server.listen(PORT, '0.0.0.0', async () => {
     logger.info(`Server running on port ${PORT}`);
     logger.info(`WebSocket Terminal available at: ws://localhost:${PORT}/`);
     logger.info(`Swagger Documentation available at: http://localhost:${PORT}/api-docs`);

@@ -9,11 +9,12 @@ const os = require('os');
 const generateId = () => Date.now().toString();
 
 class PoolsService {
-  constructor() {
+  constructor(eventEmitter = null) {
     this.poolsFile = '/boot/config/pools.json';
     this.mountBasePath = '/mnt';
     this.mergerfsBasePath = '/var/mergerfs';
     this.snapraidBasePath = '/var/snapraid';
+    this.eventEmitter = eventEmitter; // Optional event emitter for WebSocket integration
   }
 
   /**
@@ -55,6 +56,19 @@ class PoolsService {
   async _writePools(poolsData) {
     await this._ensurePoolsFile();
     await fs.writeFile(this.poolsFile, JSON.stringify(poolsData, null, 2));
+
+    // Emit event for pool data changes
+    this._emitEvent('pools:updated', { pools: poolsData });
+  }
+
+  /**
+   * Emit event if eventEmitter is available
+   * @private
+   */
+  _emitEvent(event, data) {
+    if (this.eventEmitter) {
+      this.eventEmitter.emit(event, data);
+    }
   }
 
   /**
@@ -556,7 +570,8 @@ class PoolsService {
           health: "unknown",
           totalSpace: 0,
           usedSpace: 0,
-          freeSpace: 0
+          freeSpace: 0,
+          usagePercent: 0
         }
       };
 
@@ -1276,7 +1291,8 @@ class PoolsService {
           mounted: false,
           totalSpace: 0,
           usedSpace: 0,
-          freeSpace: 0
+          freeSpace: 0,
+          usagePercent: 0
         };
       }
 
@@ -1296,6 +1312,7 @@ class PoolsService {
           usedSpace_human: this._bytesToHuman(usedSpace),
           freeSpace,
           freeSpace_human: this._bytesToHuman(freeSpace),
+          usagePercent: Math.round((usedSpace / totalSpace) * 100),
           health: "healthy"
         };
       }
@@ -1308,6 +1325,7 @@ class PoolsService {
         totalSpace: 0,
         usedSpace: 0,
         freeSpace: 0,
+        usagePercent: 0,
         error: error.message
       };
     }
@@ -1434,7 +1452,8 @@ class PoolsService {
           health: "unknown",
           totalSpace: 0,
           usedSpace: 0,
-          freeSpace: 0
+          freeSpace: 0,
+          usagePercent: 0
         }
       };
 
@@ -2831,10 +2850,11 @@ class PoolsService {
           health: "unknown",
           totalSpace: 0,
           usedSpace: 0,
-          freeSpace: 0
+          freeSpace: 0,
+          usagePercent: 0
         }
       };
-
+ 
 // Add snapraid info if applicable
 if (snapraidDevice) {
     // Create snapraid config directory if it doesn't exist
@@ -3476,4 +3496,6 @@ if (snapraidDevice) {
 
 }
 
+// Export both the class and a default instance
 module.exports = new PoolsService();
+module.exports.PoolsService = PoolsService;
