@@ -176,7 +176,7 @@ class CronService {
       }
     }
 
-    if (!isUpdate || jobData.enabled !== undefined) {
+    if (jobData.enabled !== undefined) {
       if (typeof jobData.enabled !== 'boolean') {
         throw new Error('Enabled must be a boolean value');
       }
