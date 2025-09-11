@@ -195,7 +195,7 @@ const { authenticateToken } = require('../middleware/auth.middleware');
  *     description: |
  *       This endpoint documents the WebSocket events for real-time system load monitoring.
  *
- *       **Connection:** Connect to WebSocket at `/` namespace
+ *       **Connection:** Connect to WebSocket at `/api/v1/system` namespace
  *
  *       **Events to emit (client → server):**
  *
@@ -211,25 +211,26 @@ const { authenticateToken } = require('../middleware/auth.middleware');
  *       - `error`: General error messages
  *
  *       **Example Usage:**
- *       ```javascript
- *       const socket = io();
  *
- *       // Subscribe to system load updates
+ *       Connect to WebSocket:
+ *       ```
+ *       const socket = io('http://localhost:3000/api/v1/system', {
+ *         path: '/socket.io/'
+ *       });
+ *       ```
+ *
+ *       Subscribe to system load updates:
+ *       ```
  *       socket.emit('subscribe-load', {
  *         token: 'your-jwt-token',
  *         interval: 10000
  *       });
+ *       ```
  *
- *       // Listen for updates
+ *       Listen for updates:
+ *       ```
  *       socket.on('load-update', (data) => {
  *         console.log('System load updated:', data);
- *         console.log('CPU Load:', data.cpu.load + '%');
- *         console.log('Memory Used:', data.memory.percentage.actuallyUsed + '%');
- *       });
- *
- *       // Get immediate data
- *       socket.emit('get-load', {
- *         token: 'your-jwt-token'
  *       });
  *       ```
  *     tags: [System Load WebSocket]

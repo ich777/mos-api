@@ -106,7 +106,7 @@ const { authenticateToken } = require('../middleware/auth.middleware');
  *     description: |
  *       This endpoint documents the WebSocket events for real-time pool monitoring.
  *
- *       **Connection:** Connect to WebSocket at `/` namespace
+ *       **Connection:** Connect to WebSocket at `/api/v1/pools` namespace
  *
  *       **Events to emit (client → server):**
  *
@@ -123,25 +123,27 @@ const { authenticateToken } = require('../middleware/auth.middleware');
  *       - `error`: General error messages
  *
  *       **Example Usage:**
- *       ```javascript
- *       const socket = io();
  *
- *       // Subscribe to all MergerFS pools
+ *       Connect to WebSocket:
+ *       ```
+ *       const socket = io('http://localhost:3000/api/v1/pools', {
+ *         path: '/socket.io/'
+ *       });
+ *       ```
+ *
+ *       Subscribe to all MergerFS pools:
+ *       ```
  *       socket.emit('subscribe-pools', {
  *         token: 'your-jwt-token',
  *         interval: 30000,
  *         filters: { type: 'mergerfs' }
  *       });
+ *       ```
  *
- *       // Listen for updates
+ *       Listen for updates:
+ *       ```
  *       socket.on('pools-update', (data) => {
  *         console.log('Pools updated:', data.pools);
- *       });
- *
- *       // Subscribe to specific pool
- *       socket.emit('subscribe-pools', {
- *         token: 'your-jwt-token',
- *         filters: { id: '1746318722394' }
  *       });
  *       ```
  *     tags: [Pools WebSocket]

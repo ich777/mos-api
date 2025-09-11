@@ -59,7 +59,7 @@ const router = express.Router();
  *           type: boolean
  *           description: Whether the session has active WebSocket connections
  *           example: true
- *     
+ *
  *     TerminalStats:
  *       type: object
  *       properties:
@@ -80,7 +80,7 @@ const router = express.Router();
  *           items:
  *             $ref: '#/components/schemas/TerminalSession'
  *           description: List of all terminal sessions
- *     
+ *
  *     TerminalWebSocketEvents:
  *       type: object
  *       properties:
@@ -262,20 +262,23 @@ const router = express.Router();
  *     summary: Terminal WebSocket Events Documentation
  *     description: |
  *       Get comprehensive documentation for Terminal WebSocket events and usage.
- *       
+ *
  *       ## Connection
  *       Connect to the Terminal WebSocket namespace:
  *       ```javascript
- *       const socket = io('http://localhost:3000/terminal', {
- *         path: '/socket.io/'
+ *       const socket = io('http://localhost:3000/api/v1/terminal', {
+ *         path: '/socket.io/',
+ *         auth: {
+ *           token: 'your-jwt-token'
+ *         }
  *       });
  *       ```
- *       
+ *
  *       ## Authentication
  *       All terminal operations require admin-level authentication. Include your JWT token in event data.
- *       
+ *
  *       ## Basic Usage
- *       
+ *
  *       ### 1. Create a new terminal session:
  *       ```javascript
  *       socket.emit('create-session', {
@@ -287,7 +290,7 @@ const router = express.Router();
  *         }
  *       });
  *       ```
- *       
+ *
  *       ### 2. Join an existing session:
  *       ```javascript
  *       socket.emit('join-session', {
@@ -295,26 +298,26 @@ const router = express.Router();
  *         token: 'your-jwt-token'
  *       });
  *       ```
- *       
+ *
  *       ### 3. Send input to terminal:
  *       ```javascript
  *       socket.emit('terminal-input', 'ls -la\n');
  *       ```
- *       
+ *
  *       ### 4. Listen for output:
  *       ```javascript
  *       socket.on('terminal-output', (data) => {
  *         console.log(data);
  *       });
  *       ```
- *       
+ *
  *       ### 5. Resize terminal:
  *       ```javascript
  *       socket.emit('terminal-resize', { cols: 120, rows: 30 });
  *       ```
- *       
+ *
  *       ## Session Management
- *       
+ *
  *       ### List all sessions:
  *       ```javascript
  *       socket.emit('list-sessions', { token: 'your-jwt-token' });
@@ -322,7 +325,7 @@ const router = express.Router();
  *         console.log(sessions);
  *       });
  *       ```
- *       
+ *
  *       ### Kill a session:
  *       ```javascript
  *       socket.emit('kill-session', {
@@ -330,7 +333,7 @@ const router = express.Router();
  *         token: 'your-jwt-token'
  *       });
  *       ```
- *       
+ *
  *       ### Get statistics:
  *       ```javascript
  *       socket.emit('get-stats', { token: 'your-jwt-token' });
@@ -338,7 +341,7 @@ const router = express.Router();
  *         console.log(stats);
  *       });
  *       ```
- *       
+ *
  *       ## Error Handling
  *       Always listen for error events:
  *       ```javascript
@@ -374,8 +377,8 @@ router.get('/websocket/events', (req, res) => {
   }
 
   const events = {
-    namespace: '/terminal',
-    connectionUrl: `${req.protocol}://${req.get('host')}/terminal`,
+    namespace: '/api/v1/terminal',
+    connectionUrl: `${req.protocol}://${req.get('host')}/api/v1/terminal`,
     socketPath: '/socket.io/',
     authentication: 'JWT token required for all operations',
     adminOnly: true,
@@ -461,7 +464,7 @@ router.get('/websocket/events', (req, res) => {
  *     summary: Get Terminal WebSocket Statistics
  *     description: |
  *       Get real-time statistics about terminal WebSocket connections and sessions.
- *       
+ *
  *       This endpoint provides information about:
  *       - Total number of terminal sessions
  *       - Number of active sessions with WebSocket connections
@@ -522,7 +525,7 @@ router.get('/websocket/stats', (req, res) => {
 
     // Get terminal WebSocket manager from app locals
     const terminalWebSocketManager = req.app.locals.terminalWebSocketManager;
-    
+
     if (!terminalWebSocketManager) {
       return res.status(500).json({ error: 'Terminal WebSocket manager not available' });
     }

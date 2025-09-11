@@ -277,9 +277,9 @@ async function startServer() {
   const serviceEventEmitter = new EventEmitter();
 
   // Create separate namespaces to avoid interference
-  const poolsNamespace = io.of('/pools');
-  const systemNamespace = io.of('/system');
-  const terminalNamespace = io.of('/terminal');
+  const poolsNamespace = io.of('/api/v1/pools');
+  const systemNamespace = io.of('/api/v1/system');
+  const terminalNamespace = io.of('/api/v1/terminal');
 
   // Initialize pool WebSocket manager with pools namespace
   const poolsServiceInstance = new PoolsService(serviceEventEmitter);

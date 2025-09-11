@@ -70,7 +70,7 @@ class TerminalWebSocketManager {
           // First connection to this session - add listeners
           session.ptyProcess.on('data', onData);
           session.ptyProcess.on('exit', onExit);
-          
+
           // Send any existing output immediately for read-only sessions or log files
           if (session.options.readOnly || session.options.command) {
             // For read-only sessions, we might need to trigger initial output
@@ -142,10 +142,10 @@ class TerminalWebSocketManager {
           // Join the session immediately after creation
           socket.join(sessionId);
           socket.terminalSessionId = sessionId;
-          
+
           // Store active session
           this.activeSessions.set(sessionId, { socket, session });
-          
+
           // Setup PTY event listeners for immediate output
           const onData = (data) => {
             socket.emit('terminal-output', data);
@@ -164,10 +164,10 @@ class TerminalWebSocketManager {
 
           session.ptyProcess.on('data', onData);
           session.ptyProcess.on('exit', onExit);
-          
+
           // Store listeners for cleanup
           socket.terminalListeners = { onData, onExit };
-          
+
           // For commands or read-only sessions, send initial trigger
           if (options.readOnly || options.command) {
             setTimeout(() => {
