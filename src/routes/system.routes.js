@@ -181,6 +181,23 @@ const systemService = require('../services/system.service');
  *           nullable: true
  *           description: Core temperature in Celsius
  *           example: 65.5
+ *         isPhysical:
+ *           type: boolean
+ *           description: Whether this is a physical core (true) or hyperthreaded core (false)
+ *           example: true
+ *         isHyperThreaded:
+ *           type: boolean
+ *           description: Whether this is a hyperthreaded core
+ *           example: false
+ *         physicalCoreNumber:
+ *           type: integer
+ *           description: The physical core number this logical core belongs to
+ *           example: 1
+ *         coreArchitecture:
+ *           type: string
+ *           description: Core architecture type (Performance, Mixed/Efficiency, or Standard)
+ *           enum: [Performance, Mixed/Efficiency, Standard]
+ *           example: "Performance"
  *     SystemLoad:
  *       type: object
  *       properties:
@@ -254,59 +271,6 @@ const systemService = require('../services/system.service');
  *           example: "System update completed successfully"
  */
 
-/**
- * @swagger
- * /system/info:
- *   get:
- *     summary: Get basic system information
- *     description: Retrieve basic system information including OS and CPU details (available to all authenticated users)
- *     tags: [System]
- *     security:
- *       - bearerAuth: []
- *     responses:
- *       200:
- *         description: Basic system information retrieved successfully
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/BasicSystemInfo'
- *             example:
- *               os:
- *                 platform: "linux"
- *                 distro: "Ubuntu"
- *                 release: "22.04.3 LTS"
- *                 kernel: "6.14.11-mos"
- *               cpu:
- *                 manufacturer: "Intel"
- *                 brand: "Intel(R) Core(TM) i7-12700K"
- *                 cores: 12
- *                 physicalCores: 8
-
- *       401:
- *         description: Not authenticated
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/Error'
- *       500:
- *         description: Server error
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/Error'
- *             example:
- *               error: "Error getting basic system info: systeminformation module failed"
- */
-
-// Basic system information (available to all authenticated users)
-router.get('/info', async (req, res) => {
-  try {
-    const info = await systemService.getBasicInfo();
-    res.json(info);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
 
 /**
  * @swagger
@@ -481,6 +445,37 @@ router.get('/detailed', checkRole(['admin']), async (req, res) => {
  *                       type: number
  *                       description: Overall CPU load percentage
  *                       example: 42.35
+ *                     info:
+ *                       type: object
+ *                       properties:
+ *                         brand:
+ *                           type: string
+ *                           description: CPU brand name
+ *                           example: "Intel(R) Core(TM) i7-12700K"
+ *                         manufacturer:
+ *                           type: string
+ *                           description: CPU manufacturer
+ *                           example: "Intel"
+ *                         totalCores:
+ *                           type: integer
+ *                           description: Total number of logical cores
+ *                           example: 20
+ *                         physicalCores:
+ *                           type: integer
+ *                           description: Number of physical cores
+ *                           example: 12
+ *                         logicalCores:
+ *                           type: integer
+ *                           description: Number of logical cores (same as totalCores)
+ *                           example: 20
+ *                         hyperThreadingEnabled:
+ *                           type: boolean
+ *                           description: Whether hyperthreading is enabled
+ *                           example: true
+ *                         architecture:
+ *                           type: string
+ *                           description: CPU architecture information
+ *                           example: "Family 6, Model 151"
  *                     cores:
  *                       type: array
  *                       items:
@@ -718,15 +713,39 @@ router.get('/detailed', checkRole(['admin']), async (req, res) => {
  *             example:
  *               cpu:
  *                 load: 42.35
+ *                 info:
+ *                   brand: "Intel(R) Core(TM) i7-12700K"
+ *                   manufacturer: "Intel"
+ *                   totalCores: 20
+ *                   physicalCores: 12
+ *                   logicalCores: 20
+ *                   hyperThreadingEnabled: true
+ *                   architecture: "Family 6, Model 151"
  *                 cores:
  *                   - number: 1
  *                     load:
  *                       total: 45.67
  *                     temperature: 65.5
+ *                     isPhysical: true
+ *                     isHyperThreaded: false
+ *                     physicalCoreNumber: 1
+ *                     coreArchitecture: "Performance"
  *                   - number: 2
  *                     load:
  *                       total: 38.92
  *                     temperature: 67.2
+ *                     isPhysical: true
+ *                     isHyperThreaded: false
+ *                     physicalCoreNumber: 2
+ *                     coreArchitecture: "Performance"
+ *                   - number: 13
+ *                     load:
+ *                       total: 22.15
+ *                     temperature: 63.1
+ *                     isPhysical: false
+ *                     isHyperThreaded: true
+ *                     physicalCoreNumber: 1
+ *                     coreArchitecture: "Performance"
  *               temperature:
  *                 main: 68.2
  *                 max: 72.1

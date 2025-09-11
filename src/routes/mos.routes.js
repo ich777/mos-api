@@ -1448,7 +1448,7 @@ router.post('/restart/service', async (req, res) => {
  * @swagger
  * /mos/updateos:
  *   post:
- *     summary: Update MountainOS
+ *     summary: Update MOS
  *     description: Initiate OS update using mos-os_update script (admin only)
  *     tags: [MOS]
  *     security:
@@ -1591,7 +1591,7 @@ router.post('/updateos', async (req, res) => {
  * @swagger
  * /mos/rollbackos:
  *   post:
- *     summary: Rollback MountainOS
+ *     summary: Rollback MOS
  *     description: Initiate OS rollback using mos-os_update rollback_mos script (admin only)
  *     tags: [MOS]
  *     security:
@@ -1701,7 +1701,7 @@ router.post('/rollbackos', async (req, res) => {
  * @swagger
  * /mos/getreleases:
  *   get:
- *     summary: Get available MountainOS releases
+ *     summary: Get available MOS releases
  *     description: Retrieve available releases grouped by channel (alpha, beta, stable) using mos-os_get_releases script (admin only)
  *     tags: [MOS]
  *     security:
@@ -1790,25 +1790,68 @@ router.get('/getreleases', async (req, res) => {
 
 /**
  * @swagger
- * /mos/releaseinfo:
+ * /mos/osinfo:
  *   get:
- *     summary: Get current MountainOS release information
- *     description: Retrieve current release information from /etc/mos-release.json (admin only)
+ *     summary: Get current MOS and CPU information
+ *     description: Retrieve current OS release information from /etc/mos-release.json combined with CPU details and hostname (admin only)
  *     tags: [MOS]
  *     security:
  *       - bearerAuth: []
  *     responses:
  *       200:
- *         description: Current release information
+ *         description: Current OS and CPU information
  *         content:
  *           application/json:
  *             schema:
  *               type: object
- *               description: Release information object (structure depends on content of /etc/mos-release.json)
+ *               description: OS information object including release info, hostname and CPU details
+ *               properties:
+ *                 version:
+ *                   type: string
+ *                   description: Constructed MOS version (version + channel from release file)
+ *                   example: "0.0.1-alpha.4"
+ *                 build_date:
+ *                   type: string
+ *                   description: Build date
+ *                   example: "2025-08-24"
+ *                 channel:
+ *                   type: string
+ *                   description: Cleaned release channel (without suffixes like .4)
+ *                   example: "alpha"
+ *                 hostname:
+ *                   type: string
+ *                   nullable: true
+ *                   description: System hostname from /boot/config/system.json
+ *                   example: "mos-server"
+ *                 cpu:
+ *                   type: object
+ *                   properties:
+ *                     manufacturer:
+ *                       type: string
+ *                       description: CPU manufacturer
+ *                       example: "Intel"
+ *                     brand:
+ *                       type: string
+ *                       description: CPU brand/model
+ *                       example: "Intel(R) Core(TM) i7-12700K"
+ *                     cores:
+ *                       type: integer
+ *                       description: Total number of CPU cores
+ *                       example: 12
+ *                     physicalCores:
+ *                       type: integer
+ *                       description: Number of physical CPU cores
+ *                       example: 8
  *               example:
- *                 version: "0.0.1-alpha.2"
+ *                 version: "0.0.1-alpha.4"
  *                 build_date: "2025-08-24"
  *                 channel: "alpha"
+ *                 hostname: "mos-server"
+ *                 cpu:
+ *                   manufacturer: "Intel"
+ *                   brand: "Intel(R) Core(TM) i7-12700K"
+ *                   cores: 12
+ *                   physicalCores: 8
  *       401:
  *         description: Not authenticated
  *         content:
@@ -1829,11 +1872,11 @@ router.get('/getreleases', async (req, res) => {
  *               $ref: '#/components/schemas/Error'
  */
 
-// GET: Current Release Information
-router.get('/releaseinfo', async (req, res) => {
+// GET: Current OS Information (including CPU details)
+router.get('/osinfo', async (req, res) => {
   try {
-    const release = await mosService.getCurrentRelease();
-    res.json(release);
+    const osInfo = await mosService.getCurrentRelease();
+    res.json(osInfo);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

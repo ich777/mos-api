@@ -5,7 +5,8 @@ class PoolWebSocketManager {
     this.poolsService = poolsService;
     this.activeSubscriptions = new Map();
     this.dataCache = new Map();
-    this.cacheDuration = 10000; // 10 seconds cache
+    this.cacheDuration = 8000; // 8 seconds cache
+    this.defaultInterval = 10000; // 10 seconds default update interval
   }
 
   /**
@@ -17,7 +18,7 @@ class PoolWebSocketManager {
     // Subscribe to pools with filters (replaces both single pool and all pools)
     socket.on('subscribe-pools', async (data) => {
       try {
-        const { interval = 30000, token, filters = {} } = data;
+        const { interval = this.defaultInterval, token, filters = {} } = data;
 
         // Authenticate user
         const authResult = await this.authenticateUser(token);
@@ -92,7 +93,7 @@ class PoolWebSocketManager {
   /**
    * Start monitoring pools with filters if not already active
    */
-  startPoolsMonitoring(interval = 30000, filters = {}) {
+  startPoolsMonitoring(interval = this.defaultInterval, filters = {}) {
     const monitoringKey = `pools-${JSON.stringify(filters)}`;
 
     if (this.activeSubscriptions.has(monitoringKey)) {
@@ -104,7 +105,7 @@ class PoolWebSocketManager {
     const intervalId = setInterval(async () => {
       try {
         // Check if anyone is still subscribed
-        const room = this.io.sockets.adapter.rooms.get('pools');
+        const room = this.io.adapter.rooms.get('pools');
         if (!room || room.size === 0) {
           console.log('No clients subscribed to pools, stopping monitoring');
           clearInterval(intervalId);
@@ -131,7 +132,7 @@ class PoolWebSocketManager {
    * Check if monitoring should be stopped
    */
   checkStopPoolsMonitoring() {
-    const room = this.io.sockets.adapter.rooms.get('pools');
+    const room = this.io.adapter.rooms.get('pools');
     if (!room || room.size === 0) {
       // Stop all monitoring subscriptions
       for (const [key, subscription] of this.activeSubscriptions) {
@@ -178,7 +179,8 @@ class PoolWebSocketManager {
         this.io.to('pools').emit('pools-update', poolsData);
       }
 
-      console.log('Pools data changed, update sent to clients with filters:', filters);
+      // Debug
+      //console.log('Pools data changed, update sent to clients with filters:', filters);
 
     } catch (error) {
       console.error('Failed to send pools update:', error);

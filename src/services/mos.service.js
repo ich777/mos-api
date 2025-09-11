@@ -237,9 +237,9 @@ class MosService {
       return settings;
     } catch (error) {
       if (error.code === 'ENOENT') {
-        throw new Error('docker.json nicht gefunden');
+        throw new Error('docker.json not found');
       }
-      throw new Error(`Fehler beim Lesen der docker.json: ${error.message}`);
+      throw new Error(`Error reading docker.json: ${error.message}`);
     }
   }
 
@@ -1454,8 +1454,8 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
   }
 
   /**
-   * Gets the current release information from /etc/mos-release.json
-   * @returns {Promise<Object>} Release information
+   * Gets the current OS information including release, CPU details and hostname
+   * @returns {Promise<Object>} OS and CPU information with hostname
    */
   async getCurrentRelease() {
     try {
@@ -1463,11 +1463,67 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
       const releaseData = await fs.readFile(releasePath, 'utf8');
       const release = JSON.parse(releaseData);
 
-      return release;
+      // Get CPU information using systeminformation
+      const si = require('systeminformation');
+      const cpu = await si.cpu();
+
+      // Get hostname from system.json
+      let hostname = null;
+      try {
+        const systemData = await fs.readFile('/boot/config/system.json', 'utf8');
+        const systemSettings = JSON.parse(systemData);
+        hostname = systemSettings.hostname || null;
+      } catch (hostnameError) {
+        console.warn('Warning: Could not read hostname from system.json:', hostnameError.message);
+      }
+
+      // Process version and channel - handle nested mos object structure
+      if (release.mos && typeof release.mos === 'object') {
+        const originalVersion = release.mos.version || '';
+        const originalChannel = release.mos.channel || '';
+
+        // Construct full version from version + channel
+        if (originalChannel) {
+          release.mos.version = `${originalVersion}-${originalChannel}`;
+        }
+
+        // Clean up channel to remove suffixes (e.g., "alpha.4" -> "alpha")
+        if (originalChannel) {
+          release.mos.channel = originalChannel.split('.')[0];
+        }
+      } else {
+        // Handle flat structure (fallback)
+        const originalVersion = release.version || '';
+        const originalChannel = release.channel || '';
+
+        // Construct full version from version + channel
+        if (originalChannel) {
+          release.version = `${originalVersion}-${originalChannel}`;
+        }
+
+        // Clean up channel to remove suffixes (e.g., "alpha.4" -> "alpha")
+        if (originalChannel) {
+          release.channel = originalChannel.split('.')[0];
+        }
+      }
+
+      // Combine release info with CPU info and hostname
+      const osInfo = {
+        hostname: hostname,
+        cpu: {
+          manufacturer: cpu.manufacturer,
+          brand: cpu.brand,
+          cores: cpu.cores,
+          physicalCores: cpu.physicalCores
+        },
+        ...release
+      };
+
+      return osInfo;
 
     } catch (error) {
-      console.error('Get current release error:', error.message);
-      throw new Error(`Failed to read release information: ${error.message}`);
+      console.error('Get current OS info error:', error.message);
+      throw new Error(`Failed to read OS information: ${error.message}`);
     }
   }
 

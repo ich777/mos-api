@@ -129,22 +129,51 @@ class SystemService {
    */
   async getSystemLoad() {
     try {
-      const [currentLoad, temp, networkStats, networkInterfaces, mem] = await Promise.all([
+      const [currentLoad, temp, networkStats, networkInterfaces, mem, cpu] = await Promise.all([
         si.currentLoad(),
         si.cpuTemperature(),
         si.networkStats(),
         si.networkInterfaces(),
-        si.mem()
+        si.mem(),
+        si.cpu()
       ]);
 
-      // Prepare core-specific information
-      const coreLoads = currentLoad.cpus.map((core, index) => ({
-        number: index + 1,
-        load: {
-          total: Math.round(core.load * 100) / 100,
-        },
-        temperature: temp.cores[index] !== undefined ? temp.cores[index] : null
-      }));
+      // Get detailed CPU information for core types
+      const cpuFlags = await si.cpuFlags();
+
+      // Prepare core-specific information with enhanced details
+      const coreLoads = currentLoad.cpus.map((core, index) => {
+        // Determine core type information
+        const isPhysical = index < cpu.physicalCores;
+        const isHyperThreaded = index >= cpu.physicalCores;
+        const physicalCoreNumber = isPhysical ? index + 1 : Math.floor(index / 2) + 1;
+
+        // Try to detect Performance vs Efficiency cores (mainly for Intel 12th gen+)
+        let coreArchitecture = 'Standard';
+        if (cpu.brand && cpu.brand.toLowerCase().includes('intel')) {
+          const totalCores = cpu.cores;
+          const physicalCores = cpu.physicalCores;
+
+          // Heuristic: If we have more logical than physical cores and it's a modern Intel CPU
+          if (totalCores > physicalCores && cpu.brand.match(/1[2-9]th|[2-9][0-9]th/)) {
+            // Assume first cores are Performance cores, later ones might be Efficiency
+            const estimatedPCores = Math.floor(physicalCores * 0.6); // Rough estimate
+            coreArchitecture = index < estimatedPCores ? 'Performance' : 'Mixed/Efficiency';
+          }
+        }
+
+        return {
+          number: index + 1,
+          load: {
+            total: Math.round(core.load * 100) / 100,
+          },
+          temperature: temp.cores[index] !== undefined ? temp.cores[index] : null,
+          isPhysical: isPhysical,
+          isHyperThreaded: isHyperThreaded,
+          physicalCoreNumber: physicalCoreNumber,
+          coreArchitecture: coreArchitecture
+        };
+      });
 
       // Helper function to format bytes in human readable format
       const formatBytes = (bytes) => {
@@ -244,6 +273,15 @@ class SystemService {
       return {
         cpu: {
           load: Math.round(currentLoad.currentLoad * 100) / 100,
+          info: {
+            brand: cpu.brand,
+            manufacturer: cpu.manufacturer,
+            totalCores: cpu.cores,
+            physicalCores: cpu.physicalCores,
+            logicalCores: cpu.cores,
+            hyperThreadingEnabled: cpu.cores > cpu.physicalCores,
+            architecture: cpu.family ? `Family ${cpu.family}, Model ${cpu.model}` : 'Unknown'
+          },
           cores: coreLoads
         },
         temperature: {

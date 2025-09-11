@@ -2854,7 +2854,7 @@ class PoolsService {
           usagePercent: 0
         }
       };
- 
+
 // Add snapraid info if applicable
 if (snapraidDevice) {
     // Create snapraid config directory if it doesn't exist

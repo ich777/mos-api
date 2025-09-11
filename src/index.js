@@ -25,6 +25,9 @@ const usersRoutes = require('./routes/users.routes');
 const cronRoutes = require('./routes/cron.routes');
 const terminalRoutes = require('./routes/terminal.routes');
 const notificationsRoutes = require('./routes/notifications.routes');
+const poolsWebSocketRoutes = require('./routes/pools.websocket.routes');
+const systemWebSocketRoutes = require('./routes/system.websocket.routes');
+const terminalWebSocketRoutes = require('./routes/terminal.websocket.routes');
 
 // Middleware
 const { authenticateToken } = require('./middleware/auth.middleware');
@@ -149,6 +152,9 @@ async function startServer() {
   app.use('/api/v1/cron', authenticateToken, cronRoutes);
   app.use('/api/v1/terminal', authenticateToken, terminalRoutes);
   app.use('/api/v1/notifications', authenticateToken, notificationsRoutes);
+  app.use('/api/v1/pools', poolsWebSocketRoutes);
+  app.use('/api/v1/system', systemWebSocketRoutes);
+  app.use('/api/v1/terminal', terminalWebSocketRoutes);
 
   // Error Handling
   app.use(errorHandler);
@@ -248,7 +254,7 @@ async function startServer() {
   // Create HTTP server for Socket.io
   const server = http.createServer(app);
 
-  // Initialize Socket.io - Standard Path - CORS disabled
+  // Initialize Socket.io
   const io = new Server(server, {
     path: "/socket.io/",
     cors: {
@@ -261,121 +267,50 @@ async function startServer() {
   const terminalService = require('./services/terminal.service');
   const poolsService = require('./services/pools.service');
   const { PoolsService } = poolsService;
+  const systemService = require('./services/system.service');
   const PoolWebSocketManager = require('./websockets/pools.websocket');
+  const SystemLoadWebSocketManager = require('./websockets/system.websocket');
+  const TerminalWebSocketManager = require('./websockets/terminal.websocket');
 
   // Initialize event emitter for service communication
   const EventEmitter = require('events');
   const serviceEventEmitter = new EventEmitter();
 
-  // Initialize pool WebSocket manager with event-driven architecture
+  // Create separate namespaces to avoid interference
+  const poolsNamespace = io.of('/pools');
+  const systemNamespace = io.of('/system');
+  const terminalNamespace = io.of('/terminal');
+
+  // Initialize pool WebSocket manager with pools namespace
   const poolsServiceInstance = new PoolsService(serviceEventEmitter);
-  const poolWebSocketManager = new PoolWebSocketManager(io, poolsServiceInstance);
+  const poolWebSocketManager = new PoolWebSocketManager(poolsNamespace, poolsServiceInstance);
 
-  // Make WebSocket manager available to routes
+  // Initialize system load WebSocket manager with system namespace
+  const systemLoadWebSocketManager = new SystemLoadWebSocketManager(systemNamespace, systemService);
+
+  // Initialize terminal WebSocket manager with terminal namespace
+  const terminalWebSocketManager = new TerminalWebSocketManager(terminalNamespace, terminalService);
+
+  // Make WebSocket managers available to routes
   app.locals.poolWebSocketManager = poolWebSocketManager;
+  app.locals.systemLoadWebSocketManager = systemLoadWebSocketManager;
+  app.locals.terminalWebSocketManager = terminalWebSocketManager;
 
-  io.on('connection', (socket) => {
-    logger.info(`WebSocket client connected: ${socket.id}`);
-
-    // Handle pool monitoring connections
+  // Setup namespace handlers
+  poolsNamespace.on('connection', (socket) => {
+    logger.info(`Pools WebSocket client connected: ${socket.id}`);
     poolWebSocketManager.handleConnection(socket);
+  });
 
-    // Join a terminal session
-    socket.on('join-session', async (data) => {
-      try {
-        const { sessionId, token } = data;
+  systemNamespace.on('connection', (socket) => {
+    logger.info(`System Load WebSocket client connected: ${socket.id}`);
+    systemLoadWebSocketManager.handleConnection(socket);
+  });
 
-        // Verify JWT token (basic auth check)
-        const jwt = require('jsonwebtoken');
-        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'mos-secret-key');
-
-        // Check if user is admin (terminal access is admin-only)
-        if (decoded.role !== 'admin') {
-          socket.emit('error', { message: 'Terminal access requires admin privileges' });
-          return;
-        }
-
-        const session = terminalService.getSession(sessionId);
-        if (!session) {
-          socket.emit('error', { message: 'Terminal session not found' });
-          return;
-        }
-
-        // Join socket room for this session
-        socket.join(sessionId);
-        socket.terminalSessionId = sessionId;
-
-        // Setup PTY event listeners
-        session.ptyProcess.on('data', (data) => {
-          socket.emit('terminal-output', data);
-        });
-
-        session.ptyProcess.on('exit', (code) => {
-          socket.emit('terminal-exit', { code });
-          socket.leave(sessionId);
-          terminalService.killSession(sessionId);
-        });
-
-        socket.emit('session-joined', {
-          sessionId,
-          command: session.options.command || session.options.shell,
-          args: session.options.args || [],
-          readOnly: session.options.readOnly
-        });
-
-        logger.info(`Client ${socket.id} joined terminal session: ${sessionId}`);
-
-      } catch (error) {
-        logger.error(`Terminal join error: ${error.message}`);
-        socket.emit('error', { message: 'Authentication failed' });
-      }
-    });
-
-    // Send input to terminal
-    socket.on('terminal-input', (data) => {
-      try {
-        if (!socket.terminalSessionId) {
-          socket.emit('error', { message: 'No active terminal session' });
-          return;
-        }
-
-        terminalService.writeToSession(socket.terminalSessionId, data);
-      } catch (error) {
-        socket.emit('error', { message: error.message });
-      }
-    });
-
-    // Resize terminal
-    socket.on('terminal-resize', (data) => {
-      try {
-        if (!socket.terminalSessionId) {
-          socket.emit('error', { message: 'No active terminal session' });
-          return;
-        }
-
-        const { cols, rows } = data;
-        terminalService.resizeSession(socket.terminalSessionId, cols, rows);
-      } catch (error) {
-        socket.emit('error', { message: error.message });
-      }
-    });
-
-    // Leave terminal session
-    socket.on('leave-session', () => {
-      if (socket.terminalSessionId) {
-        socket.leave(socket.terminalSessionId);
-        socket.terminalSessionId = null;
-        logger.info(`Client ${socket.id} left terminal session`);
-      }
-    });
-
-    // Client disconnect
-    socket.on('disconnect', () => {
-      logger.info(`Terminal WebSocket client disconnected: ${socket.id}`);
-      if (socket.terminalSessionId) {
-        socket.leave(socket.terminalSessionId);
-      }
-    });
+  // Terminal namespace for terminal connections
+  terminalNamespace.on('connection', (socket) => {
+    logger.info(`Terminal WebSocket client connected: ${socket.id}`);
+    terminalWebSocketManager.handleConnection(socket);
   });
 
   server.listen(PORT, '0.0.0.0', async () => {
