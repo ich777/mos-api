@@ -30,9 +30,6 @@ class TerminalWebSocketManager {
           return;
         }
 
-        socket.userId = authResult.user.id;
-        socket.userRole = authResult.user.role;
-
         const session = this.terminalService.getSession(sessionId);
         if (!session) {
           socket.emit('error', { message: 'Terminal session not found' });
@@ -43,56 +40,78 @@ class TerminalWebSocketManager {
         socket.join(sessionId);
         socket.terminalSessionId = sessionId;
 
-        // Store active session
-        this.activeSessions.set(sessionId, { socket, session });
-
-        // Setup PTY event listeners
-        const onData = (data) => {
-          // Emit to specific socket and also to room for multiple connections
-          socket.emit('terminal-output', data);
-          this.io.to(sessionId).emit('terminal-output', data);
-        };
-
-        const onExit = (code) => {
-          socket.emit('terminal-exit', { code });
-          this.io.to(sessionId).emit('terminal-exit', { code });
-          socket.leave(sessionId);
-          this.activeSessions.delete(sessionId);
-          this.terminalService.killSession(sessionId);
-          // Clean up listeners
-          session.ptyProcess.removeListener('data', onData);
-          session.ptyProcess.removeListener('exit', onExit);
-        };
-
-        // Check if PTY process already has listeners (existing session)
-        const existingListeners = session.ptyProcess.listenerCount('data');
+        // Check if there are already listeners on this PTY process
+        const existingListeners = session.ptyProcess.listeners('data').length;
+        
         if (existingListeners === 0) {
-          // First connection to this session - add listeners
+          // No existing listeners, add new ones for this session
+          const onData = (data) => {
+            this.io.to(sessionId).emit('terminal-output', data);
+          };
+
+          const onExit = (code) => {
+            this.io.to(sessionId).emit('terminal-exit', { code });
+            this.terminalService.killSession(sessionId);
+            session.ptyProcess.removeListener('data', onData);
+            session.ptyProcess.removeListener('exit', onExit);
+          };
+
           session.ptyProcess.on('data', onData);
           session.ptyProcess.on('exit', onExit);
 
-          // Send any existing output immediately for read-only sessions or log files
-          if (session.options.readOnly || session.options.command) {
-            // For read-only sessions, we might need to trigger initial output
+          // Store listeners for cleanup
+          socket.terminalListeners = { onData, onExit };
+          
+          // For new sessions with log commands, send initial trigger
+          const isLogCommand = session.options.command === 'docker' && 
+                             session.options.args && 
+                             session.options.args.includes('logs');
+          
+          if (isLogCommand) {
             setTimeout(() => {
-              // This helps with commands that produce immediate output
               if (session.ptyProcess && !session.ptyProcess.killed) {
-                // Send a newline to potentially trigger output for some commands
                 try {
                   session.ptyProcess.write('\n');
                 } catch (e) {
-                  // Ignore errors for read-only sessions
+                  console.log(`Could not write to session ${sessionId}: ${e.message}`);
                 }
               }
             }, 100);
           }
         } else {
-          // Session already has listeners, just add this socket to the room
-          console.log(`Session ${sessionId} already has ${existingListeners} data listeners`);
-        }
+          // For existing sessions, add individual socket listener
+          const onData = (data) => {
+            socket.emit('terminal-output', data);
+          };
 
-        // Store listeners for cleanup
-        socket.terminalListeners = { onData, onExit };
+          const onExit = (code) => {
+            socket.emit('terminal-exit', { code });
+            socket.leave(sessionId);
+          };
+
+          session.ptyProcess.on('data', onData);
+          session.ptyProcess.on('exit', onExit);
+
+          // Store listeners for cleanup
+          socket.terminalListeners = { onData, onExit };
+          
+          // For existing Docker log sessions, send trigger to get current output
+          const isLogCommand = session.options.command === 'docker' && 
+                             session.options.args && 
+                             session.options.args.includes('logs');
+          
+          if (isLogCommand) {
+            setTimeout(() => {
+              if (session.ptyProcess && !session.ptyProcess.killed) {
+                try {
+                  session.ptyProcess.write('\n');
+                } catch (e) {
+                  console.log(`Could not write to existing log session ${sessionId}: ${e.message}`);
+                }
+              }
+            }, 100);
+          }
+        }
 
         socket.emit('session-joined', {
           sessionId,
@@ -203,6 +222,7 @@ class TerminalWebSocketManager {
 
         this.terminalService.writeToSession(socket.terminalSessionId, data);
       } catch (error) {
+        console.error(`Terminal input error:`, error);
         socket.emit('error', { message: error.message });
       }
     });
@@ -293,10 +313,10 @@ class TerminalWebSocketManager {
 
         // Clean up listeners if they exist
         if (socket.terminalListeners) {
-          const activeSession = this.activeSessions.get(sessionId);
-          if (activeSession && activeSession.session) {
-            activeSession.session.ptyProcess.removeListener('data', socket.terminalListeners.onData);
-            activeSession.session.ptyProcess.removeListener('exit', socket.terminalListeners.onExit);
+          const session = this.terminalService.getSession(sessionId);
+          if (session && session.ptyProcess) {
+            session.ptyProcess.removeListener('data', socket.terminalListeners.onData);
+            session.ptyProcess.removeListener('exit', socket.terminalListeners.onExit);
           }
           delete socket.terminalListeners;
         }
@@ -345,10 +365,10 @@ class TerminalWebSocketManager {
 
         // Clean up listeners if they exist
         if (socket.terminalListeners) {
-          const activeSession = this.activeSessions.get(sessionId);
-          if (activeSession && activeSession.session) {
-            activeSession.session.ptyProcess.removeListener('data', socket.terminalListeners.onData);
-            activeSession.session.ptyProcess.removeListener('exit', socket.terminalListeners.onExit);
+          const session = this.terminalService.getSession(sessionId);
+          if (session && session.ptyProcess) {
+            session.ptyProcess.removeListener('data', socket.terminalListeners.onData);
+            session.ptyProcess.removeListener('exit', socket.terminalListeners.onExit);
           }
         }
 

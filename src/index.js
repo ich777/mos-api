@@ -256,7 +256,7 @@ async function startServer() {
 
   // Initialize Socket.io
   const io = new Server(server, {
-    path: "/socket.io/",
+    path: "/api/v1/socket.io/",
     cors: {
       origin: "*",
       methods: ["GET", "POST"]
@@ -277,9 +277,9 @@ async function startServer() {
   const serviceEventEmitter = new EventEmitter();
 
   // Create separate namespaces to avoid interference
-  const poolsNamespace = io.of('/api/v1/pools');
-  const systemNamespace = io.of('/api/v1/system');
-  const terminalNamespace = io.of('/api/v1/terminal');
+  const poolsNamespace = io.of('/pools');
+  const systemNamespace = io.of('/system');
+  const terminalNamespace = io.of('/terminal');
 
   // Initialize pool WebSocket manager with pools namespace
   const poolsServiceInstance = new PoolsService(serviceEventEmitter);
