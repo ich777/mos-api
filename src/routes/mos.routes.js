@@ -1806,18 +1806,6 @@ router.get('/getreleases', async (req, res) => {
  *               type: object
  *               description: OS information object including release info, hostname and CPU details
  *               properties:
- *                 version:
- *                   type: string
- *                   description: Constructed MOS version (version + channel from release file)
- *                   example: "0.0.1-alpha.4"
- *                 build_date:
- *                   type: string
- *                   description: Build date
- *                   example: "2025-08-24"
- *                 channel:
- *                   type: string
- *                   description: Cleaned release channel (without suffixes like .4)
- *                   example: "alpha"
  *                 hostname:
  *                   type: string
  *                   nullable: true
@@ -1842,16 +1830,38 @@ router.get('/getreleases', async (req, res) => {
  *                       type: integer
  *                       description: Number of physical CPU cores
  *                       example: 8
+ *                 mos:
+ *                   type: object
+ *                   description: MOS release information
+ *                   properties:
+ *                     version:
+ *                       type: string
+ *                       description: Constructed MOS version (version + channel from release file)
+ *                       example: "0.0.1-alpha.4"
+ *                     channel:
+ *                       type: string
+ *                       description: Cleaned release channel (without suffixes like .4)
+ *                       example: "alpha"
+ *                     running_kernel:
+ *                       type: string
+ *                       description: Currently running kernel version
+ *                       example: "5.15.0-generic"
+ *                 build_date:
+ *                   type: string
+ *                   description: Build date
+ *                   example: "2025-08-24"
  *               example:
- *                 version: "0.0.1-alpha.4"
- *                 build_date: "2025-08-24"
- *                 channel: "alpha"
  *                 hostname: "mos-server"
  *                 cpu:
  *                   manufacturer: "Intel"
  *                   brand: "Intel(R) Core(TM) i7-12700K"
  *                   cores: 12
  *                   physicalCores: 8
+ *                 mos:
+ *                   version: "0.0.1-alpha.4"
+ *                   channel: "alpha"
+ *                   running_kernel: "5.15.0-generic"
+ *                 build_date: "2025-08-24"
  *       401:
  *         description: Not authenticated
  *         content:

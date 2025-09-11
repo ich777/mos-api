@@ -1477,6 +1477,15 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
         console.warn('Warning: Could not read hostname from system.json:', hostnameError.message);
       }
 
+      // Get running kernel version
+      let runningKernel = null;
+      try {
+        const { stdout } = await execPromise('uname -r');
+        runningKernel = stdout.trim();
+      } catch (kernelError) {
+        console.warn('Warning: Could not get running kernel version:', kernelError.message);
+      }
+
       // Process version and channel - handle nested mos object structure
       if (release.mos && typeof release.mos === 'object') {
         const originalVersion = release.mos.version || '';
@@ -1491,6 +1500,11 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
         if (originalChannel) {
           release.mos.channel = originalChannel.split('.')[0];
         }
+
+        // Add running kernel to mos object
+        if (runningKernel) {
+          release.mos.running_kernel = runningKernel;
+        }
       } else {
         // Handle flat structure (fallback)
         const originalVersion = release.version || '';
@@ -1504,6 +1518,12 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
         // Clean up channel to remove suffixes (e.g., "alpha.4" -> "alpha")
         if (originalChannel) {
           release.channel = originalChannel.split('.')[0];
+        }
+
+        // Add running kernel to flat structure
+        if (runningKernel) {
+          if (!release.mos) release.mos = {};
+          release.mos.running_kernel = runningKernel;
         }
       }
 
