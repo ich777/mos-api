@@ -857,22 +857,25 @@ class UserService {
    * @returns {Promise<boolean>} Success status
    */
   async _createSmbUser(username, password, gid = 500) {
+    let createdLinuxUser = false;
+    
     try {
-      // Check if user already exists
-      const linuxUserExists = await this._userExists(username);
-      if (linuxUserExists) {
-        throw new Error(`Linux user '${username}' already exists`);
-      }
-
+      // Check if SMB user already exists
       const smbUserExists = await this._smbUserExists(username);
       if (smbUserExists) {
         throw new Error(`SMB user '${username}' already exists`);
       }
 
-      // Create Linux User
-      await this._createLinuxUser(username, gid);
+      // Check if Linux user exists
+      const linuxUserExists = await this._userExists(username);
+      
+      // Create Linux user only if it doesn't exist
+      if (!linuxUserExists) {
+        await this._createLinuxUser(username, gid);
+        createdLinuxUser = true;
+      }
 
-      // Set SMB password
+      // Set SMB password (this will add the user to SMB)
       await this._setSmbPassword(username, password);
 
       // Restart SMB daemon
@@ -883,15 +886,19 @@ class UserService {
 
       return true;
     } catch (error) {
-      // Cleanup on error
+      // Cleanup on error - only clean up what we created
       try {
-        const userExists = await this._userExists(username);
-        if (userExists) {
-          await this._deleteLinuxUser(username);
-        }
         const smbExists = await this._smbUserExists(username);
         if (smbExists) {
           await this._deleteSmbUser(username);
+        }
+        
+        // Only delete Linux user if we created it in this function
+        if (createdLinuxUser) {
+          const linuxUserExists = await this._userExists(username);
+          if (linuxUserExists) {
+            await this._deleteLinuxUser(username);
+          }
         }
       } catch (cleanupError) {
         console.error(`Cleanup error: ${cleanupError.message}`);

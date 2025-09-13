@@ -213,24 +213,41 @@ class SharesService {
    */
   async _validatePool(poolName) {
     try {
-      const pool = await this._getPoolByName(poolName);
-
-      if (!pool.status || !pool.status.mounted) {
-        throw new Error(`Pool ${poolName} is not mounted`);
-      }
-
-      // Check if mount path actually exists
       const mountPath = `/mnt/${poolName}`;
+      
+      // Simple check: is the mount path accessible and mounted?
       try {
         await fs.access(mountPath);
+        
+        // Check if it's actually a mount point by checking /proc/mounts
+        const { stdout } = await execAsync('cat /proc/mounts');
+        const lines = stdout.split('\n');
+        
+        let isMounted = false;
+        for (const line of lines) {
+          if (line.trim()) {
+            const parts = line.split(' ');
+            if (parts.length >= 2 && parts[1] === mountPath) {
+              isMounted = true;
+              break;
+            }
+          }
+        }
+        
+        if (!isMounted) {
+          throw new Error(`Pool ${poolName} is not mounted`);
+        }
+        
       } catch (error) {
-        throw new Error(`Pool mount path ${mountPath} is not accessible`);
+        if (error.code === 'ENOENT') {
+          throw new Error(`Pool mount path ${mountPath} does not exist`);
+        }
+        throw error;
       }
 
       return {
-        name: pool.name,
-        mountPath,
-        health: pool.status.health
+        name: poolName,
+        mountPath
       };
     } catch (error) {
       throw new Error(`Pool validation failed: ${error.message}`);
@@ -391,6 +408,7 @@ class SharesService {
    * @param {string} poolName - Name of the pool
    * @param {string} subPath - Sub-path within the pool (optional)
    * @param {Object} options - Share configuration options
+   * @param {string} options.permissions - Directory permissions in octal format (default: '0775')
    * @returns {Promise<Object>} Created share configuration
    */
   async createSmbShare(shareName, poolName, subPath = '', options = {}) {
@@ -456,6 +474,14 @@ class SharesService {
           try {
             await execAsync(`chown 500:500 "${sharePath}"`);
           } catch (chownError) {
+            // Do nothing
+          }
+
+          // Set permissions (default: 0775 = rwxrwxr-x)
+          const permissions = options.permissions || '0775';
+          try {
+            await execAsync(`chmod ${permissions} "${sharePath}"`);
+          } catch (chmodError) {
             // Do nothing
           }
         } catch (error) {
@@ -546,6 +572,7 @@ class SharesService {
    * @param {string} poolName - Name of the pool
    * @param {string} subPath - Sub-path within the pool (optional)
    * @param {Object} options - Share configuration options
+   * @param {string} options.permissions - Directory permissions in octal format (default: '0775')
    * @returns {Promise<Object>} Created share configuration
    */
   async createNfsShare(shareName, poolName, subPath = '', options = {}) {
@@ -611,6 +638,14 @@ class SharesService {
           try {
             await execAsync(`chown 500:500 "${sharePath}"`);
           } catch (chownError) {
+            // Do nothing
+          }
+
+          // Set permissions (default: 0775 = rwxrwxr-x)
+          const permissions = options.permissions || '0775';
+          try {
+            await execAsync(`chmod ${permissions} "${sharePath}"`);
+          } catch (chmodError) {
             // Do nothing
           }
         } catch (error) {

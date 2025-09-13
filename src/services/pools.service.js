@@ -15,6 +15,48 @@ class PoolsService {
     this.mergerfsBasePath = '/var/mergerfs';
     this.snapraidBasePath = '/var/snapraid';
     this.eventEmitter = eventEmitter; // Optional event emitter for WebSocket integration
+    
+    // Default ownership settings for pool mount points
+    // Can be overridden per pool or globally configured
+    this.defaultOwnership = {
+      uid: 500,  // Default user ID
+      gid: 500   // Default group ID
+    };
+  }
+
+  /**
+   * Set ownership of a directory
+   * @param {string} path - Directory path
+   * @param {number} uid - User ID
+   * @param {number} gid - Group ID
+   * @private
+   */
+  async _setOwnership(path, uid = this.defaultOwnership.uid, gid = this.defaultOwnership.gid) {
+    try {
+      await execPromise(`chown ${uid}:${gid} "${path}"`);
+      console.log(`Set ownership of ${path} to ${uid}:${gid}`);
+    } catch (error) {
+      console.warn(`Warning: Could not set ownership of ${path}: ${error.message}`);
+      // Don't throw error as this is not critical for pool functionality
+    }
+  }
+
+  /**
+   * Create directory with proper ownership
+   * @param {string} path - Directory path to create
+   * @param {Object} options - Options including uid and gid
+   * @private
+   */
+  async _createDirectoryWithOwnership(path, options = {}) {
+    await fs.mkdir(path, { recursive: true });
+    
+    // Set ownership if specified
+    const uid = options.uid || this.defaultOwnership.uid;
+    const gid = options.gid || this.defaultOwnership.gid;
+    
+    if (uid !== undefined && gid !== undefined) {
+      await this._setOwnership(path, uid, gid);
+    }
   }
 
   /**
@@ -77,7 +119,19 @@ class PoolsService {
   async _isMounted(mountPath) {
     try {
       const { stdout } = await execPromise('cat /proc/mounts');
-      return stdout.includes(` ${mountPath} `);
+      const lines = stdout.split('\n');
+      
+      for (const line of lines) {
+        if (line.trim()) {
+          // Split the mount line: device mountpoint filesystem options
+          const parts = line.split(' ');
+          if (parts.length >= 2 && parts[1] === mountPath) {
+            return true;
+          }
+        }
+      }
+      
+      return false;
     } catch (error) {
       return false;
     }
@@ -458,9 +512,13 @@ class PoolsService {
         }
       }
 
-      // Create mount point
+      // Create mount point with proper ownership
       const mountPoint = path.join(this.mountBasePath, name);
-      await fs.mkdir(mountPoint, { recursive: true });
+      const ownershipOptions = {
+        uid: this.defaultOwnership.uid,
+        gid: this.defaultOwnership.gid
+      };
+      await this._createDirectoryWithOwnership(mountPoint, ownershipOptions);
 
       // Prepare devices for BTRFS formatting (create partitions if needed)
       const preparedDevices = [];
@@ -819,8 +877,12 @@ class PoolsService {
 
 
 
-      // Create mount point and mount device
-      await fs.mkdir(diskMountPoint, { recursive: true });
+      // Create mount point with proper ownership and mount device
+      const ownershipOptions = {
+        uid: this.defaultOwnership.uid,
+        gid: this.defaultOwnership.gid
+      };
+      await this._createDirectoryWithOwnership(diskMountPoint, ownershipOptions);
       await this.mountDevice(device, diskMountPoint); // Mount the actual device (partition)
 
       // Ensure we get the correct UUID from the actual device being used
@@ -1135,11 +1197,15 @@ class PoolsService {
         throw new Error(`Device ${deviceDisplayName} is not formatted. Please format it first or use the format option.`);
       }
 
-      // Create mount point if it doesn't exist
+      // Create mount point if it doesn't exist with proper ownership
       try {
         await fs.access(mountPoint);
       } catch {
-        await fs.mkdir(mountPoint, { recursive: true });
+        const ownershipOptions = {
+          uid: this.defaultOwnership.uid,
+          gid: this.defaultOwnership.gid
+        };
+        await this._createDirectoryWithOwnership(mountPoint, ownershipOptions);
       }
 
       // Check if already mounted
@@ -1177,6 +1243,13 @@ class PoolsService {
 
       // Mount the device
       await execPromise(mountCommand);
+      
+      // Set ownership of the mount point after mounting
+      const uid = this.defaultOwnership.uid;
+      const gid = this.defaultOwnership.gid;
+      if (uid !== undefined && gid !== undefined) {
+        await this._setOwnership(mountPoint, uid, gid);
+      }
 
       const successMessage = isUsingPartition
         ? `Device ${device} (partition ${actualDeviceToMount}) successfully mounted at ${mountPoint}`
@@ -2729,8 +2802,12 @@ class PoolsService {
         await this.formatDevice(device, filesystem);
       }
 
-      // Create mergerFS base directory
-      await fs.mkdir(mergerfsBasePath, { recursive: true });
+      // Create mergerFS base directory with proper ownership
+      const ownershipOptions = {
+        uid: this.defaultOwnership.uid,
+        gid: this.defaultOwnership.gid
+      };
+      await this._createDirectoryWithOwnership(mergerfsBasePath, ownershipOptions);
 
       // Create mount points for each device and collect device info
       const dataDevices = [];
@@ -2738,7 +2815,7 @@ class PoolsService {
 
       for (const device of devices) {
         const diskMountPoint = path.join(mergerfsBasePath, `disk${diskIndex}`);
-        await fs.mkdir(diskMountPoint, { recursive: true });
+        await this._createDirectoryWithOwnership(diskMountPoint, ownershipOptions);
 
         // Check if filesystem is on device or partition
         const deviceInfo = await this.checkDeviceFilesystem(device);
@@ -2771,8 +2848,8 @@ class PoolsService {
       if (snapraidDevice) {
         const snapraidPoolPath = path.join(this.snapraidBasePath, name);
         snapraidMountPoint = path.join(snapraidPoolPath, 'parity1');
-        await fs.mkdir(snapraidMountPoint, { recursive: true });
-        await this.mountDevice(snapraidDevice, snapraidMountPoint);
+        await this._createDirectoryWithOwnership(snapraidMountPoint, ownershipOptions);
+        await this.mountDevice(snapraidDevice, snapraidMountPoint, ownershipOptions);
 
         // Get parity device UUID
         const parityUuid = await this.getDeviceUuid(snapraidDevice);
@@ -2786,8 +2863,8 @@ class PoolsService {
         });
       }
 
-      // Create the main mount point
-      await fs.mkdir(mountPoint, { recursive: true });
+      // Create the main mount point with proper ownership
+      await this._createDirectoryWithOwnership(mountPoint, ownershipOptions);
 
       // Build the mergerfs command
       const mountPoints = dataDevices.map(device => path.join(mergerfsBasePath, `disk${device.slot}`)).join(':');
@@ -3024,9 +3101,13 @@ if (snapraidDevice) {
           actualDevice = formatResult.device; // Use the partition created by formatDevice
         }
 
-        // Create mount point and mount the actual device (partition)
-        await fs.mkdir(parityMountPoint, { recursive: true });
-        await this.mountDevice(actualDevice, parityMountPoint);
+        // Create mount point with proper ownership and mount the actual device (partition)
+        const ownershipOptions = {
+          uid: this.defaultOwnership.uid,
+          gid: this.defaultOwnership.gid
+        };
+        await this._createDirectoryWithOwnership(parityMountPoint, ownershipOptions);
+        await this.mountDevice(actualDevice, parityMountPoint, ownershipOptions);
 
         // Get device UUID from the actual device (partition)
         const deviceUuid = await this.getDeviceUuid(actualDevice);
