@@ -214,15 +214,15 @@ class SharesService {
   async _validatePool(poolName) {
     try {
       const mountPath = `/mnt/${poolName}`;
-      
+
       // Simple check: is the mount path accessible and mounted?
       try {
         await fs.access(mountPath);
-        
+
         // Check if it's actually a mount point by checking /proc/mounts
         const { stdout } = await execAsync('cat /proc/mounts');
         const lines = stdout.split('\n');
-        
+
         let isMounted = false;
         for (const line of lines) {
           if (line.trim()) {
@@ -233,11 +233,11 @@ class SharesService {
             }
           }
         }
-        
+
         if (!isMounted) {
           throw new Error(`Pool ${poolName} is not mounted`);
         }
-        
+
       } catch (error) {
         if (error.code === 'ENOENT') {
           throw new Error(`Pool mount path ${mountPath} does not exist`);

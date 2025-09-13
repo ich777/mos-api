@@ -15,12 +15,12 @@ class PoolsService {
     this.mergerfsBasePath = '/var/mergerfs';
     this.snapraidBasePath = '/var/snapraid';
     this.eventEmitter = eventEmitter; // Optional event emitter for WebSocket integration
-    
+
     // Default ownership settings for pool mount points
     // Can be overridden per pool or globally configured
     this.defaultOwnership = {
-      uid: 500,  // Default user ID
-      gid: 500   // Default group ID
+      uid: 500,
+      gid: 500
     };
   }
 
@@ -49,11 +49,11 @@ class PoolsService {
    */
   async _createDirectoryWithOwnership(path, options = {}) {
     await fs.mkdir(path, { recursive: true });
-    
+
     // Set ownership if specified
     const uid = options.uid || this.defaultOwnership.uid;
     const gid = options.gid || this.defaultOwnership.gid;
-    
+
     if (uid !== undefined && gid !== undefined) {
       await this._setOwnership(path, uid, gid);
     }
@@ -120,7 +120,7 @@ class PoolsService {
     try {
       const { stdout } = await execPromise('cat /proc/mounts');
       const lines = stdout.split('\n');
-      
+
       for (const line of lines) {
         if (line.trim()) {
           // Split the mount line: device mountpoint filesystem options
@@ -130,7 +130,7 @@ class PoolsService {
           }
         }
       }
-      
+
       return false;
     } catch (error) {
       return false;
@@ -1243,7 +1243,7 @@ class PoolsService {
 
       // Mount the device
       await execPromise(mountCommand);
-      
+
       // Set ownership of the mount point after mounting
       const uid = this.defaultOwnership.uid;
       const gid = this.defaultOwnership.gid;
@@ -1338,7 +1338,7 @@ class PoolsService {
         try {
           await fs.rmdir(mountPoint);
         } catch (error) {
-          // Non-critical error, directory might not be empty - kann ignoriert werden
+          // Non-critical error, directory might not be empty - can be ignored
         }
       }
 

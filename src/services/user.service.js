@@ -311,15 +311,16 @@ class UserService {
       }
     }
 
-    // Handle password updates
+    // Store plain password for SMB operations before hashing
+    let plainPassword = null;
     if (updates.password && updates.password.trim() !== '') {
-      const newPassword = updates.password.trim();
-      updates.password = await bcrypt.hash(newPassword, 10);
+      plainPassword = updates.password.trim();
+      updates.password = await bcrypt.hash(plainPassword, 10);
 
       // Update SMB password if user is SMB user
       if (currentUser.samba_user) {
         try {
-          await this._changeSmbPassword(currentUser.username, newPassword);
+          await this._changeSmbPassword(currentUser.username, plainPassword);
         } catch (error) {
           throw new Error(`Failed to update SMB password: ${error.message}`);
         }
@@ -333,11 +334,14 @@ class UserService {
         (requestingUser.role === 'admin' || requestingUser.isBootToken || requestingUser.isAdminToken)) {
 
       if (updates.samba_user && !currentUser.samba_user) {
-        // Create SMB user
+        // Create SMB user - password is REQUIRED when converting existing user to SMB
+        if (!updates.password || updates.password.trim() === '') {
+          throw new Error('Password is required when converting a user to SMB user. SMB passwords cannot be derived from existing system passwords.');
+        }
+
         try {
-          // Use current password if no new password provided
-          const password = updates.password ? updates.password : 'temp_password_needs_reset';
-          await this._createSmbUser(currentUser.username, password);
+          // Use the stored plain password (before hashing)
+          await this._createSmbUser(currentUser.username, plainPassword);
         } catch (error) {
           throw new Error(`Failed to create SMB user: ${error.message}`);
         }
@@ -357,10 +361,14 @@ class UserService {
       if (updates.role === 'samba_only') {
         updates.samba_user = true;
         if (!currentUser.samba_user) {
-          // Create SMB user
+          // Create SMB user - password is REQUIRED when converting to samba_only role
+          if (!updates.password || updates.password.trim() === '') {
+            throw new Error('Password is required when converting a user to samba_only role. SMB passwords cannot be derived from existing system passwords.');
+          }
+
           try {
-            const password = updates.password ? updates.password : 'temp_password_needs_reset';
-            await this._createSmbUser(currentUser.username, password);
+            // Use the stored plain password (before hashing)
+            await this._createSmbUser(currentUser.username, plainPassword);
           } catch (error) {
             throw new Error(`Failed to create SMB user: ${error.message}`);
           }
@@ -858,7 +866,7 @@ class UserService {
    */
   async _createSmbUser(username, password, gid = 500) {
     let createdLinuxUser = false;
-    
+
     try {
       // Check if SMB user already exists
       const smbUserExists = await this._smbUserExists(username);
@@ -868,7 +876,7 @@ class UserService {
 
       // Check if Linux user exists
       const linuxUserExists = await this._userExists(username);
-      
+
       // Create Linux user only if it doesn't exist
       if (!linuxUserExists) {
         await this._createLinuxUser(username, gid);
@@ -892,7 +900,7 @@ class UserService {
         if (smbExists) {
           await this._deleteSmbUser(username);
         }
-        
+
         // Only delete Linux user if we created it in this function
         if (createdLinuxUser) {
           const linuxUserExists = await this._userExists(username);
