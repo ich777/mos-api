@@ -1372,6 +1372,76 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
   }
 
   /**
+   * Compares two version strings for semantic version sorting
+   * @param {string} versionA - First version string (e.g., "0.0.2-alpha.1")
+   * @param {string} versionB - Second version string (e.g., "0.0.1-alpha.16")
+   * @returns {number} Comparison result: positive if A > B, negative if A < B, 0 if equal
+   */
+  _compareVersions(versionA, versionB) {
+    // Parse version strings into components
+    const parseVersion = (version) => {
+      // Remove 'v' prefix if present
+      const cleanVersion = version.replace(/^v/, '');
+
+      // Split into main version and pre-release parts
+      const [mainVersion, preRelease] = cleanVersion.split('-');
+
+      // Parse main version numbers
+      const mainParts = mainVersion.split('.').map(num => parseInt(num, 10) || 0);
+
+      // Ensure we have at least 3 parts for major.minor.patch
+      while (mainParts.length < 3) {
+        mainParts.push(0);
+      }
+
+      // Parse pre-release part
+      let preReleaseType = '';
+      let preReleaseNumber = 0;
+
+      if (preRelease) {
+        const preMatch = preRelease.match(/^(alpha|beta|rc)\.?(\d+)?$/i);
+        if (preMatch) {
+          preReleaseType = preMatch[1].toLowerCase();
+          preReleaseNumber = parseInt(preMatch[2], 10) || 0;
+        }
+      }
+
+      return {
+        major: mainParts[0],
+        minor: mainParts[1],
+        patch: mainParts[2],
+        preReleaseType,
+        preReleaseNumber,
+        isPreRelease: !!preRelease
+      };
+    };
+
+    const vA = parseVersion(versionA);
+    const vB = parseVersion(versionB);
+
+    // Compare main version numbers (major.minor.patch)
+    if (vA.major !== vB.major) return vA.major - vB.major;
+    if (vA.minor !== vB.minor) return vA.minor - vB.minor;
+    if (vA.patch !== vB.patch) return vA.patch - vB.patch;
+
+    // If main versions are equal, handle pre-release comparison
+    // Stable versions (no pre-release) are higher than pre-release versions
+    if (!vA.isPreRelease && vB.isPreRelease) return 1;
+    if (vA.isPreRelease && !vB.isPreRelease) return -1;
+    if (!vA.isPreRelease && !vB.isPreRelease) return 0;
+
+    // Both are pre-releases, compare pre-release types
+    const preReleaseOrder = { alpha: 1, beta: 2, rc: 3 };
+    const typeA = preReleaseOrder[vA.preReleaseType] || 0;
+    const typeB = preReleaseOrder[vB.preReleaseType] || 0;
+
+    if (typeA !== typeB) return typeA - typeB;
+
+    // Same pre-release type, compare numbers
+    return vA.preReleaseNumber - vB.preReleaseNumber;
+  }
+
+  /**
    * Gets available releases via the mos-os_get_releases script
    * @returns {Promise<Object>} Release information grouped by channels
    */
@@ -1430,11 +1500,11 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
           }
         });
 
-        // Sort releases by date (newest first)
+        // Sort releases by semantic version (newest first)
         Object.keys(groupedReleases).forEach(channel => {
-          groupedReleases[channel].sort((a, b) =>
-            new Date(b.published_at) - new Date(a.published_at)
-          );
+          groupedReleases[channel].sort((a, b) => {
+            return this._compareVersions(b.tag_name, a.tag_name);
+          });
         });
 
         return groupedReleases;
@@ -1649,6 +1719,139 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
         success: false,
         error: error.message,
         kernelRollback,
+        timestamp: new Date().toISOString()
+      };
+    }
+  }
+
+  /**
+   * Gets available kernel releases via the mos-kernel_get_releases script
+   * @returns {Promise<Array>} Sorted array of kernel releases (newest first)
+   */
+  async getKernelReleases() {
+    try {
+      const command = '/usr/local/bin/mos-kernel_get_releases';
+
+      console.log(`Executing get kernel releases command: ${command}`);
+
+      // Execute script
+      const { stdout, stderr } = await execPromise(command);
+
+      if (stderr) {
+        console.warn('Get kernel releases script stderr:', stderr);
+      }
+
+      // Read JSON file
+      const releasesPath = '/var/mos/mos-update/kernel/releases.json';
+
+      try {
+        const releasesData = await fs.readFile(releasesPath, 'utf8');
+        const releases = JSON.parse(releasesData);
+
+        if (!Array.isArray(releases)) {
+          throw new Error('Invalid kernel releases data format - expected array');
+        }
+
+        // Extract and sort releases by tag_name (newest first)
+        const sortedReleases = releases
+          .filter(release => release.tag_name) // Only releases with tag_name
+          .map(release => ({
+            tag_name: release.tag_name,
+            html_url: release.html_url
+          }))
+          .sort((a, b) => {
+            return this._compareVersions(b.tag_name, a.tag_name);
+          });
+
+        return sortedReleases;
+
+      } catch (fileError) {
+        throw new Error(`Failed to read or parse kernel releases file: ${fileError.message}`);
+      }
+
+    } catch (error) {
+      console.error('Get kernel releases error:', error.message);
+      return {
+        success: false,
+        error: error.message,
+        timestamp: new Date().toISOString()
+      };
+    }
+  }
+
+  /**
+   * Executes a kernel update using the mos-kernel_update script
+   * @param {string} version - Version (recommended or version number like 6.1.0, 6.6.15)
+   * @returns {Promise<Object>} Update status
+   */
+  async updateKernel(version) {
+    try {
+      // Parameter validation
+      if (!version || typeof version !== 'string') {
+        throw new Error('Version parameter is required and must be a string');
+      }
+
+      // Version validation - either "recommended" or version number format (with optional suffixes)
+      const versionPattern = /^(recommended|\d+\.\d+\.\d+.*)$/;
+      if (!versionPattern.test(version)) {
+        throw new Error('Version must be "recommended" or start with a version number (e.g., 6.1.0, 6.6.15, 6.1.0-alpha.1)');
+      }
+
+      const command = `/usr/local/bin/mos-kernel_update ${version}`;
+
+      console.log(`Executing kernel update command: ${command}`);
+
+      // Execute script
+      const { stdout, stderr } = await execPromise(command);
+
+      return {
+        success: true,
+        message: 'Kernel update initiated successfully',
+        version,
+        command,
+        output: stdout,
+        error: stderr || null,
+        timestamp: new Date().toISOString()
+      };
+
+    } catch (error) {
+      console.error('Kernel update error:', error.message);
+      return {
+        success: false,
+        error: error.message,
+        version,
+        timestamp: new Date().toISOString()
+      };
+    }
+  }
+
+  /**
+   * Executes a kernel rollback using the mos-kernel_update script
+   * @returns {Promise<Object>} Rollback status
+   */
+  async rollbackKernel() {
+    try {
+      const command = '/usr/local/bin/mos-kernel_update rollback';
+
+      console.log(`Executing kernel rollback command: ${command}`);
+
+      // Execute script
+      const { stdout, stderr } = await execPromise(command);
+
+      return {
+        success: true,
+        message: 'Kernel rollback initiated successfully',
+        command,
+        output: stdout,
+        error: stderr || null,
+        timestamp: new Date().toISOString()
+      };
+
+    } catch (error) {
+      console.error('Kernel rollback error:', error.message);
+      return {
+        success: false,
+        error: error.message,
         timestamp: new Date().toISOString()
       };
     }

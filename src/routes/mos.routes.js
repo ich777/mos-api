@@ -1892,4 +1892,272 @@ router.get('/osinfo', async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /mos/getkernel:
+ *   get:
+ *     summary: Get available kernel releases
+ *     description: Retrieve available kernel releases sorted by version (newest first) using mos-kernel_getreleases script (admin only)
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Sorted array of kernel releases (newest first)
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               description: Array of kernel releases sorted by version (newest first)
+ *               items:
+ *                 type: object
+ *                 properties:
+ *                   tag_name:
+ *                     type: string
+ *                     description: Kernel version tag
+ *                     example: "6.6.15"
+ *                   html_url:
+ *                     type: string
+ *                     description: URL to the kernel release
+ *                     example: "https://github.com/ich777/kernel-releases/releases/tag/6.6.15"
+ *               example:
+ *                 - tag_name: "6.6.15"
+ *                   html_url: "https://github.com/ich777/kernel-releases/releases/tag/6.6.15"
+ *                 - tag_name: "6.6.14"
+ *                   html_url: "https://github.com/ich777/kernel-releases/releases/tag/6.6.14"
+ *                 - tag_name: "6.1.0"
+ *                   html_url: "https://github.com/ich777/kernel-releases/releases/tag/6.1.0"
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error or script execution failed
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+
+// GET: Available Kernel Releases
+router.get('/getkernel', async (req, res) => {
+  try {
+    const releases = await mosService.getKernelReleases();
+    res.json(releases);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /mos/updatekernel:
+ *   post:
+ *     summary: Update kernel
+ *     description: Initiate kernel update using mos-kernel_update script (admin only)
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - version
+ *             properties:
+ *               version:
+ *                 type: string
+ *                 description: Version to update to - either "recommended" or version number (e.g., 6.1.0, 6.6.15)
+ *                 example: "recommended"
+ *           example:
+ *             version: "recommended"
+ *     responses:
+ *       200:
+ *         description: Kernel update initiated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "Kernel update initiated successfully"
+ *                 version:
+ *                   type: string
+ *                   example: "recommended"
+ *                 command:
+ *                   type: string
+ *                   example: "/usr/local/bin/mos-kernel_update recommended"
+ *                 output:
+ *                   type: string
+ *                   example: "Kernel update process started..."
+ *                 error:
+ *                   type: string
+ *                   nullable: true
+ *                   example: null
+ *                 timestamp:
+ *                   type: string
+ *                   example: "2024-01-15T10:30:00.000Z"
+ *       400:
+ *         description: Invalid request parameters
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: false
+ *                 error:
+ *                   type: string
+ *                   example: "Version must be 'recommended' or a version number (e.g., 6.1.0, 6.6.15)"
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+
+// POST: Kernel Update
+router.post('/updatekernel', async (req, res) => {
+  try {
+    const { version } = req.body;
+
+    if (!version) {
+      return res.status(400).json({
+        success: false,
+        error: 'version parameter is required'
+      });
+    }
+
+    const result = await mosService.updateKernel(version);
+
+    if (result.success) {
+      res.json(result);
+    } else {
+      res.status(400).json(result);
+    }
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @swagger
+ * /mos/rollbackkernel:
+ *   post:
+ *     summary: Rollback kernel
+ *     description: Initiate kernel rollback using mos-kernel_update rollback script (admin only)
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Kernel rollback initiated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "Kernel rollback initiated successfully"
+ *                 command:
+ *                   type: string
+ *                   example: "/usr/local/bin/mos-kernel_update rollback"
+ *                 output:
+ *                   type: string
+ *                   example: "Kernel rollback process started..."
+ *                 error:
+ *                   type: string
+ *                   nullable: true
+ *                   example: null
+ *                 timestamp:
+ *                   type: string
+ *                   example: "2024-01-15T10:30:00.000Z"
+ *       400:
+ *         description: Invalid request or rollback failed
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: false
+ *                 error:
+ *                   type: string
+ *                   example: "Kernel rollback failed: No previous kernel available"
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+
+// POST: Kernel Rollback
+router.post('/rollbackkernel', async (req, res) => {
+  try {
+    const result = await mosService.rollbackKernel();
+
+    if (result.success) {
+      res.json(result);
+    } else {
+      res.status(400).json(result);
+    }
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
 module.exports = router;
