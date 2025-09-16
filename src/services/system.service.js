@@ -206,18 +206,29 @@ class SystemService {
         };
       });
 
-      // Process network statistics
-      const interfaces = networkStats.map(stat => {
-        const interfaceInfo = interfaceMap[stat.iface] || {};
+      // Helper function to check if interface is relevant
+      const isRelevantInterface = (ifaceName) => {
+        const name = ifaceName.toLowerCase();
+        return name.startsWith('br') ||    // Bridge interfaces
+               name.startsWith('eth') ||   // Ethernet
+               name.startsWith('bond') ||  // Bonding
+               name.startsWith('lo');      // Loopback
+      };
 
-        return {
-          interface: stat.iface,
-          type: interfaceInfo.type || 'unknown',
-          state: interfaceInfo.state || 'unknown',
-          speed: interfaceInfo.speed || null,
-          ip4: interfaceInfo.ip4 || null,
-          ip6: interfaceInfo.ip6 || null,
-          mac: interfaceInfo.mac || null,
+      // Process network statistics - filter out irrelevant interfaces (docker, veth, etc.)
+      const interfaces = networkStats
+        .filter(stat => isRelevantInterface(stat.iface))
+        .map(stat => {
+          const interfaceInfo = interfaceMap[stat.iface] || {};
+
+          return {
+            interface: stat.iface,
+            type: interfaceInfo.type || 'unknown',
+            state: interfaceInfo.state || 'unknown',
+            speed: interfaceInfo.speed || null,
+            ip4: interfaceInfo.ip4 || null,
+            ip6: interfaceInfo.ip6 || null,
+            mac: interfaceInfo.mac || null,
           statistics: {
             rx: {
               bytes: stat.rx_bytes,

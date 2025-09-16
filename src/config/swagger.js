@@ -66,8 +66,24 @@ const options = {
         description: 'System Information, Monitoring and Power Management'
       },
       {
+        name: 'System Load WebSocket',
+        description: 'Real-time system load monitoring via WebSocket'
+      },
+      {
         name: 'MOS',
         description: 'MOS System Configuration and Settings Management'
+      },
+      {
+        name: 'Terminal',
+        description: 'Terminal Management'
+      },
+      {
+        name: 'Terminal WebSocket',
+        description: 'Terminal WebSocket management and documentation'
+      },
+      {
+        name: 'Notifications',
+        description: 'Notifications Management'
       }
     ],
     servers: [

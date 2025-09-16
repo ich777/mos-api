@@ -4,6 +4,8 @@ class SystemLoadWebSocketManager {
     this.systemService = systemService;
     this.activeSubscriptions = new Map();
     this.dataCache = new Map();
+    this.staticDataCache = new Map(); // Cache for static system data
+    this.clientStaticDataSent = new Set(); // Track which clients received static data
     this.cacheDuration = 1750; // 1.75 seconds cache
     this.defaultInterval = 2000; // 2 seconds default update interval
   }
@@ -33,8 +35,8 @@ class SystemLoadWebSocketManager {
         socket.join('system-load');
         console.log(`Client ${socket.id} (${authResult.user.role}) subscribed to system load monitoring`);
 
-        // Send immediate update
-        await this.sendSystemLoadUpdate(socket, true);
+        // Send immediate full update (includes static data)
+        await this.sendSystemLoadUpdate(socket, true, true);
 
         // Start monitoring
         this.startSystemLoadMonitoring(interval);
@@ -73,7 +75,7 @@ class SystemLoadWebSocketManager {
           return;
         }
 
-        await this.sendSystemLoadUpdate(socket, true); // Force refresh
+        await this.sendSystemLoadUpdate(socket, true, true); // Force refresh with full data
       } catch (error) {
         console.error('Error in get-load:', error);
         socket.emit('error', { message: 'Failed to get system load data' });
@@ -83,6 +85,8 @@ class SystemLoadWebSocketManager {
     // Handle disconnect
     socket.on('disconnect', () => {
       console.log(`Client disconnected: ${socket.id}`);
+      // Clean up client tracking
+      this.clientStaticDataSent.delete(socket.id);
       // Socket.io automatically handles room cleanup
       // Check if monitoring needs to be stopped
       this.checkStopSystemLoadMonitoring();
@@ -124,8 +128,8 @@ class SystemLoadWebSocketManager {
           return;
         }
 
-        // Send update to all subscribers
-        await this.sendSystemLoadUpdate(null, false);
+        // Send partial update to all subscribers (dynamic data only)
+        await this.sendSystemLoadUpdate(null, false, false);
       } catch (error) {
         console.error('Error in system load monitoring:', error);
       }
@@ -150,21 +154,47 @@ class SystemLoadWebSocketManager {
         console.log('Stopping system load monitoring');
         clearInterval(subscription.intervalId);
         this.activeSubscriptions.delete('system-load');
-        // Clear cache
+        // Clear all caches
         this.dataCache.delete('system-load-data');
+        this.dataCache.delete('system-load-dynamic');
+        this.staticDataCache.clear();
+        this.clientStaticDataSent.clear();
       }
     }
   }
 
   /**
    * Send system load update to socket or room
-   * Uses same data structure as REST API GET /system/load
+   * @param {Object} socket - Specific socket to send to (null for room broadcast)
+   * @param {boolean} forceRefresh - Force cache refresh
+   * @param {boolean} sendFullData - Send complete data structure (true) or only dynamic values (false)
    */
-  async sendSystemLoadUpdate(socket, forceRefresh = false) {
+  async sendSystemLoadUpdate(socket, forceRefresh = false, sendFullData = false) {
     try {
-      const loadData = await this.getSystemLoadDataWithCache(forceRefresh);
+      let loadData;
 
-      // Send system load data, identical to REST API GET /system/load
+      if (sendFullData) {
+        // Send complete data structure (for initial connection or forced refresh)
+        loadData = await this.getSystemLoadDataWithCache(forceRefresh);
+
+        // Mark clients as having received static data
+        if (socket) {
+          this.clientStaticDataSent.add(socket.id);
+        } else {
+          // For room broadcast, mark all clients in room
+          const room = this.io.adapter.rooms.get('system-load');
+          if (room) {
+            room.forEach(socketId => {
+              this.clientStaticDataSent.add(socketId);
+            });
+          }
+        }
+      } else {
+        // Send only dynamic data for efficiency
+        loadData = await this.getDynamicSystemLoadData(forceRefresh);
+      }
+
+      // Send system load data
       if (socket) {
         socket.emit('load-update', loadData);
       } else {
@@ -172,7 +202,7 @@ class SystemLoadWebSocketManager {
       }
 
       // Debug
-      //console.log('System load update sent to clients');
+      //console.log(`System load update sent (${sendFullData ? 'full' : 'partial'} data)`);
 
     } catch (error) {
       console.error('Failed to send system load update:', error);
@@ -191,7 +221,7 @@ class SystemLoadWebSocketManager {
   }
 
   /**
-   * Get system load data with caching
+   * Get complete system load data with caching
    * Reuses the system service method to maintain consistency with REST API
    */
   async getSystemLoadDataWithCache(forceRefresh = false) {
@@ -207,11 +237,14 @@ class SystemLoadWebSocketManager {
       // Use system service method same as REST API GET /system/load
       const loadData = await this.systemService.getSystemLoad();
 
-      // Cache the result
+      // Cache the complete result
       this.dataCache.set(cacheKey, {
         data: loadData,
         timestamp: Date.now()
       });
+
+      // Also cache static data separately for future use
+      this.cacheStaticData(loadData);
 
       return loadData;
 
@@ -222,16 +255,120 @@ class SystemLoadWebSocketManager {
   }
 
   /**
+   * Get only dynamic system load data (optimized for frequent updates)
+   */
+  async getDynamicSystemLoadData(forceRefresh = false) {
+    const cacheKey = 'system-load-dynamic';
+    const cached = this.dataCache.get(cacheKey);
+
+    // Return cached dynamic data if valid and not forcing refresh
+    if (!forceRefresh && cached && (Date.now() - cached.timestamp) < this.cacheDuration) {
+      return cached.data;
+    }
+
+    try {
+      // Get fresh complete data
+      const fullData = await this.systemService.getSystemLoad();
+
+      // Extract only dynamic values
+      const dynamicData = this.extractDynamicData(fullData);
+
+      // Cache the dynamic result
+      this.dataCache.set(cacheKey, {
+        data: dynamicData,
+        timestamp: Date.now()
+      });
+
+      return dynamicData;
+
+    } catch (error) {
+      console.error('Error getting dynamic system load data:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Cache static system data separately
+   */
+  cacheStaticData(fullData) {
+    const staticData = {
+      cpu: {
+        info: fullData.cpu.info,
+        cores: fullData.cpu.cores.map(core => ({
+          number: core.number,
+          isPhysical: core.isPhysical,
+          isHyperThreaded: core.isHyperThreaded,
+          physicalCoreNumber: core.physicalCoreNumber,
+          coreArchitecture: core.coreArchitecture
+        }))
+      },
+      memory: {
+        total: fullData.memory.total,
+        total_human: fullData.memory.total_human
+      },
+      network: {
+        interfaces: fullData.network.interfaces.map(iface => ({
+          interface: iface.interface,
+          type: iface.type,
+          speed: iface.speed,
+          ip4: iface.ip4,
+          ip6: iface.ip6,
+          mac: iface.mac
+        }))
+      }
+    };
+
+    this.staticDataCache.set('system-static-data', {
+      data: staticData,
+      timestamp: Date.now()
+    });
+  }
+
+  /**
+   * Extract only dynamic data from full system load data
+   */
+  extractDynamicData(fullData) {
+    return {
+      cpu: {
+        load: fullData.cpu.load,
+        cores: fullData.cpu.cores.map(core => ({
+          number: core.number,
+          load: core.load,
+          temperature: core.temperature
+        }))
+      },
+      temperature: fullData.temperature,
+      memory: {
+        free: fullData.memory.free,
+        free_human: fullData.memory.free_human,
+        used: fullData.memory.used,
+        used_human: fullData.memory.used_human,
+        dirty: fullData.memory.dirty,
+        percentage: fullData.memory.percentage
+      },
+      network: {
+        interfaces: fullData.network.interfaces.map(iface => ({
+          interface: iface.interface,
+          state: iface.state,
+          statistics: iface.statistics
+        })),
+        summary: fullData.network.summary
+      }
+    };
+  }
+
+  /**
    * Emit system load update after system changes (called from other services)
    */
   async emitSystemLoadUpdate() {
     try {
       const room = this.io.adapter.rooms.get('system-load');
       if (room && room.size > 0) {
-        // Clear cache to force fresh data
+        // Clear cache
         this.dataCache.delete('system-load-data');
-        // Send update
-        await this.sendSystemLoadUpdate(null, true);
+        this.dataCache.delete('system-load-dynamic');
+        // Send update with full data to refresh all clients
+        await this.sendSystemLoadUpdate(null, true, true);
       }
     } catch (error) {
       console.error('Failed to emit system load update:', error);

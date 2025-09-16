@@ -42,7 +42,7 @@ class TerminalWebSocketManager {
 
         // Check if there are already listeners on this PTY process
         const existingListeners = session.ptyProcess.listeners('data').length;
-        
+
         if (existingListeners === 0) {
           // No existing listeners, add new ones for this session
           const onData = (data) => {
@@ -61,12 +61,12 @@ class TerminalWebSocketManager {
 
           // Store listeners for cleanup
           socket.terminalListeners = { onData, onExit };
-          
+
           // For new sessions with log commands, send initial trigger
-          const isLogCommand = session.options.command === 'docker' && 
-                             session.options.args && 
+          const isLogCommand = session.options.command === 'docker' &&
+                             session.options.args &&
                              session.options.args.includes('logs');
-          
+
           if (isLogCommand) {
             setTimeout(() => {
               if (session.ptyProcess && !session.ptyProcess.killed) {
@@ -94,12 +94,12 @@ class TerminalWebSocketManager {
 
           // Store listeners for cleanup
           socket.terminalListeners = { onData, onExit };
-          
+
           // For existing Docker log sessions, send trigger to get current output
-          const isLogCommand = session.options.command === 'docker' && 
-                             session.options.args && 
+          const isLogCommand = session.options.command === 'docker' &&
+                             session.options.args &&
                              session.options.args.includes('logs');
-          
+
           if (isLogCommand) {
             setTimeout(() => {
               if (session.ptyProcess && !session.ptyProcess.killed) {
