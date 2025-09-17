@@ -121,8 +121,13 @@ class SystemLoadWebSocketManager {
           return;
         }
 
+        // Get first connected user for data formatting
+        const firstSocketId = room ? Array.from(room)[0] : null;
+        const socketObj = firstSocketId ? this.io.sockets.get(firstSocketId) : null;
+        const user = socketObj?.user || null;
+
         // Get CPU data and send update
-        const cpuData = await this.getCpuDataWithCache();
+        const cpuData = await this.getCpuDataWithCache(false, user);
         this.io.to('system-load').emit('load-update', cpuData);
       } catch (error) {
         console.error('Error in CPU monitoring:', error);
@@ -140,8 +145,13 @@ class SystemLoadWebSocketManager {
           return;
         }
 
+        // Get first connected user for data formatting
+        const firstSocketId = room ? Array.from(room)[0] : null;
+        const socketObj = firstSocketId ? this.io.sockets.get(firstSocketId) : null;
+        const user = socketObj?.user || null;
+
         // Get Memory data and send update
-        const memoryData = await this.getMemoryDataWithCache();
+        const memoryData = await this.getMemoryDataWithCache(false, user);
         this.io.to('system-load').emit('load-update', memoryData);
       } catch (error) {
         console.error('Error in Memory monitoring:', error);
@@ -159,8 +169,13 @@ class SystemLoadWebSocketManager {
           return;
         }
 
+        // Get first connected user for data formatting
+        const firstSocketId = room ? Array.from(room)[0] : null;
+        const socketObj = firstSocketId ? this.io.sockets.get(firstSocketId) : null;
+        const user = socketObj?.user || null;
+
         // Get Network data and send update
-        const networkData = await this.getNetworkDataWithCache();
+        const networkData = await this.getNetworkDataWithCache(false, user);
         this.io.to('system-load').emit('load-update', networkData);
       } catch (error) {
         console.error('Error in Network monitoring:', error);
@@ -245,9 +260,9 @@ class SystemLoadWebSocketManager {
     try {
       // Get all data types for initial connection
       const [cpuData, memoryData, networkData] = await Promise.all([
-        this.getCpuDataWithCache(forceRefresh),
-        this.getMemoryDataWithCache(forceRefresh),
-        this.getNetworkDataWithCache(forceRefresh)
+        this.getCpuDataWithCache(forceRefresh, socket.user),
+        this.getMemoryDataWithCache(forceRefresh, socket.user),
+        this.getNetworkDataWithCache(forceRefresh, socket.user)
       ]);
 
       const loadData = {
@@ -274,7 +289,7 @@ class SystemLoadWebSocketManager {
   /**
    * Get CPU data with caching
    */
-  async getCpuDataWithCache(forceRefresh = false) {
+  async getCpuDataWithCache(forceRefresh = false, user = null) {
     const cacheKey = 'cpu-data';
     const cached = this.dataCache.get(cacheKey);
 
@@ -284,7 +299,7 @@ class SystemLoadWebSocketManager {
     }
 
     try {
-      const cpuData = await this.systemService.getCpuLoad();
+      const cpuData = await this.systemService.getCpuLoad(user);
 
       // Cache the result
       this.dataCache.set(cacheKey, {
@@ -306,7 +321,7 @@ class SystemLoadWebSocketManager {
   /**
    * Get Memory data with caching
    */
-  async getMemoryDataWithCache(forceRefresh = false) {
+  async getMemoryDataWithCache(forceRefresh = false, user = null) {
     const cacheKey = 'memory-data';
     const cached = this.dataCache.get(cacheKey);
 
@@ -316,7 +331,7 @@ class SystemLoadWebSocketManager {
     }
 
     try {
-      const memoryData = await this.systemService.getMemoryLoad();
+      const memoryData = await this.systemService.getMemoryLoad(user);
 
       // Cache the result
       this.dataCache.set(cacheKey, {
@@ -335,7 +350,7 @@ class SystemLoadWebSocketManager {
   /**
    * Get Network data with caching
    */
-  async getNetworkDataWithCache(forceRefresh = false) {
+  async getNetworkDataWithCache(forceRefresh = false, user = null) {
     const cacheKey = 'network-data';
     const cached = this.dataCache.get(cacheKey);
 
@@ -345,7 +360,7 @@ class SystemLoadWebSocketManager {
     }
 
     try {
-      const networkData = await this.systemService.getNetworkLoad();
+      const networkData = await this.systemService.getNetworkLoad(user);
 
       // Cache the result
       this.dataCache.set(cacheKey, {
@@ -570,7 +585,8 @@ class SystemLoadWebSocketManager {
         user: {
           id: currentUser.id,
           username: currentUser.username,
-          role: currentUser.role
+          role: currentUser.role,
+          byte_format: currentUser.byte_format
         }
       };
 
