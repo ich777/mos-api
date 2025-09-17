@@ -146,7 +146,7 @@ class SystemService {
         // Determine core type information
         const isPhysical = index < cpu.physicalCores;
         const isHyperThreaded = index >= cpu.physicalCores;
-        const physicalCoreNumber = isPhysical ? index + 1 : Math.floor(index / 2) + 1;
+        const physicalCoreNumber = isPhysical ? index + 1 : (index - cpu.physicalCores) + 1;
 
         // Try to detect Performance vs Efficiency cores (mainly for Intel 12th gen+)
         let coreArchitecture = 'Standard';
