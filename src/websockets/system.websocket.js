@@ -6,8 +6,9 @@ class SystemLoadWebSocketManager {
     this.dataCache = new Map();
     this.staticDataCache = new Map(); // Cache for static system data
     this.clientStaticDataSent = new Set(); // Track which clients received static data
-    this.cacheDuration = 1750; // 1.75 seconds cache
-    this.defaultInterval = 2000; // 2 seconds default update interval
+    this.cacheDuration = 750; // 0.75 seconds cache
+    this.cpuInterval = 1000; // 1 second CPU/Memory updates
+    this.networkInterval = 2000; // 2 seconds Network updates
   }
 
   /**
@@ -19,7 +20,7 @@ class SystemLoadWebSocketManager {
     // Subscribe to system load updates
     socket.on('subscribe-load', async (data) => {
       try {
-        const { interval = this.defaultInterval, token } = data;
+        const { token } = data;
 
         // Authenticate user
         const authResult = await this.authenticateUser(token);
@@ -39,9 +40,12 @@ class SystemLoadWebSocketManager {
         await this.sendSystemLoadUpdate(socket, true, true);
 
         // Start monitoring
-        this.startSystemLoadMonitoring(interval);
+        this.startSystemLoadMonitoring();
 
-        socket.emit('load-subscription-confirmed', { interval });
+        socket.emit('load-subscription-confirmed', {
+          cpuInterval: this.cpuInterval,
+          networkInterval: this.networkInterval
+        });
       } catch (error) {
         console.error('Error in subscribe-load:', error);
         socket.emit('error', { message: 'Failed to subscribe to system load updates' });
@@ -94,52 +98,93 @@ class SystemLoadWebSocketManager {
   }
 
   /**
-   * Start monitoring system load if not already active
+   * Start monitoring system load with separate timers for CPU/Memory and Network
    */
-  startSystemLoadMonitoring(interval) {
-    // Use explicit default if no interval provided
-    if (!interval) {
-      interval = this.defaultInterval;
-    }
-    const monitoringKey = 'system-load';
-
+  startSystemLoadMonitoring() {
     // Stop any existing monitoring first
-    if (this.activeSubscriptions.has(monitoringKey)) {
-      const existing = this.activeSubscriptions.get(monitoringKey);
-      if (existing.interval === interval) {
-        return; // Already monitoring with same interval
-      }
-      // Stop existing monitoring to restart with new interval
-      console.log(`Restarting system load monitoring: ${existing.interval}ms → ${interval}ms`);
-      clearInterval(existing.intervalId);
-      this.activeSubscriptions.delete(monitoringKey);
-    }
+    this.stopSystemLoadMonitoring();
 
-    console.log(`Starting system load monitoring with ${interval}ms interval`);
+    console.log(`Starting system load monitoring - CPU/Memory: ${this.cpuInterval}ms, Network: ${this.networkInterval}ms`);
 
-    const intervalId = setInterval(async () => {
+    // CPU/Memory Timer - Fast updates (1 second)
+    const cpuIntervalId = setInterval(async () => {
       try {
         // Check if anyone is still subscribed
         const room = this.io.adapter.rooms.get('system-load');
         if (!room || room.size === 0) {
-          console.log('No clients subscribed to system load, stopping monitoring');
-          clearInterval(intervalId);
-          this.activeSubscriptions.delete(monitoringKey);
+          console.log('No clients subscribed to system load, stopping CPU monitoring');
+          this.stopSystemLoadMonitoring();
           return;
         }
 
-        // Send partial update to all subscribers (dynamic data only)
-        await this.sendSystemLoadUpdate(null, false, false);
+        // Get CPU/Memory data and send update
+        const cpuData = await this.getCpuMemoryDataWithCache();
+        this.io.to('system-load').emit('load-update', cpuData);
       } catch (error) {
-        console.error('Error in system load monitoring:', error);
+        console.error('Error in CPU/Memory monitoring:', error);
       }
-    }, interval);
+    }, this.cpuInterval);
 
-    this.activeSubscriptions.set(monitoringKey, {
-      intervalId,
-      interval,
-      startTime: Date.now()
+    // Network Timer - Slower updates (2 seconds)
+    const networkIntervalId = setInterval(async () => {
+      try {
+        // Check if anyone is still subscribed
+        const room = this.io.adapter.rooms.get('system-load');
+        if (!room || room.size === 0) {
+          console.log('No clients subscribed to system load, stopping Network monitoring');
+          this.stopSystemLoadMonitoring();
+          return;
+        }
+
+        // Get Network data and send update
+        const networkData = await this.getNetworkDataWithCache();
+        this.io.to('system-load').emit('load-update', networkData);
+      } catch (error) {
+        console.error('Error in Network monitoring:', error);
+      }
+    }, this.networkInterval);
+
+    // Store both timers
+    this.activeSubscriptions.set('system-load-cpu', {
+      intervalId: cpuIntervalId,
+      interval: this.cpuInterval,
+      startTime: Date.now(),
+      type: 'cpu'
     });
+
+    this.activeSubscriptions.set('system-load-network', {
+      intervalId: networkIntervalId,
+      interval: this.networkInterval,
+      startTime: Date.now(),
+      type: 'network'
+    });
+  }
+
+  /**
+   * Stop system load monitoring
+   */
+  stopSystemLoadMonitoring() {
+    // Stop CPU monitoring
+    const cpuSubscription = this.activeSubscriptions.get('system-load-cpu');
+    if (cpuSubscription) {
+      clearInterval(cpuSubscription.intervalId);
+      this.activeSubscriptions.delete('system-load-cpu');
+    }
+
+    // Stop Network monitoring
+    const networkSubscription = this.activeSubscriptions.get('system-load-network');
+    if (networkSubscription) {
+      clearInterval(networkSubscription.intervalId);
+      this.activeSubscriptions.delete('system-load-network');
+    }
+
+    // Clear caches
+    this.dataCache.delete('cpu-memory-data');
+    this.dataCache.delete('network-data');
+    this.staticDataCache.clear();
+    this.clientStaticDataSent.clear();
+
+    console.log('System load monitoring stopped');
   }
 
   /**
@@ -148,84 +193,48 @@ class SystemLoadWebSocketManager {
   checkStopSystemLoadMonitoring() {
     const room = this.io.adapter.rooms.get('system-load');
     if (!room || room.size === 0) {
-      // Stop monitoring subscription
-      const subscription = this.activeSubscriptions.get('system-load');
-      if (subscription) {
-        console.log('Stopping system load monitoring');
-        clearInterval(subscription.intervalId);
-        this.activeSubscriptions.delete('system-load');
-        // Clear all caches
-        this.dataCache.delete('system-load-data');
-        this.dataCache.delete('system-load-dynamic');
-        this.staticDataCache.clear();
-        this.clientStaticDataSent.clear();
-      }
+      this.stopSystemLoadMonitoring();
     }
   }
 
   /**
-   * Send system load update to socket or room
-   * @param {Object} socket - Specific socket to send to (null for room broadcast)
+   * Send initial system load data to new client
+   * @param {Object} socket - Socket to send to
    * @param {boolean} forceRefresh - Force cache refresh
-   * @param {boolean} sendFullData - Send complete data structure (true) or only dynamic values (false)
    */
   async sendSystemLoadUpdate(socket, forceRefresh = false, sendFullData = false) {
     try {
-      let loadData;
+      // Get both CPU/Memory and Network data for initial connection
+      const [cpuData, networkData] = await Promise.all([
+        this.getCpuMemoryDataWithCache(forceRefresh),
+        this.getNetworkDataWithCache(forceRefresh)
+      ]);
 
-      if (sendFullData) {
-        // Send complete data structure (for initial connection or forced refresh)
-        loadData = await this.getSystemLoadDataWithCache(forceRefresh);
+      const loadData = {
+        ...cpuData,
+        ...networkData
+      };
 
-        // Mark clients as having received static data
-        if (socket) {
-          this.clientStaticDataSent.add(socket.id);
-        } else {
-          // For room broadcast, mark all clients in room
-          const room = this.io.adapter.rooms.get('system-load');
-          if (room) {
-            room.forEach(socketId => {
-              this.clientStaticDataSent.add(socketId);
-            });
-          }
-        }
-      } else {
-        // Send only dynamic data for efficiency
-        loadData = await this.getDynamicSystemLoadData(forceRefresh);
-      }
+      // Mark client as having received static data
+      this.clientStaticDataSent.add(socket.id);
 
-      // Send system load data
-      if (socket) {
-        socket.emit('load-update', loadData);
-      } else {
-        this.io.to('system-load').emit('load-update', loadData);
-      }
-
-      // Debug
-      //console.log(`System load update sent (${sendFullData ? 'full' : 'partial'} data)`);
+      // Send initial complete data
+      socket.emit('load-update', loadData);
 
     } catch (error) {
       console.error('Failed to send system load update:', error);
-
-      const errorMsg = {
+      socket.emit('error', {
         error: error.message,
         timestamp: new Date().toISOString()
-      };
-
-      if (socket) {
-        socket.emit('error', errorMsg);
-      } else {
-        this.io.to('system-load').emit('error', errorMsg);
-      }
+      });
     }
   }
 
   /**
-   * Get complete system load data with caching
-   * Reuses the system service method to maintain consistency with REST API
+   * Get CPU/Memory data with caching
    */
-  async getSystemLoadDataWithCache(forceRefresh = false) {
-    const cacheKey = 'system-load-data';
+  async getCpuMemoryDataWithCache(forceRefresh = false) {
+    const cacheKey = 'cpu-memory-data';
     const cached = this.dataCache.get(cacheKey);
 
     // Return cached data if valid and not forcing refresh
@@ -234,58 +243,55 @@ class SystemLoadWebSocketManager {
     }
 
     try {
-      // Use system service method same as REST API GET /system/load
-      const loadData = await this.systemService.getSystemLoad();
+      const cpuData = await this.systemService.getCpuMemoryLoad();
 
-      // Cache the complete result
+      // Cache the result
       this.dataCache.set(cacheKey, {
-        data: loadData,
+        data: cpuData,
         timestamp: Date.now()
       });
 
-      // Also cache static data separately for future use
-      this.cacheStaticData(loadData);
+      // Cache static data separately (CPU data only)
+      this.cacheStaticData(cpuData);
 
-      return loadData;
+      return cpuData;
 
     } catch (error) {
-      console.error('Error getting system load data:', error);
+      console.error('Error getting CPU/Memory data:', error);
       throw error;
     }
   }
 
   /**
-   * Get only dynamic system load data (optimized for frequent updates)
+   * Get Network data with caching
    */
-  async getDynamicSystemLoadData(forceRefresh = false) {
-    const cacheKey = 'system-load-dynamic';
+  async getNetworkDataWithCache(forceRefresh = false) {
+    const cacheKey = 'network-data';
     const cached = this.dataCache.get(cacheKey);
 
-    // Return cached dynamic data if valid and not forcing refresh
+    // Return cached data if valid and not forcing refresh
     if (!forceRefresh && cached && (Date.now() - cached.timestamp) < this.cacheDuration) {
       return cached.data;
     }
 
     try {
-      // Get fresh complete data
-      const fullData = await this.systemService.getSystemLoad();
+      const networkData = await this.systemService.getNetworkLoad();
 
-      // Extract only dynamic values
-      const dynamicData = this.extractDynamicData(fullData);
-
-      // Cache the dynamic result
+      // Cache the result
       this.dataCache.set(cacheKey, {
-        data: dynamicData,
+        data: networkData,
         timestamp: Date.now()
       });
 
-      return dynamicData;
+      return networkData;
 
     } catch (error) {
-      console.error('Error getting dynamic system load data:', error);
+      console.error('Error getting Network data:', error);
       throw error;
     }
   }
+
+
 
   /**
    * Cache static system data separately
@@ -305,8 +311,12 @@ class SystemLoadWebSocketManager {
       memory: {
         total: fullData.memory.total,
         total_human: fullData.memory.total_human
-      },
-      network: {
+      }
+    };
+
+    // Only add network data if it exists
+    if (fullData.network && fullData.network.interfaces) {
+      staticData.network = {
         interfaces: fullData.network.interfaces.map(iface => ({
           interface: iface.interface,
           type: iface.type,
@@ -315,8 +325,8 @@ class SystemLoadWebSocketManager {
           ip6: iface.ip6,
           mac: iface.mac
         }))
-      }
-    };
+      };
+    }
 
     this.staticDataCache.set('system-static-data', {
       data: staticData,
@@ -364,11 +374,17 @@ class SystemLoadWebSocketManager {
     try {
       const room = this.io.adapter.rooms.get('system-load');
       if (room && room.size > 0) {
-        // Clear cache
-        this.dataCache.delete('system-load-data');
-        this.dataCache.delete('system-load-dynamic');
-        // Send update with full data to refresh all clients
-        await this.sendSystemLoadUpdate(null, true, true);
+        // Clear caches
+        this.dataCache.delete('cpu-memory-data');
+        this.dataCache.delete('network-data');
+        // Force immediate updates
+        const [cpuData, networkData] = await Promise.all([
+          this.getCpuMemoryDataWithCache(true),
+          this.getNetworkDataWithCache(true)
+        ]);
+        // Send combined update
+        const combinedData = { ...cpuData, ...networkData };
+        this.io.to('system-load').emit('load-update', combinedData);
       }
     } catch (error) {
       console.error('Failed to emit system load update:', error);
@@ -388,17 +404,25 @@ class SystemLoadWebSocketManager {
    */
   getMonitoringStats() {
     const room = this.io.adapter.rooms.get('system-load');
-    const subscription = this.activeSubscriptions.get('system-load');
+    const cpuSubscription = this.activeSubscriptions.get('system-load-cpu');
+    const networkSubscription = this.activeSubscriptions.get('system-load-network');
 
     return {
       activeSubscriptions: this.activeSubscriptions.size,
       cachedData: this.dataCache.size,
       clientCount: room ? room.size : 0,
-      subscription: subscription ? {
-        interval: subscription.interval,
-        uptime: Date.now() - subscription.startTime,
-        isActive: true
-      } : null
+      subscriptions: {
+        cpu: cpuSubscription ? {
+          interval: cpuSubscription.interval,
+          uptime: Date.now() - cpuSubscription.startTime,
+          isActive: true
+        } : null,
+        network: networkSubscription ? {
+          interval: networkSubscription.interval,
+          uptime: Date.now() - networkSubscription.startTime,
+          isActive: true
+        } : null
+      }
     };
   }
 

@@ -124,16 +124,14 @@ class SystemService {
   }
 
   /**
-   * Get system load and temperature information including per-core metrics, network utilization and memory info
-   * @returns {Promise<Object>} Load, temperature, network and memory info
+   * Get CPU, memory and temperature information (fast - no network stats)
+   * @returns {Promise<Object>} CPU, memory and temperature info
    */
-  async getSystemLoad() {
+  async getCpuMemoryLoad() {
     try {
-      const [currentLoad, temp, networkStats, networkInterfaces, mem, cpu] = await Promise.all([
+      const [currentLoad, temp, mem, cpu] = await Promise.all([
         si.currentLoad(),
         si.cpuTemperature(),
-        si.networkStats(),
-        si.networkInterfaces(),
         si.mem(),
         si.cpu()
       ]);
@@ -174,6 +172,74 @@ class SystemService {
           coreArchitecture: coreArchitecture
         };
       });
+
+      // Helper function to format bytes in human readable format
+      const formatBytes = (bytes) => {
+        if (bytes === 0) return '0 B';
+        const k = 1024;
+        const sizes = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+      };
+
+      // Calculate actually used RAM without dirty caches
+      const actuallyUsed = mem.total - mem.available;
+      const dirtyCaches = mem.used - actuallyUsed;
+
+      return {
+        cpu: {
+          load: Math.round(currentLoad.currentLoad * 100) / 100,
+          info: {
+            brand: cpu.brand,
+            manufacturer: cpu.manufacturer,
+            totalCores: cpu.cores,
+            physicalCores: cpu.physicalCores,
+            logicalCores: cpu.cores,
+            hyperThreadingEnabled: cpu.cores > cpu.physicalCores,
+            architecture: cpu.family ? `Family ${cpu.family}, Model ${cpu.model}` : 'Unknown'
+          },
+          cores: coreLoads
+        },
+        temperature: {
+          main: temp.main,
+          max: Math.max(...temp.cores.filter(t => t !== null)),
+          min: Math.min(...temp.cores.filter(t => t !== null)),
+          cores: temp.cores
+        },
+        memory: {
+          total: mem.total,
+          total_human: formatBytes(mem.total),
+          free: mem.available,
+          free_human: formatBytes(mem.available),
+          used: actuallyUsed,
+          used_human: formatBytes(actuallyUsed),
+          dirty: {
+            free: mem.free,
+            used: mem.used,
+            dirtyCaches: dirtyCaches
+          },
+          percentage: {
+            used: Math.round((mem.used / mem.total) * 100),
+            actuallyUsed: Math.round((actuallyUsed / mem.total) * 100),
+            dirtyCaches: Math.round((dirtyCaches / mem.total) * 100)
+          }
+        }
+      };
+    } catch (error) {
+      throw new Error(`Error getting CPU/memory load: ${error.message}`);
+    }
+  }
+
+  /**
+   * Get network statistics (slow - includes 1s measurement)
+   * @returns {Promise<Object>} Network statistics
+   */
+  async getNetworkLoad() {
+    try {
+      const [networkStats, networkInterfaces] = await Promise.all([
+        si.networkStats(),
+        si.networkInterfaces()
+      ]);
 
       // Helper function to format bytes in human readable format
       const formatBytes = (bytes) => {
@@ -229,35 +295,35 @@ class SystemService {
             ip4: interfaceInfo.ip4 || null,
             ip6: interfaceInfo.ip6 || null,
             mac: interfaceInfo.mac || null,
-          statistics: {
-            rx: {
-              bytes: stat.rx_bytes,
-              bytes_human: formatBytes(stat.rx_bytes),
-              packets: stat.rx_packets,
-              errors: stat.rx_errors,
-              dropped: stat.rx_dropped,
-              speed_bps: stat.rx_sec || 0,
-              speed_human: formatSpeed(stat.rx_sec || 0)
-            },
-            tx: {
-              bytes: stat.tx_bytes,
-              bytes_human: formatBytes(stat.tx_bytes),
-              packets: stat.tx_packets,
-              errors: stat.tx_errors,
-              dropped: stat.tx_dropped,
-              speed_bps: stat.tx_sec || 0,
-              speed_human: formatSpeed(stat.tx_sec || 0)
-            },
-            total: {
-              bytes: stat.rx_bytes + stat.tx_bytes,
-              bytes_human: formatBytes(stat.rx_bytes + stat.tx_bytes),
-              packets: stat.rx_packets + stat.tx_packets,
-              speed_bps: (stat.rx_sec || 0) + (stat.tx_sec || 0),
-              speed_human: formatSpeed((stat.rx_sec || 0) + (stat.tx_sec || 0))
+            statistics: {
+              rx: {
+                bytes: stat.rx_bytes,
+                bytes_human: formatBytes(stat.rx_bytes),
+                packets: stat.rx_packets,
+                errors: stat.rx_errors,
+                dropped: stat.rx_dropped,
+                speed_bps: stat.rx_sec || 0,
+                speed_human: formatSpeed(stat.rx_sec || 0)
+              },
+              tx: {
+                bytes: stat.tx_bytes,
+                bytes_human: formatBytes(stat.tx_bytes),
+                packets: stat.tx_packets,
+                errors: stat.tx_errors,
+                dropped: stat.tx_dropped,
+                speed_bps: stat.tx_sec || 0,
+                speed_human: formatSpeed(stat.tx_sec || 0)
+              },
+              total: {
+                bytes: stat.rx_bytes + stat.tx_bytes,
+                bytes_human: formatBytes(stat.rx_bytes + stat.tx_bytes),
+                packets: stat.rx_packets + stat.tx_packets,
+                speed_bps: (stat.rx_sec || 0) + (stat.tx_sec || 0),
+                speed_human: formatSpeed((stat.rx_sec || 0) + (stat.tx_sec || 0))
+              }
             }
-          }
-        };
-      });
+          };
+        });
 
       // Calculate totals across all interfaces
       const totals = interfaces.reduce((acc, iface) => {
@@ -277,48 +343,7 @@ class SystemService {
         tx_speed: 0
       });
 
-      // Calculate actually used RAM without dirty caches
-      const actuallyUsed = mem.total - mem.available;
-      const dirtyCaches = mem.used - actuallyUsed;
-
       return {
-        cpu: {
-          load: Math.round(currentLoad.currentLoad * 100) / 100,
-          info: {
-            brand: cpu.brand,
-            manufacturer: cpu.manufacturer,
-            totalCores: cpu.cores,
-            physicalCores: cpu.physicalCores,
-            logicalCores: cpu.cores,
-            hyperThreadingEnabled: cpu.cores > cpu.physicalCores,
-            architecture: cpu.family ? `Family ${cpu.family}, Model ${cpu.model}` : 'Unknown'
-          },
-          cores: coreLoads
-        },
-        temperature: {
-          main: temp.main,
-          max: Math.max(...temp.cores.filter(t => t !== null)),
-          min: Math.min(...temp.cores.filter(t => t !== null)),
-          cores: temp.cores
-        },
-        memory: {
-          total: mem.total,
-          total_human: formatBytes(mem.total),
-          free: mem.available,
-          free_human: formatBytes(mem.available),
-          used: actuallyUsed,
-          used_human: formatBytes(actuallyUsed),
-          dirty: {
-            free: mem.free,
-            used: mem.used,
-            dirtyCaches: dirtyCaches
-          },
-          percentage: {
-            used: Math.round((mem.used / mem.total) * 100),
-            actuallyUsed: Math.round((actuallyUsed / mem.total) * 100),
-            dirtyCaches: Math.round((dirtyCaches / mem.total) * 100)
-          }
-        },
         network: {
           interfaces,
           summary: {
@@ -349,6 +374,27 @@ class SystemService {
             }
           }
         }
+      };
+    } catch (error) {
+      throw new Error(`Error getting network load: ${error.message}`);
+    }
+  }
+
+  /**
+   * Get system load and temperature information including per-core metrics, network utilization and memory info
+   * @returns {Promise<Object>} Load, temperature, network and memory info
+   */
+  async getSystemLoad() {
+    try {
+      // Combine CPU/Memory and Network data
+      const [cpuMemoryData, networkData] = await Promise.all([
+        this.getCpuMemoryLoad(),
+        this.getNetworkLoad()
+      ]);
+
+      return {
+        ...cpuMemoryData,
+        ...networkData
       };
     } catch (error) {
       throw new Error(`Error getting system load: ${error.message}`);
