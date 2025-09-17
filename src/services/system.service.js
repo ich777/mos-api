@@ -30,6 +30,22 @@ class SystemService {
   }
 
   /**
+   * Helper function to format memory bytes - ALWAYS uses binary units (GiB)
+   * Memory should always be displayed in binary units regardless of user preference
+   * @param {number} bytes - Bytes to format
+   * @returns {string} Human readable format in binary units
+   */
+  formatMemoryBytes(bytes) {
+    if (bytes === 0) return '0 B';
+
+    const k = 1024; // Always binary for memory
+    const sizes = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+  }
+
+  /**
    * Helper function to format speed in human readable format
    * @param {number} bytesPerSecond - Bytes per second to format
    * @param {Object} user - User object with byte_format preference
@@ -274,11 +290,11 @@ class SystemService {
       return {
         memory: {
           total: mem.total,
-          total_human: this.formatBytes(mem.total, user),
+          total_human: this.formatMemoryBytes(mem.total),
           free: mem.available,
-          free_human: this.formatBytes(mem.available, user),
+          free_human: this.formatMemoryBytes(mem.available),
           used: actuallyUsed,
-          used_human: this.formatBytes(actuallyUsed, user),
+          used_human: this.formatMemoryBytes(actuallyUsed),
           dirty: {
             free: mem.free,
             used: mem.used,
