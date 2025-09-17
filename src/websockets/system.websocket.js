@@ -4,11 +4,12 @@ class SystemLoadWebSocketManager {
     this.systemService = systemService;
     this.activeSubscriptions = new Map();
     this.dataCache = new Map();
-    this.staticDataCache = new Map(); // Cache for static system data
-    this.clientStaticDataSent = new Set(); // Track which clients received static data
-    this.cacheDuration = 750; // 0.75 seconds cache
-    this.cpuInterval = 1000; // 1 second CPU/Memory updates
-    this.networkInterval = 2000; // 2 seconds Network updates
+    this.staticDataCache = new Map();
+    this.clientStaticDataSent = new Set();
+    this.cacheDuration = 750;
+    this.cpuInterval = 1000;
+    this.memoryInterval = 4000;
+    this.networkInterval = 2000;
   }
 
   /**
@@ -44,6 +45,7 @@ class SystemLoadWebSocketManager {
 
         socket.emit('load-subscription-confirmed', {
           cpuInterval: this.cpuInterval,
+          memoryInterval: this.memoryInterval,
           networkInterval: this.networkInterval
         });
       } catch (error) {
@@ -104,9 +106,9 @@ class SystemLoadWebSocketManager {
     // Stop any existing monitoring first
     this.stopSystemLoadMonitoring();
 
-    console.log(`Starting system load monitoring - CPU/Memory: ${this.cpuInterval}ms, Network: ${this.networkInterval}ms`);
+    console.log(`Starting system load monitoring - CPU: ${this.cpuInterval}ms, Memory: ${this.memoryInterval}ms, Network: ${this.networkInterval}ms`);
 
-    // CPU/Memory Timer - Fast updates (1 second)
+    // CPU Timer - Fastest updates (1 second)
     const cpuIntervalId = setInterval(async () => {
       try {
         // Check if anyone is still subscribed
@@ -117,13 +119,32 @@ class SystemLoadWebSocketManager {
           return;
         }
 
-        // Get CPU/Memory data and send update
-        const cpuData = await this.getCpuMemoryDataWithCache();
+        // Get CPU data and send update
+        const cpuData = await this.getCpuDataWithCache();
         this.io.to('system-load').emit('load-update', cpuData);
       } catch (error) {
-        console.error('Error in CPU/Memory monitoring:', error);
+        console.error('Error in CPU monitoring:', error);
       }
     }, this.cpuInterval);
+
+    // Memory Timer - Medium updates (4 seconds)
+    const memoryIntervalId = setInterval(async () => {
+      try {
+        // Check if anyone is still subscribed
+        const room = this.io.adapter.rooms.get('system-load');
+        if (!room || room.size === 0) {
+          console.log('No clients subscribed to system load, stopping Memory monitoring');
+          this.stopSystemLoadMonitoring();
+          return;
+        }
+
+        // Get Memory data and send update
+        const memoryData = await this.getMemoryDataWithCache();
+        this.io.to('system-load').emit('load-update', memoryData);
+      } catch (error) {
+        console.error('Error in Memory monitoring:', error);
+      }
+    }, this.memoryInterval);
 
     // Network Timer - Slower updates (2 seconds)
     const networkIntervalId = setInterval(async () => {
@@ -144,12 +165,19 @@ class SystemLoadWebSocketManager {
       }
     }, this.networkInterval);
 
-    // Store both timers
+    // Store all timers
     this.activeSubscriptions.set('system-load-cpu', {
       intervalId: cpuIntervalId,
       interval: this.cpuInterval,
       startTime: Date.now(),
       type: 'cpu'
+    });
+
+    this.activeSubscriptions.set('system-load-memory', {
+      intervalId: memoryIntervalId,
+      interval: this.memoryInterval,
+      startTime: Date.now(),
+      type: 'memory'
     });
 
     this.activeSubscriptions.set('system-load-network', {
@@ -171,6 +199,13 @@ class SystemLoadWebSocketManager {
       this.activeSubscriptions.delete('system-load-cpu');
     }
 
+    // Stop Memory monitoring
+    const memorySubscription = this.activeSubscriptions.get('system-load-memory');
+    if (memorySubscription) {
+      clearInterval(memorySubscription.intervalId);
+      this.activeSubscriptions.delete('system-load-memory');
+    }
+
     // Stop Network monitoring
     const networkSubscription = this.activeSubscriptions.get('system-load-network');
     if (networkSubscription) {
@@ -179,7 +214,8 @@ class SystemLoadWebSocketManager {
     }
 
     // Clear caches
-    this.dataCache.delete('cpu-memory-data');
+    this.dataCache.delete('cpu-data');
+    this.dataCache.delete('memory-data');
     this.dataCache.delete('network-data');
     this.staticDataCache.clear();
     this.clientStaticDataSent.clear();
@@ -204,14 +240,16 @@ class SystemLoadWebSocketManager {
    */
   async sendSystemLoadUpdate(socket, forceRefresh = false, sendFullData = false) {
     try {
-      // Get both CPU/Memory and Network data for initial connection
-      const [cpuData, networkData] = await Promise.all([
-        this.getCpuMemoryDataWithCache(forceRefresh),
+      // Get all data types for initial connection
+      const [cpuData, memoryData, networkData] = await Promise.all([
+        this.getCpuDataWithCache(forceRefresh),
+        this.getMemoryDataWithCache(forceRefresh),
         this.getNetworkDataWithCache(forceRefresh)
       ]);
 
       const loadData = {
         ...cpuData,
+        ...memoryData,
         ...networkData
       };
 
@@ -231,10 +269,10 @@ class SystemLoadWebSocketManager {
   }
 
   /**
-   * Get CPU/Memory data with caching
+   * Get CPU data with caching
    */
-  async getCpuMemoryDataWithCache(forceRefresh = false) {
-    const cacheKey = 'cpu-memory-data';
+  async getCpuDataWithCache(forceRefresh = false) {
+    const cacheKey = 'cpu-data';
     const cached = this.dataCache.get(cacheKey);
 
     // Return cached data if valid and not forcing refresh
@@ -243,7 +281,7 @@ class SystemLoadWebSocketManager {
     }
 
     try {
-      const cpuData = await this.systemService.getCpuMemoryLoad();
+      const cpuData = await this.systemService.getCpuLoad();
 
       // Cache the result
       this.dataCache.set(cacheKey, {
@@ -251,13 +289,42 @@ class SystemLoadWebSocketManager {
         timestamp: Date.now()
       });
 
-      // Cache static data separately (CPU data only)
+      // Cache static data separately
       this.cacheStaticData(cpuData);
 
       return cpuData;
 
     } catch (error) {
-      console.error('Error getting CPU/Memory data:', error);
+      console.error('Error getting CPU data:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get Memory data with caching
+   */
+  async getMemoryDataWithCache(forceRefresh = false) {
+    const cacheKey = 'memory-data';
+    const cached = this.dataCache.get(cacheKey);
+
+    // Return cached data if valid and not forcing refresh
+    if (!forceRefresh && cached && (Date.now() - cached.timestamp) < this.cacheDuration) {
+      return cached.data;
+    }
+
+    try {
+      const memoryData = await this.systemService.getMemoryLoad();
+
+      // Cache the result
+      this.dataCache.set(cacheKey, {
+        data: memoryData,
+        timestamp: Date.now()
+      });
+
+      return memoryData;
+
+    } catch (error) {
+      console.error('Error getting Memory data:', error);
       throw error;
     }
   }
@@ -307,12 +374,16 @@ class SystemLoadWebSocketManager {
           physicalCoreNumber: core.physicalCoreNumber,
           coreArchitecture: core.coreArchitecture
         }))
-      },
-      memory: {
-        total: fullData.memory.total,
-        total_human: fullData.memory.total_human
       }
     };
+
+    // Only add memory data if it exists
+    if (fullData.memory) {
+      staticData.memory = {
+        total: fullData.memory.total,
+        total_human: fullData.memory.total_human
+      };
+    }
 
     // Only add network data if it exists
     if (fullData.network && fullData.network.interfaces) {
@@ -375,15 +446,17 @@ class SystemLoadWebSocketManager {
       const room = this.io.adapter.rooms.get('system-load');
       if (room && room.size > 0) {
         // Clear caches
-        this.dataCache.delete('cpu-memory-data');
+        this.dataCache.delete('cpu-data');
+        this.dataCache.delete('memory-data');
         this.dataCache.delete('network-data');
         // Force immediate updates
-        const [cpuData, networkData] = await Promise.all([
-          this.getCpuMemoryDataWithCache(true),
+        const [cpuData, memoryData, networkData] = await Promise.all([
+          this.getCpuDataWithCache(true),
+          this.getMemoryDataWithCache(true),
           this.getNetworkDataWithCache(true)
         ]);
         // Send combined update
-        const combinedData = { ...cpuData, ...networkData };
+        const combinedData = { ...cpuData, ...memoryData, ...networkData };
         this.io.to('system-load').emit('load-update', combinedData);
       }
     } catch (error) {
@@ -405,6 +478,7 @@ class SystemLoadWebSocketManager {
   getMonitoringStats() {
     const room = this.io.adapter.rooms.get('system-load');
     const cpuSubscription = this.activeSubscriptions.get('system-load-cpu');
+    const memorySubscription = this.activeSubscriptions.get('system-load-memory');
     const networkSubscription = this.activeSubscriptions.get('system-load-network');
 
     return {
@@ -415,6 +489,11 @@ class SystemLoadWebSocketManager {
         cpu: cpuSubscription ? {
           interval: cpuSubscription.interval,
           uptime: Date.now() - cpuSubscription.startTime,
+          isActive: true
+        } : null,
+        memory: memorySubscription ? {
+          interval: memorySubscription.interval,
+          uptime: Date.now() - memorySubscription.startTime,
           isActive: true
         } : null,
         network: networkSubscription ? {
