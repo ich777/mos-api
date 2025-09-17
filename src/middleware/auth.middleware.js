@@ -67,7 +67,8 @@ const authenticateToken = async (req, res, next) => {
     req.user = {
       id: currentUser.id,
       username: currentUser.username,
-      role: currentUser.role
+      role: currentUser.role,
+      byte_format: currentUser.byte_format
     };
 
     next();

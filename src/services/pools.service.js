@@ -22,6 +22,60 @@ class PoolsService {
       uid: 500,
       gid: 500
     };
+
+  }
+
+  /**
+   * Helper function to format bytes in human readable format
+   * @param {number} bytes - Bytes to format
+   * @param {Object} user - User object with byte_format preference
+   * @returns {string} Human readable format
+   */
+  formatBytes(bytes, user = null) {
+    if (bytes === 0) return '0 B';
+
+    const byteFormat = this._getUserByteFormat(user);
+    const isBinary = byteFormat === 'binary';
+    const k = isBinary ? 1024 : 1000;
+    const sizes = isBinary
+      ? ['B', 'KiB', 'MiB', 'GiB', 'TiB']
+      : ['B', 'KB', 'MB', 'GB', 'TB'];
+
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+  }
+
+  /**
+   * Helper function to format speed in human readable format
+   * @param {number} bytesPerSecond - Bytes per second to format
+   * @param {Object} user - User object with byte_format preference
+   * @returns {string} Human readable format
+   */
+  formatSpeed(bytesPerSecond, user = null) {
+    if (bytesPerSecond === 0) return '0 B/s';
+
+    const byteFormat = this._getUserByteFormat(user);
+    const isBinary = byteFormat === 'binary';
+    const k = isBinary ? 1024 : 1000;
+    const sizes = isBinary
+      ? ['B/s', 'KiB/s', 'MiB/s', 'GiB/s', 'TiB/s']
+      : ['B/s', 'KB/s', 'MB/s', 'GB/s', 'TB/s'];
+
+    const i = Math.floor(Math.log(bytesPerSecond) / Math.log(k));
+    return parseFloat((bytesPerSecond / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+  }
+
+  /**
+   * Get user's byte format preference
+   * @param {Object} user - User object
+   * @returns {string} Byte format ('binary' or 'decimal')
+   * @private
+   */
+  _getUserByteFormat(user) {
+    if (user && user.byte_format) {
+      return user.byte_format;
+    }
+    return 'binary'; // Default fallback
   }
 
   /**
@@ -1356,8 +1410,10 @@ class PoolsService {
 
   /**
    * Get device space information
+   * @param {string} mountPoint - Mount point path
+   * @param {Object} user - User object with byte_format preference
    */
-  async getDeviceSpace(mountPoint) {
+  async getDeviceSpace(mountPoint, user = null) {
     try {
       if (!(await this._isMounted(mountPoint))) {
         return {
@@ -1380,11 +1436,11 @@ class PoolsService {
         return {
           mounted: true,
           totalSpace,
-          totalSpace_human: this._bytesToHuman(totalSpace),
+          totalSpace_human: this.formatBytes(totalSpace, user),
           usedSpace,
-          usedSpace_human: this._bytesToHuman(usedSpace),
+          usedSpace_human: this.formatBytes(usedSpace, user),
           freeSpace,
-          freeSpace_human: this._bytesToHuman(freeSpace),
+          freeSpace_human: this.formatBytes(freeSpace, user),
           usagePercent: Math.round((usedSpace / totalSpace) * 100),
           health: "healthy"
         };
@@ -2013,8 +2069,10 @@ class PoolsService {
 
   /**
    * Inject storage information directly into pool devices (no disk access)
+   * @param {Object} pool - Pool object
+   * @param {Object} user - User object with byte_format preference
    */
-  async _injectStorageInfoIntoDevices(pool) {
+  async _injectStorageInfoIntoDevices(pool, user = null) {
     const dfData = await this._getDfData();
 
     // For BTRFS pools, get all physical devices from btrfs filesystem show
@@ -2058,11 +2116,11 @@ class PoolsService {
       if (storageData) {
         device.storage = {
           totalSpace: storageData.totalSpace,
-          totalSpace_human: this._bytesToHuman(storageData.totalSpace),
+          totalSpace_human: this.formatBytes(storageData.totalSpace, user),
           usedSpace: storageData.usedSpace,
-          usedSpace_human: this._bytesToHuman(storageData.usedSpace),
+          usedSpace_human: this.formatBytes(storageData.usedSpace, user),
           freeSpace: storageData.freeSpace,
-          freeSpace_human: this._bytesToHuman(storageData.freeSpace),
+          freeSpace_human: this.formatBytes(storageData.freeSpace, user),
           usagePercent: storageData.usagePercent
         };
         device.mountPoint = expectedMountPoint;
@@ -2120,11 +2178,11 @@ class PoolsService {
       if (storageData) {
         device.storage = {
           totalSpace: storageData.totalSpace,
-          totalSpace_human: this._bytesToHuman(storageData.totalSpace),
+          totalSpace_human: this.formatBytes(storageData.totalSpace, user),
           usedSpace: storageData.usedSpace,
-          usedSpace_human: this._bytesToHuman(storageData.usedSpace),
+          usedSpace_human: this.formatBytes(storageData.usedSpace, user),
           freeSpace: storageData.freeSpace,
-          freeSpace_human: this._bytesToHuman(storageData.freeSpace),
+          freeSpace_human: this.formatBytes(storageData.freeSpace, user),
           usagePercent: storageData.usagePercent
         };
         device.mountPoint = expectedMountPoint;
@@ -2144,8 +2202,9 @@ class PoolsService {
    * @param {Object} filters - Optional filters to apply
    * @param {string} filters.type - Filter by pool type (e.g., 'mergerfs', 'btrfs', 'xfs')
    * @param {string} filters.exclude_type - Exclude pools of specific type (e.g., 'mergerfs')
+   * @param {Object} user - User object with byte_format preference
    */
-  async listPools(filters = {}) {
+  async listPools(filters = {}, user = null) {
     try {
       let pools = await this._readPools();
 
@@ -2185,12 +2244,12 @@ class PoolsService {
         // Update mount status and space info
         if (pool.data_devices && pool.data_devices.length > 0) {
           const mountPoint = path.join(this.mountBasePath, pool.name);
-          const spaceInfo = await this.getDeviceSpace(mountPoint);
+          const spaceInfo = await this.getDeviceSpace(mountPoint, user);
           pool.status = spaceInfo;
         }
 
         // Inject storage information directly into device objects
-        await this._injectStorageInfoIntoDevices(pool);
+        await this._injectStorageInfoIntoDevices(pool, user);
 
         // Inject power status into individual device objects
         await this._injectPowerStatusIntoDevices(pool);
@@ -2207,8 +2266,10 @@ class PoolsService {
 
   /**
    * Get a pool by ID
+   * @param {string} poolId - Pool ID
+   * @param {Object} user - User object with byte_format preference
    */
-  async getPoolById(poolId) {
+  async getPoolById(poolId, user = null) {
     try {
       const pools = await this._readPools();
       const pool = pools.find(p => p.id === poolId);
@@ -2233,18 +2294,15 @@ class PoolsService {
       // Update pool status
       if (pool.data_devices && pool.data_devices.length > 0) {
         const mountPoint = path.join(this.mountBasePath, pool.name);
-        const spaceInfo = await this.getDeviceSpace(mountPoint);
+        const spaceInfo = await this.getDeviceSpace(mountPoint, user);
         pool.status = spaceInfo;
 
-        // Note: We don't write back status to pools.json for read-only operations
-        // The status info is dynamic and should not be persisted
+        // Inject storage information directly into device objects
+        await this._injectStorageInfoIntoDevices(pool, user);
+
+        // Inject power status into individual device objects
+        await this._injectPowerStatusIntoDevices(pool);
       }
-
-      // Inject storage information directly into device objects
-      await this._injectStorageInfoIntoDevices(pool);
-
-      // Inject power status into individual device objects
-      await this._injectPowerStatusIntoDevices(pool);
 
       return pool;
     } catch (error) {

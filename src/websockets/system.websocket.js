@@ -32,6 +32,7 @@ class SystemLoadWebSocketManager {
 
         socket.userId = authResult.user.userId;
         socket.userRole = authResult.user.role;
+        socket.user = authResult.user;
 
         // Join system load room
         socket.join('system-load');
@@ -106,7 +107,8 @@ class SystemLoadWebSocketManager {
     // Stop any existing monitoring first
     this.stopSystemLoadMonitoring();
 
-    console.log(`Starting system load monitoring - CPU: ${this.cpuInterval}ms, Memory: ${this.memoryInterval}ms, Network: ${this.networkInterval}ms`);
+    // Debug logging
+    //console.log(`Starting system load monitoring - CPU: ${this.cpuInterval}ms, Memory: ${this.memoryInterval}ms, Network: ${this.networkInterval}ms`);
 
     // CPU Timer - Fastest updates (1 second)
     const cpuIntervalId = setInterval(async () => {
@@ -220,7 +222,8 @@ class SystemLoadWebSocketManager {
     this.staticDataCache.clear();
     this.clientStaticDataSent.clear();
 
-    console.log('System load monitoring stopped');
+    // Debug logging
+    //console.log('System load monitoring stopped');
   }
 
   /**

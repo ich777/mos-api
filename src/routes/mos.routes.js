@@ -984,6 +984,7 @@ router.get('/settings/system/keymap', async (req, res) => {
   }
 });
 
+
 /**
  * @swagger
  * /mos/settings/system/timezones:

@@ -8,6 +8,60 @@ class SystemService {
     // Cache for network speed calculation
     this.networkSpeedCache = new Map();
   }
+
+  /**
+   * Helper function to format bytes in human readable format
+   * @param {number} bytes - Bytes to format
+   * @param {Object} user - User object with byte_format preference
+   * @returns {string} Human readable format
+   */
+  formatBytes(bytes, user = null) {
+    if (bytes === 0) return '0 B';
+
+    const byteFormat = this._getUserByteFormat(user);
+    const isBinary = byteFormat === 'binary';
+    const k = isBinary ? 1024 : 1000;
+    const sizes = isBinary
+      ? ['B', 'KiB', 'MiB', 'GiB', 'TiB']
+      : ['B', 'KB', 'MB', 'GB', 'TB'];
+
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+  }
+
+  /**
+   * Helper function to format speed in human readable format
+   * @param {number} bytesPerSecond - Bytes per second to format
+   * @param {Object} user - User object with byte_format preference
+   * @returns {string} Human readable format
+   */
+  formatSpeed(bytesPerSecond, user = null) {
+    if (bytesPerSecond === 0) return '0 B/s';
+
+    const byteFormat = this._getUserByteFormat(user);
+    const isBinary = byteFormat === 'binary';
+    const k = isBinary ? 1024 : 1000;
+    const sizes = isBinary
+      ? ['B/s', 'KiB/s', 'MiB/s', 'GiB/s', 'TiB/s']
+      : ['B/s', 'KB/s', 'MB/s', 'GB/s', 'TB/s'];
+
+    const i = Math.floor(Math.log(bytesPerSecond) / Math.log(k));
+    return parseFloat((bytesPerSecond / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+  }
+
+  /**
+   * Get user's byte format preference
+   * @param {Object} user - User object
+   * @returns {string} Byte format ('binary' or 'decimal')
+   * @private
+   */
+  _getUserByteFormat(user) {
+    if (user && user.byte_format) {
+      return user.byte_format;
+    }
+    return 'binary'; // Default fallback
+  }
+
   /**
    * Get basic system information
    * @returns {Promise<Object>} Basic system info
@@ -48,7 +102,7 @@ class SystemService {
 
       // Calculate actually used RAM without dirty caches
       const actuallyUsed = mem.total - mem.available;
-      const dirtyCaches = mem.used - actuallyUsed;
+      const dirtyCaches = Math.max(0, mem.used - actuallyUsed);
 
       return {
         memory: {
@@ -101,7 +155,7 @@ class SystemService {
 
       // Calculate actually used RAM without dirty caches
       const actuallyUsed = mem.total - mem.available;
-      const dirtyCaches = mem.used - actuallyUsed;
+      const dirtyCaches = Math.max(0, mem.used - actuallyUsed);
 
       const detailedMemory = {
         ...mem,
@@ -110,7 +164,9 @@ class SystemService {
         percentage: {
           used: Math.round((mem.used / mem.total) * 100),
           actuallyUsed: Math.round((actuallyUsed / mem.total) * 100),
-          dirtyCaches: Math.round((dirtyCaches / mem.total) * 100)
+          dirtyCaches: Math.round((dirtyCaches / mem.total) * 100),
+          free: Math.round((mem.free / mem.total) * 100),
+          actuallyFree: Math.round((mem.available / mem.total) * 100)
         }
       };
 
@@ -204,33 +260,25 @@ class SystemService {
 
   /**
    * Get memory information only
+   * @param {Object} user - User object with byte_format preference
    * @returns {Promise<Object>} Memory info
    */
-  async getMemoryLoad() {
+  async getMemoryLoad(user = null) {
     try {
       const mem = await si.mem();
 
-      // Helper function to format bytes in human readable format
-      const formatBytes = (bytes) => {
-        if (bytes === 0) return '0 B';
-        const k = 1024;
-        const sizes = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-      };
-
       // Calculate actually used RAM without dirty caches
       const actuallyUsed = mem.total - mem.available;
-      const dirtyCaches = mem.used - actuallyUsed;
+      const dirtyCaches = Math.max(0, mem.used - actuallyUsed);
 
       return {
         memory: {
           total: mem.total,
-          total_human: formatBytes(mem.total),
+          total_human: this.formatBytes(mem.total, user),
           free: mem.available,
-          free_human: formatBytes(mem.available),
+          free_human: this.formatBytes(mem.available, user),
           used: actuallyUsed,
-          used_human: formatBytes(actuallyUsed),
+          used_human: this.formatBytes(actuallyUsed, user),
           dirty: {
             free: mem.free,
             used: mem.used,
@@ -250,9 +298,10 @@ class SystemService {
 
   /**
    * Get CPU, memory and temperature information (fast - no network stats)
+   * @param {Object} user - User object with byte_format preference
    * @returns {Promise<Object>} CPU, memory and temperature info
    */
-  async getCpuMemoryLoad() {
+  async getCpuMemoryLoad(user = null) {
     try {
       const [currentLoad, temp, mem, cpu] = await Promise.all([
         si.currentLoad(),
@@ -298,23 +347,14 @@ class SystemService {
         };
       });
 
-      // Helper function to format bytes in human readable format
-      const formatBytes = (bytes) => {
-        if (bytes === 0) return '0 B';
-        const k = 1024;
-        const sizes = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-      };
-
       // Calculate actually used RAM without dirty caches
       const actuallyUsed = mem.total - mem.available;
-      const dirtyCaches = mem.used - actuallyUsed;
+      const dirtyCaches = Math.max(0, mem.used - actuallyUsed);
 
       // Combine CPU and Memory data
       const [cpuData, memoryData] = await Promise.all([
         this.getCpuLoad(),
-        this.getMemoryLoad()
+        this.getMemoryLoad(user)
       ]);
 
       return {
@@ -328,9 +368,10 @@ class SystemService {
 
   /**
    * Get network statistics (ultra-optimized - pure filesystem parsing)
+   * @param {Object} user - User object with byte_format preference
    * @returns {Promise<Object>} Network statistics
    */
-  async getNetworkLoad() {
+  async getNetworkLoad(user = null) {
     try {
       // Get current network counters and interface details in parallel
       const [networkCounters, interfaceDetails] = await Promise.all([
@@ -339,23 +380,6 @@ class SystemService {
       ]);
       const currentTime = Date.now();
 
-      // Helper function to format bytes in human readable format
-      const formatBytes = (bytes) => {
-        if (bytes === 0) return '0 B';
-        const k = 1024;
-        const sizes = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-      };
-
-      // Helper function to format speed in human readable format
-      const formatSpeed = (bytesPerSecond) => {
-        if (bytesPerSecond === 0) return '0 B/s';
-        const k = 1024;
-        const sizes = ['B/s', 'KiB/s', 'MiB/s', 'GiB/s', 'TiB/s'];
-        const i = Math.floor(Math.log(bytesPerSecond) / Math.log(k));
-        return parseFloat((bytesPerSecond / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-      };
 
       // Create a map of interface details for quick lookup
       const interfaceMap = {};
@@ -418,28 +442,28 @@ class SystemService {
             statistics: {
               rx: {
                 bytes: stat.rx_bytes,
-                bytes_human: formatBytes(stat.rx_bytes),
+                bytes_human: this.formatBytes(stat.rx_bytes, user),
                 packets: stat.rx_packets,
                 errors: stat.rx_errors,
                 dropped: stat.rx_dropped,
                 speed_bps: rxSpeed,
-                speed_human: formatSpeed(rxSpeed)
+                speed_human: this.formatSpeed(rxSpeed, user)
               },
               tx: {
                 bytes: stat.tx_bytes,
-                bytes_human: formatBytes(stat.tx_bytes),
+                bytes_human: this.formatBytes(stat.tx_bytes, user),
                 packets: stat.tx_packets,
                 errors: stat.tx_errors,
                 dropped: stat.tx_dropped,
                 speed_bps: txSpeed,
-                speed_human: formatSpeed(txSpeed)
+                speed_human: this.formatSpeed(txSpeed, user)
               },
               total: {
                 bytes: stat.rx_bytes + stat.tx_bytes,
-                bytes_human: formatBytes(stat.rx_bytes + stat.tx_bytes),
+                bytes_human: this.formatBytes(stat.rx_bytes + stat.tx_bytes, user),
                 packets: stat.rx_packets + stat.tx_packets,
                 speed_bps: rxSpeed + txSpeed,
-                speed_human: formatSpeed(rxSpeed + txSpeed)
+                speed_human: this.formatSpeed(rxSpeed + txSpeed, user)
               }
             }
           };
@@ -472,24 +496,24 @@ class SystemService {
             totals: {
               rx: {
                 bytes: totals.rx_bytes,
-                bytes_human: formatBytes(totals.rx_bytes),
+                bytes_human: this.formatBytes(totals.rx_bytes, user),
                 packets: totals.rx_packets,
                 speed_bps: totals.rx_speed,
-                speed_human: formatSpeed(totals.rx_speed)
+                speed_human: this.formatSpeed(totals.rx_speed, user)
               },
               tx: {
                 bytes: totals.tx_bytes,
-                bytes_human: formatBytes(totals.tx_bytes),
+                bytes_human: this.formatBytes(totals.tx_bytes, user),
                 packets: totals.tx_packets,
                 speed_bps: totals.tx_speed,
-                speed_human: formatSpeed(totals.tx_speed)
+                speed_human: this.formatSpeed(totals.tx_speed, user)
               },
               combined: {
                 bytes: totals.rx_bytes + totals.tx_bytes,
-                bytes_human: formatBytes(totals.rx_bytes + totals.tx_bytes),
+                bytes_human: this.formatBytes(totals.rx_bytes + totals.tx_bytes, user),
                 packets: totals.rx_packets + totals.tx_packets,
                 speed_bps: totals.rx_speed + totals.tx_speed,
-                speed_human: formatSpeed(totals.rx_speed + totals.tx_speed)
+                speed_human: this.formatSpeed(totals.rx_speed + totals.tx_speed, user)
               }
             }
           }
@@ -692,14 +716,15 @@ class SystemService {
 
   /**
    * Get system load and temperature information including per-core metrics, network utilization and memory info
+   * @param {Object} user - User object with byte_format preference
    * @returns {Promise<Object>} Load, temperature, network and memory info
    */
-  async getSystemLoad() {
+  async getSystemLoad(user = null) {
     try {
       // Combine CPU/Memory and Network data
       const [cpuMemoryData, networkData] = await Promise.all([
-        this.getCpuMemoryLoad(),
-        this.getNetworkLoad()
+        this.getCpuMemoryLoad(user),
+        this.getNetworkLoad(user)
       ]);
 
       return {
@@ -751,6 +776,72 @@ class SystemService {
       return 'System shutdown initiated';
     } catch (error) {
       throw new Error(`Error shutting down system: ${error.message}`);
+    }
+  }
+
+  /**
+   * Get current format settings
+   * @returns {Object} Current format settings
+   */
+  getFormatSettings() {
+    return {
+      byte_format: process.env.BYTE_FORMAT_TYPE || 'binary'
+    };
+  }
+
+  /**
+   * Update format settings
+   * @param {Object} settings - New format settings
+   * @returns {Promise<Object>} Updated settings
+   */
+  async updateFormatSettings(settings) {
+    try {
+      const fs = require('fs').promises;
+      const path = require('path');
+
+      // Validate format type
+      if (settings.byte_format && !['binary', 'decimal'].includes(settings.byte_format)) {
+        throw new Error('Invalid byte_format. Must be "binary" or "decimal"');
+      }
+
+      // Update environment variable
+      if (settings.byte_format) {
+        process.env.BYTE_FORMAT_TYPE = settings.byte_format;
+      }
+
+      // Update .env file
+      const envPath = path.join(process.cwd(), '.env');
+      let envContent = '';
+
+      try {
+        envContent = await fs.readFile(envPath, 'utf8');
+      } catch (error) {
+        // File doesn't exist, create new content
+        envContent = '';
+      }
+
+      // Update or add BYTE_FORMAT_TYPE
+      const lines = envContent.split('\n');
+      let found = false;
+
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].startsWith('BYTE_FORMAT_TYPE=')) {
+          lines[i] = `BYTE_FORMAT_TYPE=${settings.byte_format}`;
+          found = true;
+          break;
+        }
+      }
+
+      if (!found) {
+        lines.push(`BYTE_FORMAT_TYPE=${settings.byte_format}`);
+      }
+
+      // Write back to file
+      await fs.writeFile(envPath, lines.join('\n'), { mode: 0o600 });
+
+      return this.getFormatSettings();
+    } catch (error) {
+      throw new Error(`Error updating format settings: ${error.message}`);
     }
   }
 }

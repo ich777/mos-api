@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { checkRole } = require('../middleware/auth.middleware');
+const { checkRole, authenticateToken } = require('../middleware/auth.middleware');
 const systemService = require('../services/system.service');
 
 /**
@@ -322,9 +322,9 @@ const systemService = require('../services/system.service');
  */
 
 // Detailed memory information with separate dirty cache tracking
-router.get('/memory', async (req, res) => {
+router.get('/memory', authenticateToken, async (req, res) => {
   try {
-    const memoryInfo = await systemService.getDetailedMemory();
+    const memoryInfo = await systemService.getDetailedMemory(req.user);
     res.json(memoryInfo);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -832,9 +832,9 @@ router.get('/detailed', checkRole(['admin']), async (req, res) => {
  */
 
 // System load (available to all authenticated users)
-router.get('/load', async (req, res) => {
+router.get('/load', authenticateToken, async (req, res) => {
   try {
-    const loadInfo = await systemService.getSystemLoad();
+    const loadInfo = await systemService.getSystemLoad(req.user);
     res.json(loadInfo);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -1032,5 +1032,6 @@ router.post('/power/shutdown', checkRole(['admin']), async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
 
 module.exports = router; 

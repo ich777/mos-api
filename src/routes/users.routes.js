@@ -11,6 +11,49 @@ const userService = require('../services/user.service');
  *
  * components:
  *   schemas:
+ *     User:
+ *       type: object
+ *       properties:
+ *         id:
+ *           type: string
+ *           description: Unique user ID
+ *           example: "1"
+ *         username:
+ *           type: string
+ *           description: Username
+ *           example: "testuser"
+ *         role:
+ *           type: string
+ *           enum: [admin, user, samba_only]
+ *           description: User role
+ *           example: "user"
+ *         language:
+ *           type: string
+ *           description: User language preference
+ *           example: "en"
+ *         primary_color:
+ *           type: string
+ *           description: Primary color theme
+ *           example: "#607d8b"
+ *         darkmode:
+ *           type: boolean
+ *           description: Dark mode preference
+ *           example: false
+ *         byte_format:
+ *           type: string
+ *           enum: [binary, decimal]
+ *           description: Byte format preference for displaying file sizes
+ *           default: "binary"
+ *           example: "binary"
+ *         samba_user:
+ *           type: boolean
+ *           description: Whether user has SMB/CIFS access
+ *           example: false
+ *         created_at:
+ *           type: string
+ *           format: date-time
+ *           description: User creation timestamp
+ *           example: "2024-01-15T10:30:00Z"
  *     Error:
  *       type: object
  *       properties:
@@ -299,6 +342,12 @@ router.get('/me', authenticateToken, async (req, res) => {
  *                 type: boolean
  *                 description: Dark mode preference
  *                 example: true
+ *               byte_format:
+ *                 type: string
+ *                 enum: [binary, decimal]
+ *                 description: Byte format preference for displaying file sizes
+ *                 default: "binary"
+ *                 example: "binary"
  *               password:
  *                 type: string
  *                 description: New password (minimum 4 characters)
@@ -464,6 +513,11 @@ router.get('/:id', checkRole(['admin']), async (req, res) => {
  *               darkmode:
  *                 type: boolean
  *                 description: Dark mode preference
+ *               byte_format:
+ *                 type: string
+ *                 enum: [binary, decimal]
+ *                 description: Byte format preference for displaying file sizes
+ *                 default: "binary"
  *               password:
  *                 type: string
  *                 description: New password (minimum 4 characters)

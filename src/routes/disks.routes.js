@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const disksService = require('../services/disks.service');
-const { checkRole } = require('../middleware/auth.middleware');
+const { checkRole, authenticateToken } = require('../middleware/auth.middleware');
 
 /**
  * @swagger
@@ -454,7 +454,7 @@ const { checkRole } = require('../middleware/auth.middleware');
  */
 
 // List all disks with partitions
-router.get('/', async (req, res) => {
+router.get('/', authenticateToken, async (req, res) => {
   try {
     const {
       performance = 'false',
@@ -466,7 +466,7 @@ router.get('/', async (req, res) => {
       skipStandby: skipStandby === 'true'
     };
 
-    const disks = await disksService.getAllDisks(options);
+    const disks = await disksService.getAllDisks(options, req.user);
     res.json(disks);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -512,9 +512,9 @@ router.get('/', async (req, res) => {
  */
 
 // Disk-specific operations
-router.get('/:device/usage', async (req, res) => {
+router.get('/:device/usage', authenticateToken, async (req, res) => {
   try {
-    const usage = await disksService.getDiskUsage(req.params.device);
+    const usage = await disksService.getDiskUsage(req.params.device, req.user);
     res.json(usage);
   } catch (error) {
     res.status(500).json({ error: error.message });

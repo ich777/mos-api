@@ -196,6 +196,7 @@ class UserService {
       primary_color,
       darkmode,
       samba_user: samba_user || role === 'samba_only',
+      byte_format: 'binary', // Default byte format setting
       createdAt: new Date().toISOString()
     };
 

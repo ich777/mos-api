@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { checkRole } = require('../middleware/auth.middleware');
+const { checkRole, authenticateToken } = require('../middleware/auth.middleware');
 const poolsService = require('../services/pools.service');
 
 // Include WebSocket routes
@@ -415,7 +415,7 @@ router.use('/', poolsWebSocketRoutes);
  *               $ref: '#/components/schemas/Error'
  */
 // List all pools with optional filtering
-router.get('/', async (req, res) => {
+router.get('/', authenticateToken, async (req, res) => {
   try {
     const { type, exclude_type } = req.query;
 
@@ -428,7 +428,7 @@ router.get('/', async (req, res) => {
       filters.exclude_type = exclude_type;
     }
 
-    const pools = await poolsService.listPools(filters);
+    const pools = await poolsService.listPools(filters, req.user);
     res.json(pools);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -472,9 +472,9 @@ router.get('/', async (req, res) => {
  *               $ref: '#/components/schemas/Error'
  */
 // Get pool by ID
-router.get('/:id', async (req, res) => {
+router.get('/:id', authenticateToken, async (req, res) => {
   try {
-    const pool = await poolsService.getPoolById(req.params.id);
+    const pool = await poolsService.getPoolById(req.params.id, req.user);
     res.json(pool);
   } catch (error) {
     res.status(404).json({ error: error.message });

@@ -9,6 +9,60 @@ const path = require('path');
 class DisksService {
   constructor() {
     // Keine Caches mehr
+
+  }
+
+  /**
+   * Helper function to format bytes in human readable format
+   * @param {number} bytes - Bytes to format
+   * @param {Object} user - User object with byte_format preference
+   * @returns {string} Human readable format
+   */
+  formatBytes(bytes, user = null) {
+    if (bytes === 0) return '0 B';
+
+    const byteFormat = this._getUserByteFormat(user);
+    const isBinary = byteFormat === 'binary';
+    const k = isBinary ? 1024 : 1000;
+    const sizes = isBinary
+      ? ['B', 'KiB', 'MiB', 'GiB', 'TiB']
+      : ['B', 'KB', 'MB', 'GB', 'TB'];
+
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+  }
+
+  /**
+   * Helper function to format speed in human readable format
+   * @param {number} bytesPerSecond - Bytes per second to format
+   * @param {Object} user - User object with byte_format preference
+   * @returns {string} Human readable format
+   */
+  formatSpeed(bytesPerSecond, user = null) {
+    if (bytesPerSecond === 0) return '0 B/s';
+
+    const byteFormat = this._getUserByteFormat(user);
+    const isBinary = byteFormat === 'binary';
+    const k = isBinary ? 1024 : 1000;
+    const sizes = isBinary
+      ? ['B/s', 'KiB/s', 'MiB/s', 'GiB/s', 'TiB/s']
+      : ['B/s', 'KB/s', 'MB/s', 'GB/s', 'TB/s'];
+
+    const i = Math.floor(Math.log(bytesPerSecond) / Math.log(k));
+    return parseFloat((bytesPerSecond / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+  }
+
+  /**
+   * Get user's byte format preference
+   * @param {Object} user - User object
+   * @returns {string} Byte format ('binary' or 'decimal')
+   * @private
+   */
+  _getUserByteFormat(user) {
+    if (user && user.byte_format) {
+      return user.byte_format;
+    }
+    return 'binary'; // Default fallback
   }
 
   /**
@@ -863,8 +917,10 @@ class DisksService {
 
   /**
    * Hauptmethode: Alle Disks auflisten
+   * @param {Object} options - Options for disk listing
+   * @param {Object} user - User object with byte_format preference
    */
-  async getAllDisks(options = {}) {
+  async getAllDisks(options = {}, user = null) {
     const { skipStandby = true, includePerformance = false } = options;
 
     try {
@@ -891,7 +947,7 @@ class DisksService {
             model: disk.model || 'Unknown',
             serial: disk.serial || 'Unknown',
             size: disk.size || 0,
-            sizeHuman: this._bytesToHumanReadable(disk.size || 0),
+            size_human: this.formatBytes(disk.size || 0, user),
             powerStatus: powerStatus.status,
             type: powerStatus.type,
             rotational: powerStatus.rotational,
@@ -919,7 +975,7 @@ class DisksService {
           model: disk.model || 'Unknown',
           serial: disk.serial || 'Unknown',
           size: disk.size || 0,
-          sizeHuman: this._bytesToHumanReadable(disk.size || 0),
+          size_human: this.formatBytes(disk.size || 0, user),
           powerStatus: powerStatus.status,
           type: powerStatus.type,
           rotational: powerStatus.rotational,
@@ -939,8 +995,10 @@ class DisksService {
 
   /**
    * Disk-Usage für bestimmte Partition/Device
+   * @param {string} device - Device path
+   * @param {Object} user - User object with byte_format preference
    */
-  async getDiskUsage(device) {
+  async getDiskUsage(device, user = null) {
     try {
       const devicePath = device.startsWith('/dev/') ? device : `/dev/${device}`;
       const fsInfo = await this._getFilesystemInfo(devicePath);
@@ -955,9 +1013,9 @@ class DisksService {
         used: fsInfo.usedBytes,
         available: fsInfo.availableBytes,
         percentage: fsInfo.usagePercent,
-        totalHuman: this._bytesToHumanReadable(fsInfo.totalBytes),
-        usedHuman: this._bytesToHumanReadable(fsInfo.usedBytes),
-        availableHuman: this._bytesToHumanReadable(fsInfo.availableBytes)
+        total_human: this.formatBytes(fsInfo.totalBytes, user),
+        used_human: this.formatBytes(fsInfo.usedBytes, user),
+        available_human: this.formatBytes(fsInfo.availableBytes, user)
       };
     } catch (error) {
       throw new Error(`Failed to get disk usage: ${error.message}`);
