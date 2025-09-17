@@ -8,7 +8,7 @@ class SystemLoadWebSocketManager {
     this.clientStaticDataSent = new Set();
     this.cacheDuration = 750;
     this.cpuInterval = 1000;
-    this.memoryInterval = 4000;
+    this.memoryInterval = 8000;
     this.networkInterval = 2000;
   }
 
