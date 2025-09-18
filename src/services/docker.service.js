@@ -522,17 +522,12 @@ class DockerService {
         }
 
       } catch (deployError) {
-        // Deployment failed - rollback both template and containers file
-        // Only remove template if it was newly created (not a recreate)
-        if (!templateExists) {
-          try {
-            await fs.unlink(filePath);
-          } catch (cleanupError) {
-            console.error(`Failed to cleanup template file after deployment failure: ${cleanupError.message}`);
-          }
-        }
-
-        throw deployError;
+        // Deployment failed - keep template for user to edit and retry
+        // Template remains available for correction and redeployment
+        const enhancedError = new Error(`Container deployment failed: ${deployError.message}. Template has been saved and can be edited for retry.`);
+        enhancedError.templateSaved = true;
+        enhancedError.templatePath = filePath;
+        throw enhancedError;
       }
 
       // If deployment was successful, check and remove any template with same name from removed directory
@@ -602,14 +597,18 @@ class DockerService {
       const templatePath = path.join(templateDir, fileName);
       const removedPath = path.join(removedDir, fileName);
 
-      // Check if template exists
+      // Check if template exists (but don't fail if it doesn't)
+      let templateExists = true;
+      let templateWarning = null;
       try {
         await fs.access(templatePath);
       } catch (err) {
         if (err.code === 'ENOENT') {
-          throw new Error(`Container template '${name}' not found`);
+          templateExists = false;
+          templateWarning = `Container template '${name}' not found, but proceeding with container cleanup`;
+        } else {
+          throw err;
         }
-        throw err;
       }
 
       // Create removed directory if it doesn't exist
@@ -634,16 +633,24 @@ class DockerService {
         // Ignore error if container doesn't exist
       }
 
-      let warning = null;
+      let warning = templateWarning;
 
-      // Read template to get repository information before removing image
+      // Read template to get repository information before removing image (only if template exists)
       let repositoryToRemove = null;
-      try {
-        const templateData = await fs.readFile(templatePath, 'utf8');
-        const template = JSON.parse(templateData);
-        repositoryToRemove = template.repo;
-      } catch (templateReadError) {
-        warning = `Could not read template to get repository info: ${templateReadError.message}`;
+      if (templateExists) {
+        try {
+          const templateData = await fs.readFile(templatePath, 'utf8');
+          const template = JSON.parse(templateData);
+          repositoryToRemove = template.repo;
+        } catch (templateReadError) {
+          warning = warning ?
+            `${warning}; Could not read template to get repository info: ${templateReadError.message}` :
+            `Could not read template to get repository info: ${templateReadError.message}`;
+        }
+      } else {
+        warning = warning ?
+          `${warning}; Could not remove image because template is missing` :
+          'Could not remove image because template is missing';
       }
 
       // Remove the container image using the repository from template
@@ -668,8 +675,10 @@ class DockerService {
           'Could not remove image because repository information is not available';
       }
 
-      // Move template to removed directory
-      await fs.rename(templatePath, removedPath);
+      // Move template to removed directory (only if it exists)
+      if (templateExists) {
+        await fs.rename(templatePath, removedPath);
+      }
 
       // Remove container entry from containers file and reindex
       try {
