@@ -314,6 +314,10 @@ class SharesService {
       targetDevices = null
     } = options;
 
+    // Process write_list and valid_users arrays
+    const processedWriteList = Array.isArray(write_list) ? write_list : [write_list].filter(Boolean);
+    const processedValidUsers = Array.isArray(valid_users) ? valid_users : [valid_users].filter(Boolean);
+
     const shareConfig = {
       id: Date.now().toString(),
       name: shareName,
@@ -323,8 +327,8 @@ class SharesService {
       read_only,
       guest_ok,
       browseable,
-      write_list: Array.isArray(write_list) ? write_list : [write_list].filter(Boolean),
-      valid_users: Array.isArray(valid_users) ? valid_users : [valid_users].filter(Boolean),
+      write_list: guest_ok ? [] : processedWriteList, // Clear write_list if guest access is enabled
+      valid_users: guest_ok ? [] : processedValidUsers, // Clear valid_users if guest access is enabled
       force_root,
       create_mask,
       directory_mask,
