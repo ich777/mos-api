@@ -169,6 +169,19 @@ class UserService {
   async createUser(username, password, role = 'user', language = 'en', primary_color = '#607d8b', darkmode = false, samba_user = false, requestingUser = null) {
     const users = await this.loadUsers();
 
+    // Validate username, password and password length
+    if (!username || username.trim() === '') {
+      throw new Error('Username is required');
+    }
+
+    if (!password || password.trim() === '') {
+      throw new Error('Password is required');
+    }
+
+    if (password.length < 6) {
+      throw new Error('Password must be at least 6 characters long');
+    }
+
     if (users.some(u => u.username === username)) {
       throw new Error('Username already exists');
     }
