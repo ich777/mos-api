@@ -385,8 +385,6 @@ class PoolsService {
       const { stdout } = await execPromise(`blkid -s UUID -o value ${device}`);
       const uuid = stdout.trim();
 
-
-
       return uuid || null;
     } catch (error) {
 
@@ -422,6 +420,125 @@ class PoolsService {
     } catch (error) {
       console.error(`Error during SnapRAID cleanup: ${error.message}`);
       return false;
+    }
+  }
+
+  /**
+   * Execute SnapRAID operation on a pool
+   * @param {string} poolId - Pool ID
+   * @param {string} operation - Operation to perform (sync, check, scrub, fix, status)
+   * @returns {Promise<Object>} - Operation result
+   */
+  async executeSnapRAIDOperation(poolId, operation) {
+    const pool = await this.getPoolById(poolId);
+
+    // Validate pool type
+    if (pool.type !== 'mergerfs') {
+      throw new Error('SnapRAID operations are only supported for MergerFS pools');
+    }
+
+    // Validate that pool has parity devices
+    if (!pool.parity_devices || pool.parity_devices.length === 0) {
+      throw new Error('Pool does not have any SnapRAID parity devices configured');
+    }
+
+    // Validate operation
+    const validOperations = ['sync', 'check', 'scrub', 'fix', 'status', 'force_stop'];
+    if (!validOperations.includes(operation)) {
+      throw new Error(`Invalid operation. Supported operations: ${validOperations.join(', ')}`);
+    }
+
+    // Check if operation is already running (except for force_stop)
+    const socketPath = `/run/snapraid/${pool.name}.socket`;
+    if (operation !== 'force_stop') {
+      try {
+        await fs.access(socketPath);
+        throw new Error(`SnapRAID operation is already running for pool '${pool.name}'. Socket file exists: ${socketPath}`);
+      } catch (error) {
+        if (error.code !== 'ENOENT') {
+          throw error; // Re-throw if it's not a "file not found" error
+        }
+        // File doesn't exist, which is good - no operation running
+      }
+    } else {
+      // For force_stop, check if operation is actually running
+      try {
+        await fs.access(socketPath);
+        // Socket exists, operation is running - good for force_stop
+      } catch (error) {
+        if (error.code === 'ENOENT') {
+          throw new Error(`No SnapRAID operation is currently running for pool '${pool.name}'`);
+        }
+        throw error;
+      }
+    }
+
+    // Execute the SnapRAID operation in background
+    try {
+      const { spawn } = require('child_process');
+      console.log(`Starting SnapRAID ${operation} operation for pool '${pool.name}'`);
+
+      // Execute the script with pool name and operation in background
+      const child = spawn('/usr/local/bin/mos-snapraid', [pool.name, operation], {
+        detached: true,
+        stdio: 'ignore'
+      });
+
+      // Don't wait for the process to finish
+      child.unref();
+
+      return {
+        success: true,
+        message: `SnapRAID ${operation} operation started successfully for pool '${pool.name}'`,
+        operation,
+        poolName: pool.name,
+        started: true,
+        timestamp: new Date().toISOString()
+      };
+    } catch (error) {
+      throw new Error(`SnapRAID ${operation} operation failed to start: ${error.message}`);
+    }
+  }
+
+  /**
+   * Inject parity operation status into pool.status object (API-only, not persisted)
+   * @param {Object} pool - Pool object to inject status into
+   * @returns {Promise<void>}
+   */
+  async _injectParityOperationStatus(pool) {
+    try {
+      // Ensure status object exists
+      if (!pool.status) {
+        pool.status = {};
+      }
+
+      // Only MergerFS pools can have parity operations
+      if (pool.type !== 'mergerfs') {
+        pool.status.parity_operation = false;
+        return;
+      }
+
+      // Check if SnapRAID operation is running via socket file
+      const socketPath = `/run/snapraid/${pool.name}.socket`;
+      try {
+        await fs.access(socketPath);
+        // Socket exists, operation is running
+        pool.status.parity_operation = true;
+      } catch (error) {
+        if (error.code === 'ENOENT') {
+          // Socket doesn't exist, no operation running
+          pool.status.parity_operation = false;
+        } else {
+          // Other error, assume no operation running
+          pool.status.parity_operation = false;
+        }
+      }
+    } catch (error) {
+      // On any error, default to false
+      if (!pool.status) {
+        pool.status = {};
+      }
+      pool.status.parity_operation = false;
     }
   }
 
@@ -2253,6 +2370,9 @@ class PoolsService {
 
         // Inject power status into individual device objects
         await this._injectPowerStatusIntoDevices(pool);
+
+        // Inject parity operation status (API-only, not persisted)
+        await this._injectParityOperationStatus(pool);
       }
 
       // Note: We don't write back to pools.json for read-only operations
@@ -2302,6 +2422,9 @@ class PoolsService {
 
         // Inject power status into individual device objects
         await this._injectPowerStatusIntoDevices(pool);
+
+        // Inject parity operation status (API-only, not persisted)
+        await this._injectParityOperationStatus(pool);
       }
 
       return pool;

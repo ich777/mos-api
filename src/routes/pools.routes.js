@@ -2048,6 +2048,124 @@ router.post('/:id/parity/replace', checkRole(['admin']), async (req, res) => {
 
 /**
  * @swagger
+ * /pools/{id}/parity:
+ *   post:
+ *     summary: Execute SnapRAID operation on a MergerFS pool
+ *     description: Execute SnapRAID operations (sync, check, scrub, fix, status) on a MergerFS pool with parity devices (admin only). Validates that the pool is MergerFS type, has parity devices, and no operation is currently running.
+ *     tags: [Pools]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - name: id
+ *         in: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Pool ID
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - operation
+ *             properties:
+ *               operation:
+ *                 type: string
+ *                 enum: [sync, check, scrub, fix, status, force_stop]
+ *                 description: SnapRAID operation to execute
+ *                 example: "sync"
+ *     responses:
+ *       200:
+ *         description: SnapRAID operation completed successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "SnapRAID sync operation completed successfully for pool 'data_mergerfs'"
+ *                 operation:
+ *                   type: string
+ *                   example: "sync"
+ *                 poolName:
+ *                   type: string
+ *                   example: "data_mergerfs"
+ *                 output:
+ *                   type: string
+ *                   description: Command output from SnapRAID operation
+ *                 timestamp:
+ *                   type: string
+ *                   format: date-time
+ *                   example: "2024-01-15T10:30:00.000Z"
+ *       400:
+ *         description: Invalid request parameters or operation already running
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   examples:
+ *                     invalid_operation:
+ *                       value: "Invalid operation. Supported operations: sync, check, scrub, fix, status, force_stop"
+ *                     operation_running:
+ *                       value: "SnapRAID operation is already running for pool 'data_mergerfs'. Socket file exists: /run/snapraid/data_mergerfs.socket"
+ *                     no_parity:
+ *                       value: "Pool does not have any SnapRAID parity devices configured"
+ *                     wrong_type:
+ *                       value: "SnapRAID operations are only supported for MergerFS pools"
+ *       404:
+ *         description: Pool not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+
+// Execute SnapRAID operation on a MergerFS pool (admin only)
+router.post('/:id/parity', checkRole(['admin']), async (req, res) => {
+  try {
+    const { operation } = req.body;
+
+    if (!operation) {
+      return res.status(400).json({ error: 'Operation is required' });
+    }
+
+    const result = await poolsService.executeSnapRAIDOperation(req.params.id, operation);
+
+    res.json(result);
+  } catch (error) {
+    console.error(error);
+    if (error.message.includes('not found')) {
+      return res.status(404).json({ error: error.message });
+    }
+    if (error.message.includes('already running') ||
+        error.message.includes('Invalid operation') ||
+        error.message.includes('only supported for MergerFS') ||
+        error.message.includes('does not have any SnapRAID') ||
+        error.message.includes('No SnapRAID operation is currently running')) {
+      return res.status(400).json({ error: error.message });
+    }
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+
+/**
+ * @swagger
  * /pools/{id}/disk/{uuid}/power:
  *   get:
  *     summary: Get disk power status by UUID
