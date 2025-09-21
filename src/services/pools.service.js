@@ -627,11 +627,22 @@ class PoolsService {
    * @param {string[]} devices - Array of device paths
    * @param {string} raidLevel - BTRFS raid level ('raid0', 'raid1', 'raid10', 'single', etc.)
    * @param {Object} options - Additional options
+   * @param {Object} options.config - Pool configuration
+   * @param {boolean} options.config.encrypted - Enable LUKS encryption
+   * @param {boolean} options.config.create_keyfile - Create keyfile for encrypted pool (default: false)
+   * @param {string} options.passphrase - Passphrase for encryption (required if encrypted=true)
    */
   async createMultiDevicePool(name, devices, raidLevel = 'raid1', options = {}) {
     try {
       // Validate inputs
       if (!name) throw new Error('Pool name is required');
+
+      // Validate encryption parameters
+      if (options.config?.encrypted) {
+        if (!options.passphrase) {
+          throw new Error('Passphrase is required for encrypted pools');
+        }
+      }
 
       // Prüfen, ob es wirklich ein Multi-Device-Pool ist
       if (!Array.isArray(devices)) {
@@ -660,6 +671,17 @@ class PoolsService {
 
       // BTRFS is required for multi-device pools
       const filesystem = 'btrfs';
+
+      let actualDevices = devices;
+      let encryptionEnabled = false;
+
+      // Handle LUKS encryption before formatting
+      if (options.config?.encrypted) {
+        console.log(`Setting up LUKS encryption for pool '${name}'`);
+        await this._setupPoolEncryption(devices, name, options.passphrase, options.config.create_keyfile);
+        actualDevices = await this._openLuksDevices(devices, name, options.passphrase);
+        encryptionEnabled = true;
+      }
 
       // Read current pools data
       const pools = await this._readPools();
@@ -792,6 +814,7 @@ class PoolsService {
         data_devices: dataDevices,
         parity_devices: [],
         config: {
+          encrypted: encryptionEnabled,
           raid_level: raidLevel
         },
         status: {
@@ -1579,12 +1602,27 @@ class PoolsService {
 
   /**
    * Create a single device pool
+   * @param {string} name - Pool name
+   * @param {string} device - Device path
+   * @param {string} filesystem - Filesystem type (optional)
+   * @param {Object} options - Additional options
+   * @param {Object} options.config - Pool configuration
+   * @param {boolean} options.config.encrypted - Enable LUKS encryption
+   * @param {boolean} options.config.create_keyfile - Create keyfile for encrypted pool (default: false)
+   * @param {string} options.passphrase - Passphrase for encryption (required if encrypted=true)
    */
   async createSingleDevicePool(name, device, filesystem = null, options = {}) {
     try {
       // Validate inputs
       if (!name) throw new Error('Pool name is required');
       if (!device) throw new Error('Device path is required');
+
+      // Validate encryption parameters
+      if (options.config?.encrypted) {
+        if (!options.passphrase) {
+          throw new Error('Passphrase is required for encrypted pools');
+        }
+      }
 
       // Read current pools data
       const pools = await this._readPools();
@@ -1601,12 +1639,24 @@ class PoolsService {
         throw new Error(`Device ${device} is already mounted at ${mountStatus.mountPoint}. Please unmount it first before creating a pool.`);
       }
 
-      // Check device filesystem
-      let deviceInfo = await this.checkDeviceFilesystem(device);
+      let actualDevice = device;
+      let encryptionEnabled = false;
+
+      // Handle LUKS encryption before formatting
+      if (options.config?.encrypted) {
+        console.log(`Setting up LUKS encryption for single device pool '${name}'`);
+        await this._setupPoolEncryption([device], name, options.passphrase, options.config.create_keyfile);
+        const mappedDevices = await this._openLuksDevices([device], name, options.passphrase);
+        actualDevice = mappedDevices[0]; // Use the mapped device for formatting/mounting
+        encryptionEnabled = true;
+      }
+
+      // Check device filesystem (use actualDevice which could be mapped)
+      let deviceInfo = await this.checkDeviceFilesystem(actualDevice);
 
       // Determine the actual device to use (could be a partition)
-      let actualDeviceToUse = deviceInfo.actualDevice || device;
-      const isUsingPartition = deviceInfo.actualDevice && deviceInfo.actualDevice !== device;
+      let actualDeviceToUse = deviceInfo.actualDevice || actualDevice;
+      const isUsingPartition = deviceInfo.actualDevice && deviceInfo.actualDevice !== actualDevice;
 
       // Format the device if it is not formatted or if the filesystem does not match
       if (deviceInfo.isFormatted) {
@@ -1692,7 +1742,9 @@ class PoolsService {
           }
         ],
         parity_devices: [],
-        config: {},
+        config: {
+          encrypted: encryptionEnabled
+        },
         status: {
           mounted: false,
           health: "unknown",
@@ -1749,6 +1801,9 @@ class PoolsService {
 
   /**
    * Mount a pool by ID
+   * @param {string} poolId - Pool ID
+   * @param {Object} options - Mount options
+   * @param {string} options.passphrase - Passphrase for encrypted pools (if keyfile missing)
    */
   async mountPoolById(poolId, options = {}) {
     try {
@@ -1757,6 +1812,12 @@ class PoolsService {
 
       if (!pool) {
         throw new Error(`Pool with ID "${poolId}" not found`);
+      }
+
+      // Handle LUKS encryption before mounting
+      if (pool.config?.encrypted) {
+        console.log(`Opening LUKS devices for encrypted pool '${pool.name}'`);
+        await this._openLuksDevices(pool.devices, pool.name, options.passphrase);
       }
 
       // For single device pools
@@ -1831,6 +1892,12 @@ class PoolsService {
         if (poolIndex !== -1) {
           pools[poolIndex].status.mounted = false;
           await this._writePools(pools);
+        }
+
+        // Close LUKS devices if pool is encrypted
+        if (pool.config?.encrypted) {
+          console.log(`Closing LUKS devices for encrypted pool '${pool.name}'`);
+          await this._closeLuksDevices(pool.devices, pool.name);
         }
 
         return {
@@ -3710,6 +3777,103 @@ if (snapraidDevice) {
 
     } catch (error) {
       return 'unknown';
+    }
+  }
+
+  /**
+   * Setup LUKS encryption for pool devices
+   * @param {string[]} devices - Array of device paths
+   * @param {string} poolName - Pool name
+   * @param {string} passphrase - Encryption passphrase
+   * @param {boolean} createKeyfile - Whether to create a keyfile (default: false)
+   * @private
+   */
+  async _setupPoolEncryption(devices, poolName, passphrase, createKeyfile = false) {
+    const luksKeyDir = '/boot/config/system/luks';
+    const keyfilePath = path.join(luksKeyDir, `${poolName}.key`);
+
+    // Create luks directory
+    await fs.mkdir(luksKeyDir, { recursive: true });
+
+    // Create keyfile if requested
+    if (createKeyfile) {
+      // Generate deterministic keyfile from passphrase
+      await execPromise(`echo -n "${passphrase}" | sha256sum | awk '{print $1}' > ${keyfilePath}`);
+      await execPromise(`chmod 600 ${keyfilePath}`);
+      console.log(`Created keyfile for pool '${poolName}' at ${keyfilePath}`);
+    }
+
+    // Encrypt all devices with the passphrase
+    for (let i = 0; i < devices.length; i++) {
+      const device = devices[i];
+      console.log(`Encrypting device ${device} for pool '${poolName}'`);
+
+      // Use passphrase directly for LUKS format
+      await execPromise(`echo "${passphrase}" | cryptsetup luksFormat ${device} --type luks2 -`);
+    }
+
+    return keyfilePath;
+  }
+
+  /**
+   * Open LUKS devices for a pool
+   * @param {string[]} devices - Array of device paths
+   * @param {string} poolName - Pool name
+   * @param {string} passphrase - Encryption passphrase (used if no keyfile)
+   * @returns {Promise<string[]>} Array of mapped device paths
+   * @private
+   */
+  async _openLuksDevices(devices, poolName, passphrase = null) {
+    const keyfilePath = `/boot/config/system/luks/${poolName}.key`;
+    const mappedDevices = [];
+    let useKeyfile = false;
+
+    // Check if keyfile exists
+    try {
+      await fs.access(keyfilePath);
+      useKeyfile = true;
+      console.log(`Using keyfile for pool '${poolName}': ${keyfilePath}`);
+    } catch (error) {
+      if (!passphrase) {
+        throw new Error(`Keyfile missing for encrypted pool '${poolName}' and no passphrase provided`);
+      }
+      console.log(`Keyfile not found for pool '${poolName}', using passphrase`);
+    }
+
+    // Open each device
+    for (let i = 0; i < devices.length; i++) {
+      const device = devices[i];
+      const luksName = `${poolName}_${i}`;
+
+      if (useKeyfile) {
+        await execPromise(`cryptsetup luksOpen ${device} ${luksName} --key-file ${keyfilePath}`);
+      } else {
+        await execPromise(`echo "${passphrase}" | cryptsetup luksOpen ${device} ${luksName} -`);
+      }
+
+      const mappedDevice = `/dev/mapper/${luksName}`;
+      mappedDevices.push(mappedDevice);
+      console.log(`Opened LUKS device: ${device} -> ${mappedDevice}`);
+    }
+
+    return mappedDevices;
+  }
+
+  /**
+   * Close LUKS devices for a pool
+   * @param {string[]} devices - Array of original device paths
+   * @param {string} poolName - Pool name
+   * @private
+   */
+  async _closeLuksDevices(devices, poolName) {
+    for (let i = 0; i < devices.length; i++) {
+      const luksName = `${poolName}_${i}`;
+      try {
+        await execPromise(`cryptsetup luksClose ${luksName}`);
+        console.log(`Closed LUKS device: ${luksName}`);
+      } catch (error) {
+        console.warn(`Warning: Could not close LUKS device ${luksName}: ${error.message}`);
+      }
     }
   }
 

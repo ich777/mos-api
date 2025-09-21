@@ -546,7 +546,9 @@ router.post('/single', checkRole(['admin']), async (req, res) => {
       filesystem = null, // optional, can be null if we accept the existing filesystem
       format,            // optional, controls formatting behavior
       options = {},      // All other options
-      automount          // Direct automount parameter for simple access
+      automount,         // Direct automount parameter for simple access
+      config = {},       // Pool configuration
+      passphrase         // Encryption passphrase
     } = req.body;
 
     if (!name) {
@@ -560,10 +562,21 @@ router.post('/single', checkRole(['admin']), async (req, res) => {
     // make sure device is explicitly passed as string
     const devicePath = String(device || '');
 
-    // Add automount to options if specified
+    // Validate encryption parameters
+    if (config.encrypted && !passphrase) {
+      return res.status(400).json({ error: 'Passphrase is required for encrypted pools' });
+    }
+
+    // Add automount, config and passphrase to options if specified
     const poolOptions = {...options};
     if (automount !== undefined) {
       poolOptions.automount = automount;
+    }
+    if (config && Object.keys(config).length > 0) {
+      poolOptions.config = config;
+    }
+    if (passphrase) {
+      poolOptions.passphrase = passphrase;
     }
 
     // Pass format flag and combined options
@@ -767,8 +780,7 @@ router.post('/mergerfs', checkRole(['admin']), async (req, res) => {
  * /pools/multi:
  *   post:
  *     summary: Create a multi-device BTRFS pool with RAID support
- *     description: Creates a new storage pool using multiple devices with BTRFS RAID support (raid0, raid1, raid10 or single). Pool type is automatically set to 'btrfs'.
- *       Single-device pools (with filesystem type as pool type) can later be upgraded to multi-device using the add devices endpoint.
+ *     description: Creates a new storage pool using multiple devices with BTRFS RAID support (raid0, raid1, raid10 or single). Pool type is automatically set to 'btrfs'. Supports optional LUKS encryption.
  *     tags: [Pools]
  *     security:
  *       - bearerAuth: []
@@ -777,7 +789,63 @@ router.post('/mergerfs', checkRole(['admin']), async (req, res) => {
  *       content:
  *         application/json:
  *           schema:
- *             $ref: '#/components/schemas/CreateMultiDevicePoolRequest'
+ *             type: object
+ *             required:
+ *               - name
+ *               - devices
+ *             properties:
+ *               name:
+ *                 type: string
+ *                 description: Pool name
+ *                 example: "secure_pool"
+ *               devices:
+ *                 type: array
+ *                 description: Array of device paths (minimum 2 devices)
+ *                 items:
+ *                   type: string
+ *                 example: ["/dev/sdb", "/dev/sdc"]
+ *               raid_level:
+ *                 type: string
+ *                 enum: ["raid0", "raid1", "raid10", "single"]
+ *                 default: "raid1"
+ *                 description: BTRFS RAID level
+ *                 example: "raid1"
+ *               config:
+ *                 type: object
+ *                 description: Pool configuration options
+ *                 properties:
+ *                   encrypted:
+ *                     type: boolean
+ *                     default: false
+ *                     description: Enable LUKS encryption
+ *                     example: true
+ *                   create_keyfile:
+ *                     type: boolean
+ *                     default: false
+ *                     description: Create keyfile for automatic mounting (requires encrypted=true)
+ *                     example: true
+ *               passphrase:
+ *                 type: string
+ *                 description: Encryption passphrase (required if config.encrypted=true)
+ *                 example: "my_secure_password"
+ *               automount:
+ *                 type: boolean
+ *                 default: false
+ *                 description: Enable automount on boot
+ *                 example: true
+ *               format:
+ *                 type: boolean
+ *                 default: true
+ *                 description: Format devices before creating pool
+ *                 example: true
+ *               options:
+ *                 type: object
+ *                 description: Additional pool options
+ *                 properties:
+ *                   comment:
+ *                     type: string
+ *                     description: Optional comment
+ *                     example: "Encrypted media storage"
  *     responses:
  *       201:
  *         description: Pool created successfully
@@ -791,7 +859,7 @@ router.post('/mergerfs', checkRole(['admin']), async (req, res) => {
  *                   example: true
  *                 message:
  *                   type: string
- *                   example: Successfully created multi-device BTRFS pool "data" with RAID1 mirroring
+ *                   example: Successfully created multi-device BTRFS pool "secure_pool" with RAID1 mirroring
  *                 pool:
  *                   $ref: '#/components/schemas/Pool'
  *       400:
@@ -822,7 +890,9 @@ router.post('/multi', checkRole(['admin']), async (req, res) => {
       raid_level = 'raid1',  // default is raid1 (Mirroring)
       format,
       options = {},
-      automount
+      automount,
+      config = {},
+      passphrase
     } = req.body;
 
     if (!name) {
@@ -836,13 +906,24 @@ router.post('/multi', checkRole(['admin']), async (req, res) => {
     // make sure all devices are passed as strings
     const devicePaths = devices.map(dev => String(dev || ''));
 
-    // Add automount and format to options
+    // Validate encryption parameters
+    if (config.encrypted && !passphrase) {
+      return res.status(400).json({ error: 'Passphrase is required for encrypted pools' });
+    }
+
+    // Add automount, format, config and passphrase to options
     const poolOptions = {...options};
     if (automount !== undefined) {
       poolOptions.automount = automount;
     }
     if (format !== undefined) {
       poolOptions.format = format;
+    }
+    if (config && Object.keys(config).length > 0) {
+      poolOptions.config = config;
+    }
+    if (passphrase) {
+      poolOptions.passphrase = passphrase;
     }
 
     // RAID level can be 'raid0' (Striping), 'raid1' (Mirroring) or 'raid10' (Combination)
@@ -1082,7 +1163,7 @@ router.get('/device-filesystem/:device', checkRole(['admin']), async (req, res) 
  * /pools/{id}/mount:
  *   post:
  *     summary: Mount a storage pool
- *     description: Mount a storage pool by its ID. Can optionally format if needed (admin only)
+ *     description: Mount a storage pool by its ID. For encrypted pools, will use keyfile if available, otherwise requires passphrase.
  *     tags: [Pools]
  *     security:
  *       - bearerAuth: []
@@ -1107,6 +1188,10 @@ router.get('/device-filesystem/:device', checkRole(['admin']), async (req, res) 
  *                 type: string
  *                 description: Additional mount options
  *                 example: "defaults,noatime"
+ *               passphrase:
+ *                 type: string
+ *                 description: Passphrase for encrypted pools (required if keyfile missing)
+ *                 example: "my_secure_password"
  *     responses:
  *       200:
  *         description: Pool mounted successfully
@@ -1152,10 +1237,11 @@ router.get('/device-filesystem/:device', checkRole(['admin']), async (req, res) 
 // Mount pool by ID (admin only)
 router.post('/:id/mount', checkRole(['admin']), async (req, res) => {
   try {
-    const { format, mountOptions } = req.body;
+    const { format, mountOptions, passphrase } = req.body;
     const result = await poolsService.mountPoolById(req.params.id, {
       format,
-      mountOptions
+      mountOptions,
+      passphrase
     });
     res.json(result);
   } catch (error) {
