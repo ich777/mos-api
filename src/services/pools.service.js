@@ -114,6 +114,22 @@ class PoolsService {
   }
 
   /**
+   * Trigger udev to refresh device symlinks (UUIDs, etc.)
+   * @private
+   */
+  async _refreshDeviceSymlinks() {
+    try {
+      console.log('Refreshing device symlinks with udev...');
+      await execPromise('udevadm trigger --subsystem-match=block');
+      await execPromise('udevadm settle');
+      console.log('Device symlinks refreshed successfully');
+    } catch (error) {
+      console.warn(`Warning: Could not refresh device symlinks: ${error.message}`);
+      // Don't throw error as this is not critical for pool functionality
+    }
+  }
+
+  /**
    * Ensure pools file exists
    */
   async _ensurePoolsFile() {
@@ -394,6 +410,218 @@ class PoolsService {
   }
 
   /**
+   * Get BTRFS filesystem UUID from any device in the pool
+   * @param {string} device - Any device path in the BTRFS pool
+   * @returns {Promise<string|null>} - BTRFS filesystem UUID or null if not found
+   */
+  async getBtrfsFilesystemUuid(device) {
+    try {
+      // Use btrfs filesystem show to get the UUID
+      const { stdout } = await execPromise(`btrfs filesystem show ${device} 2>/dev/null || echo ""`);
+
+      // Parse the UUID from the output: "uuid: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+      const uuidMatch = stdout.match(/uuid:\s*([a-f0-9-]{36})/i);
+      if (uuidMatch && uuidMatch[1]) {
+        return uuidMatch[1];
+      }
+
+      // Fallback: try to get filesystem UUID directly
+      return await this.getDeviceUuid(device);
+    } catch (error) {
+      console.warn(`Could not get BTRFS filesystem UUID for ${device}: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Get device paths from BTRFS filesystem show
+   * @param {string} device - Any device path in the BTRFS pool
+   * @returns {Promise<string[]>} - Array of device paths from btrfs filesystem show
+   */
+  async getBtrfsDevicePaths(device) {
+    try {
+      const { stdout } = await execPromise(`btrfs filesystem show ${device} 2>/dev/null || echo ""`);
+
+      // Parse device paths from the output
+      const deviceMatches = stdout.match(/devid\s+\d+\s+size\s+[\d.]+[KMGT]iB\s+used\s+[\d.]+[KMGT]iB\s+path\s+(\/dev\/[^\s]+)/g);
+      if (deviceMatches) {
+        return deviceMatches.map(match => {
+          const pathMatch = match.match(/path\s+(\/dev\/[^\s]+)/);
+          return pathMatch ? pathMatch[1] : null;
+        }).filter(Boolean);
+      }
+
+      return [];
+    } catch (error) {
+      console.warn(`Could not get BTRFS device paths for ${device}: ${error.message}`);
+      return [];
+    }
+  }
+
+  /**
+   * Get UUIDs for BTRFS pool devices (handles LUKS vs non-LUKS)
+   * @param {string[]} devices - Array of device paths
+   * @param {boolean} isEncrypted - Whether the pool is encrypted with LUKS
+   * @param {string} poolName - Pool name (for LUKS mapping)
+   * @returns {Promise<Object[]>} - Array of device info objects with UUIDs
+   */
+  async getBtrfsPoolDeviceUuids(devices, isEncrypted = false, poolName = null) {
+    const deviceInfos = [];
+
+    if (isEncrypted && poolName) {
+      // For LUKS encrypted pools, each device has different UUIDs
+      for (let i = 0; i < devices.length; i++) {
+        const device = devices[i];
+        // Get PARTUUID from the physical partition (before LUKS)
+        const partuuid = await this._getDevicePartuuid(device);
+        // For encrypted devices, we use PARTUUID as unique identifier
+        deviceInfos.push({
+          device: device,
+          uuid: partuuid,
+          type: 'partuuid' // Indicates this is a PARTUUID, not filesystem UUID
+        });
+      }
+    } else {
+      // For non-encrypted BTRFS pools, all devices share the same filesystem UUID
+      // but we need individual device identification
+      const btrfsUuid = await this.getBtrfsFilesystemUuid(devices[0]);
+
+      for (let i = 0; i < devices.length; i++) {
+        const device = devices[i];
+        // Use the same BTRFS filesystem UUID for all devices in the pool
+        deviceInfos.push({
+          device: device,
+          uuid: btrfsUuid,
+          type: 'filesystem' // Indicates this is a filesystem UUID
+        });
+      }
+    }
+
+    return deviceInfos;
+  }
+
+  /**
+   * Update BTRFS device paths in pool from btrfs filesystem show
+   * This ensures we display the correct /dev/sdX or /dev/nvmeX paths
+   * @param {Object} pool - Pool object to update
+   * @param {string} mountPoint - Mount point of the pool
+   * @private
+   */
+  async _updateBtrfsDevicePathsInPool(pool, mountPoint) {
+    try {
+      if (pool.type !== 'btrfs') {
+        return;
+      }
+
+      // Get actual device paths from btrfs filesystem show
+      const actualDevicePaths = await this.getBtrfsDevicePaths(mountPoint);
+
+      if (actualDevicePaths.length > 0 && pool.data_devices) {
+        // Update device paths in pool data_devices for display purposes
+        // Note: We keep the UUIDs as IDs, but store actual paths for display
+        for (let i = 0; i < Math.min(pool.data_devices.length, actualDevicePaths.length); i++) {
+          if (pool.data_devices[i]) {
+            // Store the actual device path for display purposes
+            pool.data_devices[i].device = actualDevicePaths[i];
+          }
+        }
+
+        console.log(`Updated BTRFS device paths for pool ${pool.name}:`, actualDevicePaths);
+      }
+    } catch (error) {
+      console.warn(`Could not update BTRFS device paths for pool ${pool.name}: ${error.message}`);
+    }
+  }
+
+  /**
+   * Get device PARTUUID (partition UUID, not filesystem UUID)
+   * @param {string} device - Device path
+   * @returns {Promise<string|null>} - Device PARTUUID or null if not found
+   */
+  async _getDevicePartuuid(device) {
+    try {
+      // Get PARTUUID (not filesystem UUID) - this is unique per partition
+      const { stdout } = await execPromise(`blkid -s PARTUUID -o value ${device}`);
+      const partuuid = stdout.trim();
+
+      return partuuid || null;
+    } catch (error) {
+      // Don't throw error, just return null - let calling code handle it
+      return null;
+    }
+  }
+
+  /**
+   * Get UUID-based device path without waking up disks
+   * @param {string} uuid - Filesystem UUID
+   * @returns {Promise<string|null>} - UUID device path or null if not found
+   */
+  async getDevicePathFromUuid(uuid) {
+    try {
+      if (!uuid) return null;
+
+      // First try /dev/disk/by-uuid/ (filesystem UUID)
+      const uuidPath = `/dev/disk/by-uuid/${uuid}`;
+      try {
+        await fs.access(uuidPath);
+        return uuidPath;
+      } catch (error) {
+        // Not found, try PARTUUID
+      }
+
+      // Try /dev/disk/by-partuuid/ (partition UUID)
+      const partuuidPath = `/dev/disk/by-partuuid/${uuid}`;
+      try {
+        await fs.access(partuuidPath);
+        return partuuidPath;
+      } catch (error) {
+        // Not found either
+        return null;
+      }
+    } catch (error) {
+      // Other error
+      return null;
+    }
+  }
+
+  /**
+   * Get real device path from UUID for display purposes (may wake up disks)
+   * @param {string} uuid - Filesystem UUID
+   * @returns {Promise<string|null>} - Real device path or null if not found
+   */
+  async getRealDevicePathFromUuid(uuid) {
+    try {
+      if (!uuid) return null;
+
+      // First try /dev/disk/by-uuid/ (filesystem UUID)
+      const uuidPath = `/dev/disk/by-uuid/${uuid}`;
+      try {
+        await fs.access(uuidPath);
+        const { stdout } = await execPromise(`readlink -f ${uuidPath}`);
+        const devicePath = stdout.trim();
+        return devicePath || null;
+      } catch (error) {
+        // Not found, try PARTUUID
+      }
+
+      // Try /dev/disk/by-partuuid/ (partition UUID)
+      const partuuidPath = `/dev/disk/by-partuuid/${uuid}`;
+      try {
+        await fs.access(partuuidPath);
+        const { stdout } = await execPromise(`readlink -f ${partuuidPath}`);
+        const devicePath = stdout.trim();
+        return devicePath || null;
+      } catch (error) {
+        // Not found either
+        return null;
+      }
+    } catch (error) {
+      // Other error
+      return null;
+    }
+  }
+
+  /**
    * Clean up SnapRAID configuration file for a pool
    * @param {string} poolName - Name of the pool
    * @returns {Promise<boolean>} - Whether cleanup was successful
@@ -633,6 +861,9 @@ class PoolsService {
    * @param {string} options.passphrase - Passphrase for encryption (required if encrypted=true)
    */
   async createMultiDevicePool(name, devices, raidLevel = 'raid1', options = {}) {
+    let encryptionEnabled = false;
+    let luksDevices = null;
+
     try {
       // Validate inputs
       if (!name) throw new Error('Pool name is required');
@@ -674,14 +905,6 @@ class PoolsService {
 
       let actualDevices = devices;
       let encryptionEnabled = false;
-
-      // Handle LUKS encryption before formatting
-      if (options.config?.encrypted) {
-        console.log(`Setting up LUKS encryption for pool '${name}'`);
-        await this._setupPoolEncryption(devices, name, options.passphrase, options.config.create_keyfile);
-        actualDevices = await this._openLuksDevices(devices, name, options.passphrase);
-        encryptionEnabled = true;
-      }
 
       // Read current pools data
       const pools = await this._readPools();
@@ -746,7 +969,27 @@ class PoolsService {
         }
       }
 
-      // Format with BTRFS and specified RAID level using prepared devices (partitions)
+      // Store original devices for UUID retrieval before encryption
+      const originalDevices = [...preparedDevices];
+
+      // Handle LUKS encryption after getting UUIDs
+      if (options.config?.encrypted) {
+        console.log(`Setting up LUKS encryption for multi-device pool '${name}' on prepared devices`);
+        // Clean up any existing LUKS mappers with this pool name first
+        await this._cleanupExistingLuksMappers(name);
+        await this._setupPoolEncryption(preparedDevices, name, options.passphrase, options.config.create_keyfile);
+
+        // Use slot-based naming for multi-device BTRFS pools
+        const dataSlots = preparedDevices.map((_, i) => i + 1);
+        const luksDevices = await this._openLuksDevicesWithSlots(preparedDevices, name, dataSlots, options.passphrase);
+        actualDevices = luksDevices.map(d => d.mappedDevice);
+        encryptionEnabled = true;
+
+        // Use encrypted devices for formatting
+        preparedDevices.splice(0, preparedDevices.length, ...actualDevices);
+      }
+
+      // Format with BTRFS and specified RAID level using prepared devices (partitions or encrypted devices)
       let deviceArgs = preparedDevices.join(' ');
       let formatCommand = `mkfs.btrfs -f -d ${raidLevel} -m ${raidLevel} -L "${name}" ${deviceArgs}`;
 
@@ -783,23 +1026,25 @@ class PoolsService {
           // All devices are already BTRFS, but format=true was explicitly set
           await execPromise(formatCommand);
         }
+
+        // Refresh device symlinks after formatting
+        await this._refreshDeviceSymlinks();
       } else {
         console.log(`All devices are already formatted with BTRFS - skipping formatting`);
       }
 
-      // Create pool object with multiple devices - get UUIDs after formatting
+      // Create pool object with multiple devices
       const poolId = Date.now().toString();
+
+      // For multi-device BTRFS pools, we need filesystem UUIDs from physical devices
+      // These are the UUIDs found in /dev/disk/by-uuid/ that point to the actual partitions
       const dataDevices = [];
-
       for (let i = 0; i < devices.length; i++) {
-        const device = devices[i];
-        const actualDevice = preparedDevices[i]; // Use the prepared device (partition)
-        const deviceUuid = await this.getDeviceUuid(actualDevice);
-
+        // Use filesystem UUID from the original physical partition (before any encryption)
+        const uuid = await this.getDeviceUuid(originalDevices[i]);
         dataDevices.push({
           slot: (i + 1).toString(),
-          id: deviceUuid,
-          device: actualDevice, // Store the actual partition path
+          id: uuid, // Use filesystem UUID from physical partition
           filesystem,
           spindown: null
         });
@@ -813,17 +1058,10 @@ class PoolsService {
         comment: options.comment || "",
         data_devices: dataDevices,
         parity_devices: [],
+
         config: {
           encrypted: encryptionEnabled,
           raid_level: raidLevel
-        },
-        status: {
-          mounted: false,
-          health: "unknown",
-          totalSpace: 0,
-          usedSpace: 0,
-          freeSpace: 0,
-          usagePercent: 0
         }
       };
 
@@ -837,19 +1075,11 @@ class PoolsService {
           // Use the first prepared device (partition) for mounting BTRFS
           await this.mountDevice(preparedDevices[0], mountPoint, { mountOptions: `device=${preparedDevices[0]}` });
 
-          // Update status after mounting
-          const spaceInfo = await this.getDeviceSpace(mountPoint);
-          newPool.status = spaceInfo;
-
-          // Update the pool data in the file
-          const updatedPools = await this._readPools();
-          const poolIndex = updatedPools.findIndex(p => p.id === poolId);
-          if (poolIndex !== -1) {
-            updatedPools[poolIndex].status = spaceInfo;
-            await this._writePools(updatedPools);
-          }
+          // After mounting, update device paths from btrfs filesystem show
+          await this._updateBtrfsDevicePathsInPool(newPool, mountPoint);
         } catch (mountError) {
           // Mount error is ignored, as automount is optional
+          console.warn(`Automount failed for pool ${name}: ${mountError.message}`);
         }
       }
 
@@ -859,6 +1089,15 @@ class PoolsService {
         pool: newPool
       };
     } catch (error) {
+      // Cleanup LUKS devices if encryption was enabled and pool creation failed
+      if (encryptionEnabled && luksDevices) {
+        console.log(`Pool creation failed, cleaning up LUKS devices for '${name}'`);
+        try {
+          await this._closeLuksDevices(devices, name);
+        } catch (cleanupError) {
+          console.warn(`Warning: Could not cleanup LUKS devices: ${cleanupError.message}`);
+        }
+      }
       throw new Error(`Error creating multi-device pool: ${error.message}`);
     }
   }
@@ -911,8 +1150,25 @@ class PoolsService {
       throw new Error(`Pool ${pool.name} must be mounted to add devices`);
     }
 
-    // Check each new device
-    for (const device of newDevices) {
+    // Handle LUKS encryption for new devices if pool is encrypted
+    let actualDevicesToAdd = newDevices;
+    let luksDevices = null;
+
+    if (pool.config?.encrypted) {
+      console.log(`Setting up LUKS encryption for new devices in pool '${pool.name}'`);
+
+      // Setup LUKS encryption on new devices
+      await this._setupPoolEncryption(newDevices, pool.name, options.passphrase, false);
+
+      // Open LUKS devices
+      luksDevices = await this._openLuksDevices(newDevices, pool.name, options.passphrase);
+      actualDevicesToAdd = luksDevices.map(d => d.mappedDevice);
+
+      console.log(`LUKS devices opened for adding to pool: ${actualDevicesToAdd.join(', ')}`);
+    }
+
+    // Check each new device (use actual devices to add)
+    for (const device of actualDevicesToAdd) {
       // Check if device exists
       await fs.access(device).catch(() => {
         throw new Error(`Device ${device} does not exist`);
@@ -940,23 +1196,42 @@ class PoolsService {
     }
 
     // Add each device to the BTRFS volume
-    for (const device of newDevices) {
+    for (const device of actualDevicesToAdd) {
       await execPromise(`btrfs device add ${device} ${mountPoint}`);
     }
 
     // Update the pool data structure - get UUIDs for new devices
     const newDataDevices = [];
     for (let i = 0; i < newDevices.length; i++) {
-      const device = newDevices[i];
-      const deviceUuid = await this.getDeviceUuid(device);
+      const originalDevice = newDevices[i];
+      const actualDevice = actualDevicesToAdd[i];
+
+      // For encrypted pools, get UUID from physical device but store mapped device
+      let deviceUuid;
+      let deviceToStore;
+
+      if (pool.config?.encrypted) {
+        deviceUuid = await this.getDeviceUuid(originalDevice);
+        deviceToStore = actualDevice; // Store the mapped device path
+      } else {
+        deviceUuid = await this.getDeviceUuid(actualDevice);
+        deviceToStore = actualDevice;
+      }
 
       newDataDevices.push({
         slot: (pool.data_devices.length + i + 1).toString(),
         id: deviceUuid,
-        device,
         filesystem: 'btrfs',
         spindown: null
       });
+    }
+
+    // Update original devices array for encrypted pools
+    if (pool.config?.encrypted) {
+      if (!pool.devices) {
+        pool.devices = [];
+      }
+      pool.devices.push(...newDevices);
     }
 
     // Add new devices to the pool's data_devices array
@@ -1000,47 +1275,74 @@ class PoolsService {
     // Determine filesystem from existing devices
     const existingFilesystem = pool.data_devices.length > 0 ? pool.data_devices[0].filesystem : 'xfs';
 
+    // Handle LUKS encryption for new devices if pool is encrypted
+    let actualDevicesToAdd = newDevices;
+    let luksDevices = null;
+
+    if (pool.config?.encrypted) {
+      console.log(`Setting up LUKS encryption for new devices in MergerFS pool '${pool.name}'`);
+
+      // Setup LUKS encryption on new devices
+      await this._setupPoolEncryption(newDevices, pool.name, options.passphrase, false);
+
+      // Open LUKS devices
+      luksDevices = await this._openLuksDevices(newDevices, pool.name, options.passphrase);
+      actualDevicesToAdd = luksDevices.map(d => d.mappedDevice);
+
+      console.log(`LUKS devices opened for adding to MergerFS pool: ${actualDevicesToAdd.join(', ')}`);
+    }
+
     // Check and format new devices if needed
     const formattedDevices = [];
-    for (const device of newDevices) {
+    for (let i = 0; i < newDevices.length; i++) {
+      const originalDevice = newDevices[i];
+      const deviceToCheck = actualDevicesToAdd[i];
+
       // Check if device exists
-      await fs.access(device).catch(() => {
-        throw new Error(`Device ${device} does not exist`);
+      await fs.access(deviceToCheck).catch(() => {
+        throw new Error(`Device ${deviceToCheck} does not exist`);
       });
 
       // Check if device is already mounted
-      const mountStatus = await this._isDeviceMounted(device);
+      const mountStatus = await this._isDeviceMounted(deviceToCheck);
       if (mountStatus.isMounted) {
-        throw new Error(`Device ${device} is already mounted at ${mountStatus.mountPoint}. Please unmount it first before adding to pool.`);
+        throw new Error(`Device ${deviceToCheck} is already mounted at ${mountStatus.mountPoint}. Please unmount it first before adding to pool.`);
       }
 
       // Check if device is already part of this pool
-      const isInPool = pool.data_devices.some(d => d.device === device) ||
-                      pool.parity_devices.some(d => d.device === device);
+      const isInPool = pool.data_devices.some(d => d.device === deviceToCheck) ||
+                      pool.parity_devices.some(d => d.device === deviceToCheck);
       if (isInPool) {
-        throw new Error(`Device ${device} is already part of pool ${pool.name}`);
+        throw new Error(`Device ${deviceToCheck} is already part of pool ${pool.name}`);
       }
 
       // Check/format device
-      const deviceInfo = await this.checkDeviceFilesystem(device);
-      const actualDeviceToUse = deviceInfo.actualDevice || device;
-      const isUsingPartition = deviceInfo.actualDevice && deviceInfo.actualDevice !== device;
+      const deviceInfo = await this.checkDeviceFilesystem(deviceToCheck);
+      const actualDeviceToUse = deviceInfo.actualDevice || deviceToCheck;
+      const isUsingPartition = deviceInfo.actualDevice && deviceInfo.actualDevice !== deviceToCheck;
 
-
-
-      let actualDevice = device;
+      let actualDevice = deviceToCheck;
       if (!deviceInfo.isFormatted || options.format === true) {
-        const formatResult = await this.formatDevice(device, existingFilesystem);
+        const formatResult = await this.formatDevice(deviceToCheck, existingFilesystem);
         actualDevice = formatResult.device; // Use the partition created by formatDevice
-        const uuid = await this.getDeviceUuid(actualDevice);
+
+        // For encrypted pools, get UUID from physical device
+        let uuid;
+        if (pool.config?.encrypted) {
+          uuid = await this.getDeviceUuid(originalDevice);
+        } else {
+          uuid = await this.getDeviceUuid(actualDevice);
+        }
+
         formattedDevices.push({
+          originalDevice,
           device: actualDevice,
           filesystem: existingFilesystem,
           uuid,
-          isUsingPartition: actualDevice !== device
+          isUsingPartition: actualDevice !== deviceToCheck
         });
       } else if (deviceInfo.filesystem !== existingFilesystem) {
-        const deviceDisplayName = isUsingPartition ? `${device} (partition ${actualDeviceToUse})` : device;
+        const deviceDisplayName = isUsingPartition ? `${deviceToCheck} (partition ${actualDeviceToUse})` : deviceToCheck;
         throw new Error(`Device ${deviceDisplayName} has filesystem ${deviceInfo.filesystem}, expected ${existingFilesystem}. Use format: true to reformat.`);
       } else {
         // Always get UUID from the actual device being used to ensure we have the correct one
@@ -1054,9 +1356,10 @@ class PoolsService {
         }
 
         formattedDevices.push({
+          originalDevice,
           device: actualDeviceToUse,
           filesystem: deviceInfo.filesystem,
-          uuid,
+          uuid: pool.config?.encrypted ? await this.getDeviceUuid(originalDevice) : uuid,
           isUsingPartition
         });
       }
@@ -1088,10 +1391,17 @@ class PoolsService {
       newDataDevices.push({
         slot: diskIndex.toString(),
         id: finalUuid, // UUID of the actual partition/device being used
-        device: device, // The actual device/partition path
         filesystem,
         spindown: null
       });
+    }
+
+    // Update original devices array for encrypted pools
+    if (pool.config?.encrypted) {
+      if (!pool.devices) {
+        pool.devices = [];
+      }
+      pool.devices.push(...newDevices);
     }
 
     // Add new devices to pool
@@ -1233,10 +1543,7 @@ class PoolsService {
         });
       }
 
-      // Don't persist dynamic status info to pools.json
-      // Status will be calculated dynamically when pools are retrieved
-
-      // Write updated pool data (without status)
+      // Write updated pool data
       await this._writePools(pools);
 
       return {
@@ -1256,6 +1563,10 @@ class PoolsService {
     // Check for partition patterns:
     // /dev/sdb1, /dev/sdc2, etc. (SATA/SCSI)
     // /dev/nvme0n1p1, /dev/nvme0n1p2, etc. (NVMe)
+    // /dev/mapper/luks_0 should be treated as a "partition" (no need to partition LUKS containers)
+    if (device.includes('/dev/mapper/')) {
+      return true; // LUKS mapped devices should be formatted directly, not partitioned
+    }
     return /\/dev\/(sd[a-z]+\d+|nvme\d+n\d+p\d+|hd[a-z]+\d+|vd[a-z]+\d+)$/.test(device);
   }
 
@@ -1264,11 +1575,52 @@ class PoolsService {
    */
   _getPartitionPath(device, partitionNumber) {
     // Handle NVMe devices (e.g., /dev/nvme0n1 -> /dev/nvme0n1p1)
-    if (device.includes('nvme')) {
+    // Handle LUKS mapped devices (e.g., /dev/mapper/luks_0 -> /dev/mapper/luks_0p1)
+    if (device.includes('nvme') || device.includes('/dev/mapper/')) {
       return `${device}p${partitionNumber}`;
     }
     // Handle regular SATA/SCSI devices (e.g., /dev/sdb -> /dev/sdb1)
     return `${device}${partitionNumber}`;
+  }
+
+  /**
+   * Create a partition on a whole disk if needed
+   * @param {string} device - Device path
+   * @returns {Promise<string>} - Partition path or original device if already a partition
+   */
+  async _ensurePartition(device) {
+    // Check if device is a partition or a whole disk
+    const isPartition = this._isPartitionPath(device);
+    let targetDevice = device;
+
+    if (!isPartition) {
+      // This is a whole disk - create partition table and partition first
+      console.log(`${device} is a whole disk, creating partition table and partition...`);
+
+      // Create GPT partition table
+      await execPromise(`parted -s ${device} mklabel gpt`);
+
+      // Create a single partition using the entire disk
+      await execPromise(`parted -s ${device} mkpart primary 2048s 100%`);
+
+      // Wait a moment for the partition to be recognized by the kernel
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      // Inform kernel about partition table changes
+      try {
+        await execPromise(`partprobe ${device}`);
+      } catch (error) {
+        // partprobe might fail on some systems, but that's usually not critical
+        console.warn(`partprobe failed: ${error.message}`);
+      }
+
+      // Determine partition path
+      targetDevice = this._getPartitionPath(device, 1);
+
+      console.log(`Created partition: ${targetDevice}`);
+    }
+
+    return targetDevice;
   }
 
   /**
@@ -1279,36 +1631,8 @@ class PoolsService {
     console.log(`Formatting ${device} with ${filesystem}...`);
 
     try {
-      // Check if device is a partition or a whole disk
-      const isPartition = this._isPartitionPath(device);
-      let targetDevice = device;
-
-      if (!isPartition) {
-        // This is a whole disk - create partition table and partition first
-        console.log(`${device} is a whole disk, creating partition table and partition...`);
-
-        // Create GPT partition table
-        await execPromise(`parted -s ${device} mklabel gpt`);
-
-        // Create a single partition using the entire disk
-        await execPromise(`parted -s ${device} mkpart primary 2048s 100%`);
-
-        // Wait a moment for the partition to be recognized by the kernel
-        await new Promise(resolve => setTimeout(resolve, 1000));
-
-        // Inform kernel about partition table changes
-        try {
-          await execPromise(`partprobe ${device}`);
-        } catch (error) {
-          // partprobe might fail on some systems, but that's usually not critical
-          console.warn(`partprobe failed: ${error.message}`);
-        }
-
-        // Determine partition path
-        targetDevice = this._getPartitionPath(device, 1);
-
-        console.log(`Created partition: ${targetDevice}`);
-      }
+      // Ensure partition exists (create if whole disk)
+      const targetDevice = await this._ensurePartition(device);
 
       // Check if the target device (partition) is already formatted with the requested filesystem
       const deviceInfo = await this.checkDeviceFilesystem(targetDevice);
@@ -1353,7 +1677,7 @@ class PoolsService {
 
       return {
         success: true,
-        message: `Device ${device} successfully ${!isPartition ? 'partitioned and ' : ''}formatted with ${filesystem}`,
+        message: `Device ${device} successfully formatted with ${filesystem}`,
         device: targetDevice,
         filesystem,
         uuid,
@@ -1438,11 +1762,20 @@ class PoolsService {
       // Mount the device
       await execPromise(mountCommand);
 
-      // Set ownership of the mount point after mounting
+      // Set ownership of the mount point after mounting (if not already set)
       const uid = this.defaultOwnership.uid;
       const gid = this.defaultOwnership.gid;
       if (uid !== undefined && gid !== undefined) {
-        await this._setOwnership(mountPoint, uid, gid);
+        try {
+          const stats = await fs.stat(mountPoint);
+          // Only set ownership if it's different from what we want
+          if (stats.uid !== uid || stats.gid !== gid) {
+            await this._setOwnership(mountPoint, uid, gid);
+          }
+        } catch (error) {
+          // If stat fails, try to set ownership anyway
+          await this._setOwnership(mountPoint, uid, gid);
+        }
       }
 
       const successMessage = isUsingPartition
@@ -1612,6 +1945,9 @@ class PoolsService {
    * @param {string} options.passphrase - Passphrase for encryption (required if encrypted=true)
    */
   async createSingleDevicePool(name, device, filesystem = null, options = {}) {
+    let encryptionEnabled = false;
+    let luksDevices = null;
+
     try {
       // Validate inputs
       if (!name) throw new Error('Pool name is required');
@@ -1642,30 +1978,94 @@ class PoolsService {
       let actualDevice = device;
       let encryptionEnabled = false;
 
-      // Handle LUKS encryption before formatting
-      if (options.config?.encrypted) {
-        console.log(`Setting up LUKS encryption for single device pool '${name}'`);
-        await this._setupPoolEncryption([device], name, options.passphrase, options.config.create_keyfile);
-        const mappedDevices = await this._openLuksDevices([device], name, options.passphrase);
-        actualDevice = mappedDevices[0]; // Use the mapped device for formatting/mounting
-        encryptionEnabled = true;
-      }
-
-      // Check device filesystem (use actualDevice which could be mapped)
+      // First check device filesystem to determine if partitioning is needed
       let deviceInfo = await this.checkDeviceFilesystem(actualDevice);
 
-      // Determine the actual device to use (could be a partition)
       let actualDeviceToUse = deviceInfo.actualDevice || actualDevice;
       const isUsingPartition = deviceInfo.actualDevice && deviceInfo.actualDevice !== actualDevice;
 
       // Format the device if it is not formatted or if the filesystem does not match
-      if (deviceInfo.isFormatted) {
-        // Device is already formatted
-        if (filesystem && deviceInfo.filesystem !== filesystem) {
-          // Warning: The existing filesystem does not match the specified one
-          if (options.format === true) {
-            // Only format if explicitly requested
-            const formatResult = await this.formatDevice(device, filesystem);
+      // Handle LUKS encryption first if encryption is enabled
+      if (options.config?.encrypted) {
+        console.log(`Setting up LUKS encryption for single device pool '${name}' on ${actualDeviceToUse}`);
+        // Clean up any existing LUKS mappers with this pool name first
+        await this._cleanupExistingLuksMappers(name);
+        await this._setupPoolEncryption([actualDeviceToUse], name, options.passphrase, options.config.create_keyfile);
+
+        // Always open LUKS devices to format the mapped device (use slot 1 for single device)
+        const luksDevices = await this._openLuksDevicesWithSlots([actualDeviceToUse], name, [1], options.passphrase);
+        actualDeviceToUse = luksDevices[0].mappedDevice; // Use the mapped device for formatting and mounting
+
+        // Format the mapped LUKS device (always format encrypted devices)
+        filesystem = filesystem || 'xfs';
+        const formatResult = await this.formatDevice(actualDeviceToUse, filesystem);
+
+        // Refresh device symlinks after formatting
+        await this._refreshDeviceSymlinks();
+
+        // Get UUID from the physical device after LUKS setup
+        // The originalDevice should be the partition that was encrypted
+        const physicalDevice = luksDevices[0].originalDevice;
+        console.log(`Getting UUID from physical device: ${physicalDevice}`);
+        const physicalUuid = await this.getDeviceUuid(physicalDevice);
+        console.log(`Physical device UUID: ${physicalUuid}`);
+
+        deviceInfo = {
+          isFormatted: true,
+          filesystem,
+          uuid: physicalUuid, // Use physical device UUID for mounting
+          actualDevice: physicalDevice // Store the original physical device path
+        };
+
+        encryptionEnabled = true;
+
+        // If automount is false, close the LUKS device after formatting
+        if (!options.automount) {
+          console.log(`Closing LUKS device after formatting (automount=false)`);
+          // Close partition first, then main device
+          const partitionDevice = formatResult.device.split('/').pop();
+          const mainDevice = luksDevices[0].mappedDevice.split('/').pop();
+
+          // Try to close partition first
+          try {
+            await execPromise(`cryptsetup luksClose ${partitionDevice}`);
+            console.log(`Closed LUKS partition: ${partitionDevice}`);
+          } catch (error) {
+            console.warn(`Failed to close LUKS partition ${partitionDevice}: ${error.message}`);
+          }
+
+          // Always try to close main device, even if partition close failed
+          try {
+            await execPromise(`cryptsetup luksClose ${mainDevice}`);
+            console.log(`Closed LUKS main device: ${mainDevice}`);
+          } catch (error) {
+            console.warn(`Failed to close LUKS main device ${mainDevice}: ${error.message}`);
+            // If main device close fails, try alternative approach
+            try {
+              await execPromise(`dmsetup remove ${mainDevice}`);
+              console.log(`Force removed LUKS device using dmsetup: ${mainDevice}`);
+            } catch (dmError) {
+              console.warn(`Failed to force remove LUKS device ${mainDevice}: ${dmError.message}`);
+            }
+          }
+
+          // For non-automount, we still store the mapped device path for mounting later
+          // The LUKS devices will be reopened during mount
+          actualDeviceToUse = formatResult.device;
+        } else {
+          // For automount=true, keep the mapped device for immediate mounting
+          actualDeviceToUse = formatResult.device;
+        }
+      } else {
+        // Handle non-encrypted devices
+        if (deviceInfo.isFormatted) {
+          // Device is already formatted, check if we need to reformat
+          if (filesystem && filesystem !== deviceInfo.filesystem) {
+            if (options.format === true) {
+                          // Reformat with the new filesystem
+            const formatResult = await this.formatDevice(actualDeviceToUse, filesystem);
+            // Refresh device symlinks after formatting
+            await this._refreshDeviceSymlinks();
             deviceInfo = {
               isFormatted: true,
               filesystem,
@@ -1673,47 +2073,50 @@ class PoolsService {
               actualDevice: formatResult.device // Use the actual formatted device (partition)
             };
             actualDeviceToUse = formatResult.device;
+            } else {
+              // Otherwise cancel to prevent data loss
+              const deviceDisplayName = isUsingPartition ? `${device} (partition ${actualDeviceToUse})` : device;
+              throw new Error(`Device ${deviceDisplayName} is already formatted with ${deviceInfo.filesystem}, not with ${filesystem}. Use format: true to format.`);
+            }
           } else {
-            // Otherwise cancel to prevent data loss
-            const deviceDisplayName = isUsingPartition ? `${device} (partition ${actualDeviceToUse})` : device;
-            throw new Error(`Device ${deviceDisplayName} is already formatted with ${deviceInfo.filesystem}, not with ${filesystem}. Use format: true to format.`);
+            // If no filesystem is specified or matches, use the existing one
+            filesystem = deviceInfo.filesystem;
           }
         } else {
-          // If no filesystem is specified or matches, use the existing one
-          filesystem = deviceInfo.filesystem;
+          // Device is not formatted
+          if (options.format === false) {
+            throw new Error(`Device ${device} is not formatted and format=false was specified.`);
+          } else {
+            // Format with specified or default filesystem (xfs as default if nothing specified)
+            filesystem = filesystem || 'xfs';
+            const formatResult = await this.formatDevice(device, filesystem);
+            // Refresh device symlinks after formatting
+            await this._refreshDeviceSymlinks();
+            deviceInfo = {
+              isFormatted: true,
+              filesystem,
+              uuid: formatResult.uuid,
+              actualDevice: formatResult.device // Use the actual formatted device (partition)
+            };
+            actualDeviceToUse = formatResult.device;
+          }
         }
-      } else {
-        // Device is not formatted
-        if (options.format === false) {
-          throw new Error(`Device ${device} is not formatted and format=false was specified.`);
-        } else {
-          // Format with specified or default filesystem (xfs as default if nothing specified)
-          filesystem = filesystem || 'xfs';
-          const formatResult = await this.formatDevice(device, filesystem);
-          deviceInfo = {
-            isFormatted: true,
-            filesystem,
-            uuid: formatResult.uuid,
-            actualDevice: formatResult.device // Use the actual formatted device (partition)
-          };
-          actualDeviceToUse = formatResult.device;
+      }
+
+      // For encrypted pools, skip UUID override since we already have the correct physical device UUID
+      if (!encryptionEnabled) {
+        // Always ensure we have the correct UUID from the actual device being used
+        let finalUuid = await this.getDeviceUuid(actualDeviceToUse);
+        if (!finalUuid) {
+          // Fallback: try to use UUID from deviceInfo if direct query failed
+          finalUuid = deviceInfo.uuid;
         }
+        if (!finalUuid) {
+          throw new Error(`No filesystem UUID found for device ${actualDeviceToUse}. Device may not be properly formatted.`);
+        }
+
+        deviceInfo.uuid = finalUuid;
       }
-
-      // Always ensure we have the correct UUID from the actual device being used
-
-      let finalUuid = await this.getDeviceUuid(actualDeviceToUse);
-      if (!finalUuid) {
-
-        // Fallback: try to use UUID from deviceInfo if direct query failed
-        finalUuid = deviceInfo.uuid;
-      }
-      if (!finalUuid) {
-
-        throw new Error(`No filesystem UUID found for device ${actualDeviceToUse}. Device may not be properly formatted.`);
-      }
-
-      deviceInfo.uuid = finalUuid;
 
       // Create mount point
       const mountPoint = path.join(this.mountBasePath, name);
@@ -1735,23 +2138,15 @@ class PoolsService {
         data_devices: [
           {
             slot: "1",
-            id: deviceInfo.uuid, // UUID of the actual device/partition being used
-            device: actualDeviceToUse, // Use the actual device/partition that has the filesystem
+            id: deviceInfo.uuid, // UUID of the physical device/partition
             filesystem,
             spindown: options.spindown || null
           }
         ],
         parity_devices: [],
         config: {
-          encrypted: encryptionEnabled
-        },
-        status: {
-          mounted: false,
-          health: "unknown",
-          totalSpace: 0,
-          usedSpace: 0,
-          freeSpace: 0,
-          usagePercent: 0
+          encrypted: encryptionEnabled,
+          ...(options.config || {})
         }
       };
 
@@ -1763,18 +2158,6 @@ class PoolsService {
       if (newPool.automount) {
         try {
           await this.mountDevice(actualDeviceToUse, mountPoint);
-
-          // Update status after mounting
-          const spaceInfo = await this.getDeviceSpace(mountPoint);
-          newPool.status = spaceInfo;
-
-          // Update the pool data in the file
-          const updatedPools = await this._readPools();
-          const poolIndex = updatedPools.findIndex(p => p.id === poolId);
-          if (poolIndex !== -1) {
-            updatedPools[poolIndex].status = spaceInfo;
-            await this._writePools(updatedPools);
-          }
         } catch (mountError) {
           // Mount error is ignored, as automount is optional
         }
@@ -1795,6 +2178,15 @@ class PoolsService {
         }
       };
     } catch (error) {
+      // Cleanup LUKS devices if encryption was enabled and pool creation failed
+      if (encryptionEnabled && luksDevices) {
+        console.log(`Pool creation failed, cleaning up LUKS devices for '${name}'`);
+        try {
+          await this._closeLuksDevices([device], name);
+        } catch (cleanupError) {
+          console.warn(`Warning: Could not cleanup LUKS devices: ${cleanupError.message}`);
+        }
+      }
       throw new Error(`Error creating single device pool: ${error.message}`);
     }
   }
@@ -1814,17 +2206,55 @@ class PoolsService {
         throw new Error(`Pool with ID "${poolId}" not found`);
       }
 
+      // Ensure device paths are available before mounting
+      await this._ensureDevicePaths(pool);
+
       // Handle LUKS encryption before mounting
       if (pool.config?.encrypted) {
         console.log(`Opening LUKS devices for encrypted pool '${pool.name}'`);
-        await this._openLuksDevices(pool.devices, pool.name, options.passphrase);
+
+        // Use the device path resolved from UUID
+        const physicalDevice = pool.data_devices[0].device;
+        const dataDeviceUuid = pool.data_devices[0].id;
+
+        // Check if LUKS device is already mapped by looking for the UUID
+        try {
+          const mappedDevice = await execPromise(`find /dev/disk/by-uuid/ -name "${dataDeviceUuid}" -exec readlink -f {} \\;`);
+          const devicePath = mappedDevice.stdout.trim();
+
+          if (devicePath && devicePath.includes('/dev/mapper/')) {
+            console.log(`LUKS device already mapped: ${devicePath}`);
+            // Extract the mapper name from the path
+            const mapperName = devicePath.replace('/dev/mapper/', '').replace('p1', '');
+            pool._luksDevices = [{
+              originalDevice: physicalDevice,
+              mappedDevice: `/dev/mapper/${mapperName}`,
+              uuid: dataDeviceUuid
+            }];
+          } else {
+            throw new Error('Not mapped');
+          }
+        } catch (error) {
+          // Device not mapped, need to open it
+          console.log(`LUKS device not mapped, opening ${physicalDevice}...`);
+
+          // Open the LUKS device using the physical device from pools.json with slot-based naming
+          const deviceSlot = parseInt(pool.data_devices[0].slot);
+          const luksDevices = await this._openLuksDevicesWithSlots([physicalDevice], pool.name, [deviceSlot], options.passphrase || null);
+          pool._luksDevices = luksDevices;
+        }
       }
 
       // For single device pools
       if (pool.data_devices && pool.data_devices.length === 1 &&
           ['ext4', 'xfs', 'btrfs'].includes(pool.type)) {
-        const device = pool.data_devices[0].device;
+        let device = pool.data_devices[0].device;
         const mountPoint = path.join(this.mountBasePath, pool.name);
+
+        // For LUKS pools, use the mapped device directly (no partition)
+        if (pool.config?.encrypted && pool._luksDevices) {
+          device = pool._luksDevices[0].mappedDevice;
+        }
 
         // Mount the device with format option
         const mountResult = await this.mountDevice(device, mountPoint, {
@@ -1833,15 +2263,8 @@ class PoolsService {
           mountOptions: options.mountOptions
         });
 
-        // Don't persist dynamic status info to pools.json
-        // Status will be calculated dynamically when pools are retrieved
-
-        // Update in file
-        const poolIndex = pools.findIndex(p => p.id === poolId);
-        if (poolIndex !== -1) {
-          pools[poolIndex].status = spaceInfo;
-          await this._writePools(pools);
-        }
+        // Get space info after successful mount (for response only)
+        const spaceInfo = await this.getDeviceSpace(mountPoint);
 
         return {
           success: true,
@@ -1852,8 +2275,19 @@ class PoolsService {
             status: spaceInfo
           }
         };
-      } else {
-        // Other pool types will be implemented later
+      }
+
+      // For multi-device BTRFS pools
+      else if (pool.type === 'btrfs' && pool.data_devices && pool.data_devices.length > 1) {
+        return await this._mountMultiDeviceBtrfsPool(pool, options);
+      }
+
+      // For MergerFS pools
+      else if (pool.type === 'mergerfs') {
+        return await this._mountMergerFSPool(pool, options);
+      }
+
+      else {
         throw new Error(`Mounting for pool type "${pool.type}" is not implemented yet`);
       }
     } catch (error) {
@@ -1876,43 +2310,20 @@ class PoolsService {
       // For single device pools
       if (pool.data_devices && pool.data_devices.length === 1 &&
           ['ext4', 'xfs', 'btrfs'].includes(pool.type)) {
-        const mountPoint = path.join(this.mountBasePath, pool.name);
+        return await this._unmountSingleDevicePool(pool, options.force);
+      }
 
-        // Unmount the device
-        const unmountResult = await this.unmountDevice(mountPoint, {
-          force: options.force || false,
-          removeDirectory: options.removeDirectory || false
-        });
+      // For multi-device BTRFS pools
+      else if (pool.type === 'btrfs' && pool.data_devices && pool.data_devices.length > 1) {
+        return await this._unmountMultiDeviceBtrfsPool(pool, options.force);
+      }
 
-        // Update status
-        pool.status.mounted = false;
+      // For MergerFS pools
+      else if (pool.type === 'mergerfs') {
+        return await this._unmountMergerFSPool(pool, options.force);
+      }
 
-        // Update in file
-        const poolIndex = pools.findIndex(p => p.id === poolId);
-        if (poolIndex !== -1) {
-          pools[poolIndex].status.mounted = false;
-          await this._writePools(pools);
-        }
-
-        // Close LUKS devices if pool is encrypted
-        if (pool.config?.encrypted) {
-          console.log(`Closing LUKS devices for encrypted pool '${pool.name}'`);
-          await this._closeLuksDevices(pool.devices, pool.name);
-        }
-
-        return {
-          success: true,
-          message: `Pool "${pool.name}" (ID: ${poolId}) unmounted successfully`,
-          pool: {
-            id: pool.id,
-            name: pool.name,
-            status: {
-              mounted: false
-            }
-          }
-        };
-      } else {
-        // Other pool types will be implemented later
+      else {
         throw new Error(`Unmounting for pool type "${pool.type}" is not implemented yet`);
       }
     } catch (error) {
@@ -1965,6 +2376,8 @@ class PoolsService {
 
     if (pool.type === 'mergerfs') {
       await this._unmountMergerFSPool(pool, force);
+    } else if (pool.type === 'btrfs' && pool.data_devices && pool.data_devices.length > 1) {
+      await this._unmountMultiDeviceBtrfsPool(pool, force);
     } else if (['btrfs', 'ext4', 'xfs'].includes(pool.type)) {
       await this._unmountSingleDevicePool(pool, force);
     } else {
@@ -1979,6 +2392,9 @@ class PoolsService {
   async _unmountMergerFSPool(pool, force = false) {
     const mountPoint = path.join(this.mountBasePath, pool.name);
     const mergerfsBasePath = path.join(this.mergerfsBasePath, pool.name);
+
+    // Ensure device paths are available
+    await this._ensureDevicePaths(pool);
 
     const unmountErrors = [];
 
@@ -2037,7 +2453,28 @@ class PoolsService {
       }
     }
 
-    // Step 4: Remove the mergerfs base directory
+    // Step 4: Close LUKS devices if pool is encrypted
+    if (pool.config?.encrypted) {
+      console.log(`Closing LUKS devices for encrypted MergerFS pool '${pool.name}' during removal`);
+
+      // Extract physical device paths from data_devices and parity_devices
+      const dataDevicesToClose = pool.data_devices.map(d => d.device);
+      const parityDevicesToClose = pool.parity_devices.map(d => d.device);
+
+      // Close data device LUKS mappers using slot numbers
+      if (dataDevicesToClose.length > 0) {
+        const dataSlots = pool.data_devices.map(d => parseInt(d.slot));
+        await this._closeLuksDevicesWithSlots(dataDevicesToClose, pool.name, dataSlots);
+      }
+
+      // Close parity device LUKS mappers using slot numbers if they exist
+      if (parityDevicesToClose.length > 0) {
+        const paritySlots = pool.parity_devices.map(d => parseInt(d.slot));
+        await this._closeLuksDevicesWithSlots(parityDevicesToClose, pool.name, paritySlots, true);
+      }
+    }
+
+    // Step 5: Remove the mergerfs base directory
     try {
       const stats = await fs.stat(mergerfsBasePath);
       if (stats.isDirectory()) {
@@ -2109,6 +2546,65 @@ class PoolsService {
         });
       } catch (error) {
         throw new Error(`Failed to unmount pool: ${error.message}`);
+      }
+    }
+
+    // Close LUKS devices if pool is encrypted
+    if (pool.config?.encrypted) {
+      console.log(`Closing LUKS devices for encrypted pool '${pool.name}' during unmount`);
+
+      // For single device pools, we need to get the physical device first
+      await this._ensureDevicePaths(pool);
+      const physicalDevice = pool.data_devices[0].device;
+
+      console.log(`Single device pool - closing LUKS slot 1 for pool '${pool.name}' with device ${physicalDevice}`);
+      await this._closeLuksDevicesWithSlots([physicalDevice], pool.name, [1]);
+    }
+  }
+
+  /**
+   * Close LUKS devices for a pool using specific slot numbers
+   * @param {string[]} devices - Array of original device paths
+   * @param {string} poolName - Pool name
+   * @param {number[]} slots - Array of slot numbers corresponding to devices
+   * @param {boolean} isParity - Whether these are parity devices (uses different naming)
+   * @private
+   */
+  async _closeLuksDevicesWithSlots(devices, poolName, slots, isParity = false) {
+    for (let i = 0; i < devices.length; i++) {
+      const slot = slots[i];
+
+      // Use slot-based naming scheme
+      let luksName;
+      if (isParity) {
+        luksName = `parity_${poolName}_${slot}`;
+      } else {
+        luksName = `${poolName}_${slot}`;
+      }
+
+      const partitionName = `${luksName}p1`;
+
+      // Try to close partition first
+      try {
+        await execPromise(`cryptsetup luksClose ${partitionName}`);
+        console.log(`Closed LUKS partition: ${partitionName}`);
+      } catch (error) {
+        console.warn(`Warning: Could not close LUKS partition ${partitionName}: ${error.message}`);
+      }
+
+      // Then close main device
+      try {
+        await execPromise(`cryptsetup luksClose ${luksName}`);
+        console.log(`Closed LUKS device: ${luksName}`);
+      } catch (error) {
+        console.warn(`Warning: Could not close LUKS device ${luksName}: ${error.message}`);
+        // Try dmsetup as fallback
+        try {
+          await execPromise(`dmsetup remove ${luksName}`);
+          console.log(`Force removed LUKS device using dmsetup: ${luksName}`);
+        } catch (dmError) {
+          console.warn(`Warning: Could not force remove LUKS device ${luksName}: ${dmError.message}`);
+        }
       }
     }
   }
@@ -2252,6 +2748,70 @@ class PoolsService {
   }
 
   /**
+   * Inject device paths dynamically by resolving UUIDs (for internal operations)
+   * @param {Object} pool - Pool object
+   * @private
+   */
+  async _injectDevicePaths(pool) {
+    // Inject UUID-based device paths into data devices (for internal operations)
+    for (const device of pool.data_devices || []) {
+      if (device.id && !device.device) {
+        device.device = await this.getDevicePathFromUuid(device.id);
+      }
+    }
+
+    // Inject UUID-based device paths into parity devices (for internal operations)
+    for (const device of pool.parity_devices || []) {
+      if (device.id && !device.device) {
+        device.device = await this.getDevicePathFromUuid(device.id);
+      }
+    }
+  }
+
+  /**
+   * Inject real device paths into pool devices (for API display)
+   * @param {Object} pool - Pool object
+   * @private
+   */
+  async _injectRealDevicePaths(pool) {
+    // Skip UUID-based device path injection for non-encrypted multi-device BTRFS pools
+    // They will get their device paths from btrfs filesystem show in _injectStorageInfoIntoDevices
+    // But encrypted pools need UUID-based device path injection
+    if (pool.type === 'btrfs' && pool.data_devices && pool.data_devices.length > 1 && !pool.config?.encrypted) {
+      return;
+    }
+
+    // Inject real device paths into data devices (for API display)
+    for (const device of pool.data_devices || []) {
+      if (device.id) {
+        device.device = await this.getRealDevicePathFromUuid(device.id);
+      }
+    }
+
+    // Inject real device paths into parity devices (for API display)
+    for (const device of pool.parity_devices || []) {
+      if (device.id) {
+        device.device = await this.getRealDevicePathFromUuid(device.id);
+      }
+    }
+  }
+
+  /**
+   * Ensure pool has device paths injected
+   * @param {Object} pool - Pool object
+   * @private
+   */
+  async _ensureDevicePaths(pool) {
+    // Check if device paths are already injected
+    const needsInjection = (pool.data_devices && pool.data_devices.some(d => d.id && !d.device)) ||
+                          (pool.parity_devices && pool.parity_devices.some(d => d.id && !d.device));
+
+    if (needsInjection) {
+      await this._injectDevicePaths(pool);
+    }
+  }
+
+  /**
    * Inject storage information directly into pool devices (no disk access)
    * @param {Object} pool - Pool object
    * @param {Object} user - User object with byte_format preference
@@ -2259,33 +2819,24 @@ class PoolsService {
   async _injectStorageInfoIntoDevices(pool, user = null) {
     const dfData = await this._getDfData();
 
-    // For BTRFS pools, get all physical devices from btrfs filesystem show
+    // For non-encrypted BTRFS multi-device pools, get all physical devices from btrfs filesystem show
     let btrfsDevices = [];
-    if (pool.type === 'btrfs' && pool.data_devices && pool.data_devices.length > 0) {
+    if (pool.type === 'btrfs' && pool.data_devices && pool.data_devices.length > 1 && !pool.config?.encrypted) {
       try {
         const mountPoint = this._generateExpectedMountPoint(pool, pool.data_devices[0], 'data');
-        const { stdout } = await execPromise(`btrfs filesystem show ${mountPoint} 2>/dev/null || echo ""`);
 
-        // Parse btrfs filesystem show output to get all devices
-        const deviceMatches = stdout.match(/devid\s+\d+\s+size\s+[\d.]+[KMGT]iB\s+used\s+[\d.]+[KMGT]iB\s+path\s+(\/dev\/[^\s]+)/g);
-        if (deviceMatches) {
-          btrfsDevices = deviceMatches.map(match => {
-            const pathMatch = match.match(/path\s+(\/dev\/[^\s]+)/);
-            return pathMatch ? pathMatch[1] : null;
-          }).filter(Boolean);
+        // Use the new method to get device paths for multi-device BTRFS pools only
+        btrfsDevices = await this.getBtrfsDevicePaths(mountPoint);
 
-          // Cross-reference with df output to get the actual mounted partitions
-          const dfData = await this._getDfData();
-          const mountedDevices = Object.values(dfData).map(data => data.device).filter(Boolean);
-
-          // Replace whole disk devices with their mounted partitions if they exist
-          btrfsDevices = btrfsDevices.map(device => {
-            // Check if there's a mounted partition for this device
-            const matchingMountedDevice = mountedDevices.find(mounted =>
-              mounted.startsWith(device) && mounted !== device
-            );
-            return matchingMountedDevice || device;
-          });
+        // Update the pool's device paths for display
+        if (btrfsDevices.length > 0) {
+          for (let i = 0; i < Math.min(pool.data_devices.length, btrfsDevices.length); i++) {
+            if (pool.data_devices[i]) {
+              // For multi-device BTRFS pools, use device paths from btrfs filesystem show
+              pool.data_devices[i].device = btrfsDevices[i];
+            }
+          }
+          // Device paths updated for multi-device BTRFS pool
         }
       } catch (error) {
         console.warn(`Could not get BTRFS device list for pool ${pool.name}: ${error.message}`);
@@ -2320,7 +2871,8 @@ class PoolsService {
     }
 
     // For BTRFS pools, inject missing devices that are part of the filesystem but not in config
-    if (pool.type === 'btrfs' && btrfsDevices.length > 0) {
+    // Skip this for encrypted pools as LUKS mapped devices should not be injected
+    if (pool.type === 'btrfs' && btrfsDevices.length > 0 && !pool.config?.encrypted) {
       const configuredDevices = pool.data_devices.map(d => d.device);
       let missingDevices = btrfsDevices.filter(dev => !configuredDevices.includes(dev));
 
@@ -2412,6 +2964,9 @@ class PoolsService {
 
       // For each pool, update its mounted status and space info
       for (const pool of pools) {
+        // Inject real device paths for API display
+        await this._injectRealDevicePaths(pool);
+
         // Enrich device information with disk type details
         if (pool.data_devices && pool.data_devices.length > 0) {
           for (let i = 0; i < pool.data_devices.length; i++) {
@@ -2464,6 +3019,9 @@ class PoolsService {
       if (!pool) {
         throw new Error(`Pool with ID "${poolId}" not found`);
       }
+
+      // Inject real device paths for API display
+      await this._injectRealDevicePaths(pool);
 
       // Enrich device information with disk type details
       if (pool.data_devices && pool.data_devices.length > 0) {
@@ -2690,6 +3248,32 @@ class PoolsService {
       await this.unmountDevice(mainMountPoint);
     }
 
+    // Close LUKS devices for removed devices if pool is encrypted
+    if (pool.config?.encrypted) {
+      console.log(`Closing LUKS devices for removed devices from MergerFS pool '${pool.name}'`);
+
+      // Find original physical devices for the removed mapped devices
+      const physicalDevicesToClose = [];
+      for (const removedDevice of devicesToRemove) {
+        if (pool.devices) {
+          // Find the index of this device in data_devices to get corresponding physical device
+          const deviceIndex = pool.data_devices.findIndex(d => d.device === removedDevice);
+          if (deviceIndex !== -1 && pool.devices[deviceIndex]) {
+            physicalDevicesToClose.push(pool.devices[deviceIndex]);
+          }
+        }
+      }
+
+      if (physicalDevicesToClose.length > 0) {
+        await this._closeLuksDevices(physicalDevicesToClose, pool.name);
+
+        // Remove physical devices from pool.devices array
+        if (pool.devices) {
+          pool.devices = pool.devices.filter(device => !physicalDevicesToClose.includes(device));
+        }
+      }
+    }
+
     // Remove devices from the pool data_devices array
     pool.data_devices = pool.data_devices.filter(d => !devicesToRemove.includes(d.device));
 
@@ -2771,6 +3355,32 @@ class PoolsService {
         console.log(`Removed device ${device} from BTRFS pool ${pool.name}`);
       } catch (error) {
         throw new Error(`Failed to remove device ${device} from BTRFS pool: ${error.message}`);
+      }
+    }
+
+    // Close LUKS devices for removed devices if pool is encrypted
+    if (pool.config?.encrypted) {
+      console.log(`Closing LUKS devices for removed devices from pool '${pool.name}'`);
+
+      // Find original physical devices for the removed mapped devices
+      const physicalDevicesToClose = [];
+      for (const removedDevice of devicesToRemove) {
+        if (pool.devices) {
+          // Find the index of this device in data_devices to get corresponding physical device
+          const deviceIndex = pool.data_devices.findIndex(d => d.device === removedDevice);
+          if (deviceIndex !== -1 && pool.devices[deviceIndex]) {
+            physicalDevicesToClose.push(pool.devices[deviceIndex]);
+          }
+        }
+      }
+
+      if (physicalDevicesToClose.length > 0) {
+        await this._closeLuksDevices(physicalDevicesToClose, pool.name);
+
+        // Remove physical devices from pool.devices array
+        if (pool.devices) {
+          pool.devices = pool.devices.filter(device => !physicalDevicesToClose.includes(device));
+        }
       }
     }
 
@@ -2857,9 +3467,27 @@ class PoolsService {
       throw new Error(`Pool ${pool.name} must be mounted to replace devices`);
     }
 
+    // Handle LUKS encryption for new device if pool is encrypted
+    let actualNewDevice = newDevice;
+    let luksDevice = null;
+
+    if (pool.config?.encrypted) {
+      console.log(`Setting up LUKS encryption for replacement device in pool '${pool.name}'`);
+
+      // Setup LUKS encryption on new device
+      await this._setupPoolEncryption([newDevice], pool.name, options.passphrase, false);
+
+      // Open LUKS device
+      const luksDevices = await this._openLuksDevices([newDevice], pool.name, options.passphrase);
+      actualNewDevice = luksDevices[0].mappedDevice;
+      luksDevice = luksDevices[0];
+
+      console.log(`LUKS device opened for replacement: ${actualNewDevice}`);
+    }
+
     try {
-      // BTRFS replace command
-      await execPromise(`btrfs replace start ${oldDevice} ${newDevice} ${mountPoint}`);
+      // BTRFS replace command (use actual device - mapped for LUKS)
+      await execPromise(`btrfs replace start ${oldDevice} ${actualNewDevice} ${mountPoint}`);
 
       // Wait for replace to complete (this could take a while)
       let replaceStatus;
@@ -2874,14 +3502,24 @@ class PoolsService {
         }
       } while (replaceStatus && !replaceStatus.includes('finished'));
 
-      // Get new device UUID
-      const newDeviceUuid = await this.getDeviceUuid(newDevice);
+      // Get new device UUID (from physical device for encrypted pools)
+      let newDeviceUuid;
+      if (pool.config?.encrypted) {
+        newDeviceUuid = await this.getDeviceUuid(newDevice); // Physical device UUID
+      } else {
+        newDeviceUuid = await this.getDeviceUuid(actualNewDevice);
+      }
 
       // Update pool data structure
       const deviceIndex = pool.data_devices.findIndex(d => d.device === oldDevice);
       if (deviceIndex !== -1) {
-        pool.data_devices[deviceIndex].device = newDevice;
+        pool.data_devices[deviceIndex].device = actualNewDevice; // Store mapped device for encrypted pools
         pool.data_devices[deviceIndex].id = newDeviceUuid;
+
+        // Update physical devices array for encrypted pools
+        if (pool.config?.encrypted && pool.devices) {
+          pool.devices[deviceIndex] = newDevice; // Store physical device
+        }
       }
 
       // Don't persist dynamic status info to pools.json
@@ -2913,6 +3551,9 @@ class PoolsService {
    * @param {Object} options - Additional options including snapraid device
    */
   async createMergerFSPool(name, devices, filesystem = 'xfs', options = {}) {
+    let luksDevices = null;
+    let encryptionEnabled = false;
+
     try {
       // Validate inputs
       if (!name) throw new Error('Pool name is required');
@@ -2923,6 +3564,13 @@ class PoolsService {
       // MergerFS requires at least one device
       if (devices.length < 1) {
         throw new Error('At least one device is required for a MergerFS pool');
+      }
+
+      // Validate encryption parameters
+      if (options.config?.encrypted) {
+        if (!options.passphrase) {
+          throw new Error('Passphrase is required for encrypted pools');
+        }
       }
 
       // Read current pools data
@@ -2937,8 +3585,35 @@ class PoolsService {
       const mountPoint = path.join(this.mountBasePath, name);
       const mergerfsBasePath = path.join(this.mergerfsBasePath, name);
 
+      // Prepare devices (create partitions if needed)
+      console.log('Preparing devices (creating partitions if needed)...');
+      const preparedDevices = [];
+      for (const device of devices) {
+        const preparedDevice = await this._ensurePartition(device);
+        preparedDevices.push(preparedDevice);
+      }
+
+      // Handle LUKS encryption for data devices
+      let actualDevices = preparedDevices;
+      let luksDevices = null;
+      let encryptionEnabled = false;
+      if (options.config?.encrypted) {
+        console.log(`Setting up LUKS encryption for MergerFS pool '${name}'`);
+        // Clean up any existing LUKS mappers with this pool name first
+        await this._cleanupExistingLuksMappers(name);
+        await this._setupPoolEncryption(preparedDevices, name, options.passphrase, options.config.create_keyfile);
+        // Open data devices with slot-based naming (slots 1, 2, 3...)
+        const dataSlots = preparedDevices.map((_, i) => i + 1);
+        luksDevices = await this._openLuksDevicesWithSlots(preparedDevices, name, dataSlots, options.passphrase);
+        actualDevices = luksDevices.map(d => d.mappedDevice);
+        encryptionEnabled = true;
+      }
+
       // Handle SnapRAID device if provided
       let snapraidDevice = null;
+      let actualSnapraidDevice = null;
+      let snapraidLuksDevice = null;
+      let preparedSnapraidDevice = null;
       if (options.snapraid && options.snapraid.device) {
         snapraidDevice = options.snapraid.device;
 
@@ -2962,28 +3637,47 @@ class PoolsService {
         if (snapraidSize < largestDataDevice) {
           throw new Error('SnapRAID parity device must be at least as large as the largest data device');
         }
+
+        // Prepare SnapRAID device (create partition if needed)
+        console.log(`Preparing SnapRAID parity device '${snapraidDevice}'...`);
+        preparedSnapraidDevice = await this._ensurePartition(snapraidDevice);
+
+        // Handle LUKS encryption for SnapRAID device if encryption is enabled
+        if (encryptionEnabled) {
+          console.log(`Setting up LUKS encryption for SnapRAID parity device '${preparedSnapraidDevice}'`);
+          // Don't create keyfile again - it was already created for data devices
+          await this._setupPoolEncryption([preparedSnapraidDevice], name, options.passphrase, false);
+          const parityLuksDevices = await this._openLuksDevicesWithSlots([preparedSnapraidDevice], name, [1], options.passphrase, true);
+          snapraidLuksDevice = parityLuksDevices[0];
+          actualSnapraidDevice = snapraidLuksDevice.mappedDevice;
+        } else {
+          actualSnapraidDevice = preparedSnapraidDevice;
+        }
       }
 
       // Check if all devices are formatted with the correct filesystem
       const formatDevices = [];
       const invalidDevices = [];
 
-      for (const device of devices) {
+      for (let i = 0; i < devices.length; i++) {
+        const device = devices[i];
+        const actualDevice = actualDevices[i]; // Use mapped device for LUKS
+
         // Check if device is already mounted
-        const mountStatus = await this._isDeviceMounted(device);
+        const mountStatus = await this._isDeviceMounted(actualDevice);
         if (mountStatus.isMounted) {
-          throw new Error(`Device ${device} is already mounted at ${mountStatus.mountPoint}. Please unmount it first before creating a pool.`);
+          throw new Error(`Device ${actualDevice} is already mounted at ${mountStatus.mountPoint}. Please unmount it first before creating a pool.`);
         }
 
-        const deviceInfo = await this.checkDeviceFilesystem(device);
+        const deviceInfo = await this.checkDeviceFilesystem(actualDevice);
 
         if (deviceInfo.isFormatted) {
           if (deviceInfo.filesystem !== filesystem) {
             if (options.format === true) {
-              formatDevices.push(device);
+              formatDevices.push(actualDevice);
             } else {
               invalidDevices.push({
-                device,
+                device: actualDevice,
                 currentFs: deviceInfo.filesystem,
                 expectedFs: filesystem
               });
@@ -2992,33 +3686,36 @@ class PoolsService {
         } else {
           if (options.format === false) {
             invalidDevices.push({
-              device,
+              device: actualDevice,
               currentFs: null,
               expectedFs: filesystem
             });
           } else {
-            formatDevices.push(device);
+            formatDevices.push(actualDevice);
           }
         }
       }
 
       // Check snapraid device if provided
       if (snapraidDevice) {
+        // Use actual snapraid device for checking (encrypted or not)
+        const deviceToCheck = actualSnapraidDevice || snapraidDevice;
+
         // Check if snapraid device is already mounted
-        const snapraidMountStatus = await this._isDeviceMounted(snapraidDevice);
+        const snapraidMountStatus = await this._isDeviceMounted(deviceToCheck);
         if (snapraidMountStatus.isMounted) {
-          throw new Error(`SnapRAID device ${snapraidDevice} is already mounted at ${snapraidMountStatus.mountPoint}. Please unmount it first before creating a pool.`);
+          throw new Error(`SnapRAID device ${deviceToCheck} is already mounted at ${snapraidMountStatus.mountPoint}. Please unmount it first before creating a pool.`);
         }
 
-        const snapraidInfo = await this.checkDeviceFilesystem(snapraidDevice);
+        const snapraidInfo = await this.checkDeviceFilesystem(deviceToCheck);
 
         if (snapraidInfo.isFormatted) {
           if (snapraidInfo.filesystem !== filesystem) {
             if (options.format === true) {
-              formatDevices.push(snapraidDevice);
+              formatDevices.push(deviceToCheck);
             } else {
               invalidDevices.push({
-                device: snapraidDevice,
+                device: deviceToCheck,
                 currentFs: snapraidInfo.filesystem,
                 expectedFs: filesystem
               });
@@ -3027,12 +3724,12 @@ class PoolsService {
         } else {
           if (options.format === false) {
             invalidDevices.push({
-              device: snapraidDevice,
+              device: deviceToCheck,
               currentFs: null,
               expectedFs: filesystem
             });
           } else {
-            formatDevices.push(snapraidDevice);
+            formatDevices.push(deviceToCheck);
           }
         }
       }
@@ -3050,6 +3747,9 @@ class PoolsService {
         await this.formatDevice(device, filesystem);
       }
 
+      // Refresh device symlinks after formatting
+      await this._refreshDeviceSymlinks();
+
       // Create mergerFS base directory with proper ownership
       const ownershipOptions = {
         uid: this.defaultOwnership.uid,
@@ -3061,28 +3761,37 @@ class PoolsService {
       const dataDevices = [];
       let diskIndex = 1;
 
-      for (const device of devices) {
+      for (let i = 0; i < devices.length; i++) {
+        const originalDevice = devices[i];
+        const actualDevice = actualDevices[i]; // Use mapped device for LUKS
         const diskMountPoint = path.join(mergerfsBasePath, `disk${diskIndex}`);
         await this._createDirectoryWithOwnership(diskMountPoint, ownershipOptions);
 
         // Check if filesystem is on device or partition
-        const deviceInfo = await this.checkDeviceFilesystem(device);
-        const actualDeviceToUse = deviceInfo.actualDevice || device;
-        const isUsingPartition = deviceInfo.actualDevice && deviceInfo.actualDevice !== device;
-
+        const deviceInfo = await this.checkDeviceFilesystem(actualDevice);
+        const actualDeviceToUse = deviceInfo.actualDevice || actualDevice;
+        const isUsingPartition = deviceInfo.actualDevice && deviceInfo.actualDevice !== actualDevice;
 
         // Mount the device to its individual mount point
-        await this.mountDevice(device, diskMountPoint);
+        await this.mountDevice(actualDevice, diskMountPoint);
 
-        // Get device UUID from the actual device/partition
-        const deviceUuid = await this.getDeviceUuid(actualDeviceToUse);
+        // Get device UUID from the prepared device (partition)
+        let deviceUuid;
+        let physicalDevicePath;
 
-
+        if (encryptionEnabled && luksDevices) {
+          // For LUKS devices, get UUID from the prepared physical device/partition
+          const preparedDevice = preparedDevices[i];
+          deviceUuid = await this.getDeviceUuid(preparedDevice);
+          physicalDevicePath = preparedDevice;
+        } else {
+          deviceUuid = await this.getDeviceUuid(actualDeviceToUse);
+          physicalDevicePath = actualDeviceToUse;
+        }
 
         dataDevices.push({
           slot: diskIndex.toString(),
           id: deviceUuid,
-          device: actualDeviceToUse, // Use the actual device/partition
           filesystem,
           spindown: null
         });
@@ -3097,15 +3806,17 @@ class PoolsService {
         const snapraidPoolPath = path.join(this.snapraidBasePath, name);
         snapraidMountPoint = path.join(snapraidPoolPath, 'parity1');
         await this._createDirectoryWithOwnership(snapraidMountPoint, ownershipOptions);
-        await this.mountDevice(snapraidDevice, snapraidMountPoint, ownershipOptions);
 
-        // Get parity device UUID
-        const parityUuid = await this.getDeviceUuid(snapraidDevice);
+        // Mount the actual snapraid device (encrypted or not)
+        await this.mountDevice(actualSnapraidDevice, snapraidMountPoint, ownershipOptions);
+
+        // Get parity device UUID from the prepared physical device/partition
+        let parityUuid;
+        parityUuid = await this.getDeviceUuid(preparedSnapraidDevice);
 
         parityDevices.push({
           slot: "1",
           id: parityUuid,
-          device: snapraidDevice,
           filesystem,
           spindown: null
         });
@@ -3169,14 +3880,10 @@ class PoolsService {
         comment: options.comment || '',
         data_devices: dataDevices,
         parity_devices: parityDevices,
-        config: poolConfig,
-        status: {
-          mounted: true,
-          health: "unknown",
-          totalSpace: 0,
-          usedSpace: 0,
-          freeSpace: 0,
-          usagePercent: 0
+
+        config: {
+          ...poolConfig,
+          encrypted: encryptionEnabled
         }
       };
 
@@ -3250,6 +3957,24 @@ if (snapraidDevice) {
         pool
       };
     } catch (error) {
+      // Cleanup LUKS devices if encryption was enabled and pool creation failed
+      if (encryptionEnabled) {
+        console.log(`Pool creation failed, cleaning up LUKS devices for '${name}'`);
+        try {
+          // Close data device LUKS mappers using slot numbers
+          if (luksDevices) {
+            const dataSlots = devices.map((_, i) => i + 1);
+            await this._closeLuksDevicesWithSlots(devices, name, dataSlots);
+          }
+
+          // Close parity device LUKS mappers if they exist
+          if (snapraidLuksDevice) {
+            await this._closeLuksDevicesWithSlots([snapraidDevice], name, [1], true);
+          }
+        } catch (cleanupError) {
+          console.warn(`Warning: Could not cleanup LUKS devices: ${cleanupError.message}`);
+        }
+      }
       throw new Error(`Error creating MergerFS pool: ${error.message}`);
     }
   }
@@ -3282,88 +4007,112 @@ if (snapraidDevice) {
         throw new Error('Only MergerFS pools support parity devices');
       }
 
+      // Handle LUKS encryption for new parity devices if pool is encrypted
+      let actualParityDevices = parityDevices;
+      let parityLuksDevices = null;
+
+      if (pool.config?.encrypted) {
+        console.log(`Setting up LUKS encryption for new parity devices in MergerFS pool '${pool.name}'`);
+
+        // Validate encryption parameters
+        if (!options.passphrase) {
+          throw new Error('Passphrase is required for adding parity devices to encrypted pools');
+        }
+
+        // Setup LUKS encryption on new parity devices
+        await this._setupPoolEncryption(parityDevices, pool.name, options.passphrase, false);
+
+        // Open LUKS devices with proper slot numbering
+        const startSlot = pool.parity_devices.length + 1;
+        const paritySlots = parityDevices.map((_, i) => startSlot + i);
+        parityLuksDevices = await this._openLuksDevicesWithSlots(parityDevices, pool.name, paritySlots, options.passphrase, true);
+        actualParityDevices = parityLuksDevices.map(d => d.mappedDevice);
+
+        console.log(`LUKS parity devices opened for adding to pool: ${actualParityDevices.join(', ')}`);
+      }
+
       // Check each new parity device
-      for (const device of parityDevices) {
+      for (let i = 0; i < parityDevices.length; i++) {
+        const originalDevice = parityDevices[i];
+        const deviceToCheck = actualParityDevices[i];
+
         // Check if device exists
-        await fs.access(device).catch(() => {
-          throw new Error(`Device ${device} does not exist`);
+        await fs.access(deviceToCheck).catch(() => {
+          throw new Error(`Device ${deviceToCheck} does not exist`);
         });
 
         // Check if device is already mounted
-        const mountStatus = await this._isDeviceMounted(device);
+        const mountStatus = await this._isDeviceMounted(deviceToCheck);
         if (mountStatus.isMounted) {
-          throw new Error(`Device ${device} is already mounted at ${mountStatus.mountPoint}. Please unmount it first before adding to pool.`);
+          throw new Error(`Device ${deviceToCheck} is already mounted at ${mountStatus.mountPoint}. Please unmount it first before adding to pool.`);
         }
 
         // Check if device is already part of this pool (data or parity)
-        const isInPool = pool.data_devices.some(d => d.device === device) ||
-                        pool.parity_devices.some(d => d.device === device);
+        const isInPool = pool.data_devices.some(d => d.device === deviceToCheck) ||
+                        pool.parity_devices.some(d => d.device === deviceToCheck);
         if (isInPool) {
-          throw new Error(`Device ${device} is already part of pool ${pool.name}`);
+          throw new Error(`Device ${deviceToCheck} is already part of pool ${pool.name}`);
         }
 
-        // Verify parity device size requirements
-        const paritySize = await this.getDeviceSize(device);
+        // Verify parity device size requirements (use original device for size check)
+        const paritySize = await this.getDeviceSize(originalDevice);
 
         // Check all data devices and make sure parity device is at least as large as the largest
         let largestDataDevice = 0;
         for (const dataDevice of pool.data_devices) {
-          const deviceSize = await this.getDeviceSize(dataDevice.device);
+          // For encrypted pools, get size from original devices
+          const deviceToMeasure = pool.config?.encrypted && pool.devices ?
+            pool.devices[pool.data_devices.indexOf(dataDevice)] :
+            dataDevice.device;
+          const deviceSize = await this.getDeviceSize(deviceToMeasure);
           if (deviceSize > largestDataDevice) {
             largestDataDevice = deviceSize;
           }
         }
 
         if (paritySize < largestDataDevice) {
-          throw new Error(`Parity device ${device} must be at least as large as the largest data device`);
+          throw new Error(`Parity device ${originalDevice} must be at least as large as the largest data device`);
         }
 
         // Check device format status
-        const deviceInfo = await this.checkDeviceFilesystem(device);
+        const deviceInfo = await this.checkDeviceFilesystem(deviceToCheck);
         const expectedFilesystem = pool.data_devices.length > 0 ? pool.data_devices[0].filesystem : 'xfs';
 
-        let actualDevice = device;
         if (!deviceInfo.isFormatted || options.format === true) {
-          const formatResult = await this.formatDevice(device, expectedFilesystem);
-          actualDevice = formatResult.device; // Use the partition created by formatDevice
+          const formatResult = await this.formatDevice(deviceToCheck, expectedFilesystem);
+          // For encrypted devices, the actualParityDevices array is already updated
         } else if (deviceInfo.filesystem !== expectedFilesystem) {
-          throw new Error(`Device ${device} has filesystem ${deviceInfo.filesystem}, expected ${expectedFilesystem}. Use format: true to reformat.`);
+          throw new Error(`Device ${deviceToCheck} has filesystem ${deviceInfo.filesystem}, expected ${expectedFilesystem}. Use format: true to reformat.`);
         }
       }
 
       // Mount and add new parity devices
       const newParityDevices = [];
       for (let i = 0; i < parityDevices.length; i++) {
-        const device = parityDevices[i];
+        const originalDevice = parityDevices[i];
+        const deviceToMount = actualParityDevices[i];
         const parityIndex = pool.parity_devices.length + i + 1;
         const snapraidPoolPath = path.join(this.snapraidBasePath, pool.name);
         const parityMountPoint = path.join(snapraidPoolPath, `parity${parityIndex}`);
 
-        // Get the actual device (partition) to use
-        let actualDevice = device;
-        const deviceInfo = await this.checkDeviceFilesystem(device);
-        const expectedFilesystem = pool.data_devices.length > 0 ? pool.data_devices[0].filesystem : 'xfs';
-
-        if (!deviceInfo.isFormatted || options.format === true) {
-          const formatResult = await this.formatDevice(device, expectedFilesystem);
-          actualDevice = formatResult.device; // Use the partition created by formatDevice
-        }
-
-        // Create mount point with proper ownership and mount the actual device (partition)
+        // Create mount point with proper ownership and mount the device
         const ownershipOptions = {
           uid: this.defaultOwnership.uid,
           gid: this.defaultOwnership.gid
         };
         await this._createDirectoryWithOwnership(parityMountPoint, ownershipOptions);
-        await this.mountDevice(actualDevice, parityMountPoint, ownershipOptions);
+        await this.mountDevice(deviceToMount, parityMountPoint, ownershipOptions);
 
-        // Get device UUID from the actual device (partition)
-        const deviceUuid = await this.getDeviceUuid(actualDevice);
+        // Get device UUID from the physical device/partition
+        const deviceInfo = await this.checkDeviceFilesystem(originalDevice);
+        const deviceToUse = deviceInfo.actualDevice || originalDevice;
+        const deviceUuid = await this.getDeviceUuid(deviceToUse);
+
+        const expectedFilesystem = pool.data_devices.length > 0 ? pool.data_devices[0].filesystem : 'xfs';
 
         newParityDevices.push({
           slot: parityIndex.toString(),
           id: deviceUuid,
-          device: actualDevice, // Store the partition path
           filesystem: expectedFilesystem,
           spindown: null
         });
@@ -3371,6 +4120,8 @@ if (snapraidDevice) {
 
       // Add new parity devices to pool
       pool.parity_devices = [...pool.parity_devices, ...newParityDevices];
+
+
 
       // Add SnapRAID sync config if this is the first parity device
       if (pool.parity_devices.length === newParityDevices.length) {
@@ -3488,7 +4239,6 @@ if (snapraidDevice) {
       pool.parity_devices[oldParityIndex] = {
         slot: paritySlot,
         id: newDeviceUuid,
-        device: newDevice,
         filesystem: expectedFilesystem,
         spindown: oldParityDevice.spindown || null
       };
@@ -3545,7 +4295,7 @@ if (snapraidDevice) {
         else if (stdout.includes('sleeping')) powerStatus = 'standby';
       } catch (error) {
         // If hdparm fails, assume it's wake for NVMe/SSD devices
-        powerStatus = disk.device.includes('nvme') || disk.device.includes('ssd') ? 'wake' : 'unknown';
+        powerStatus = (disk.device && (disk.device.includes('nvme') || disk.device.includes('ssd'))) ? 'wake' : 'unknown';
       }
 
       return {
@@ -3592,13 +4342,13 @@ if (snapraidDevice) {
       } else if (action === 'standby' || action === 'sleep') {
         // NVMe devices don't reliably support power management via nvme-cli
         // Many NVMe controllers don't implement the power management features properly
-        if (disk.device.includes('nvme')) {
+        if (disk.device && disk.device.includes('nvme')) {
           return {
             success: false,
             message: 'NVMe devices do not reliably support standby mode',
             device: disk.device
           };
-        } else if (disk.device.includes('ssd')) {
+        } else if (disk.device && disk.device.includes('ssd')) {
           // Regular SSD - try hdparm but don't fail if it doesn't work
           try {
             const command = action === 'sleep' ? `hdparm -Y ${disk.device}` : `hdparm -y ${disk.device}`;
@@ -3695,7 +4445,7 @@ if (snapraidDevice) {
         device.powerStatus = powerStatus;
       } catch (error) {
         // If hdparm fails, assume it's wake for NVMe/SSD devices
-        device.powerStatus = device.device.includes('nvme') || device.device.includes('ssd') ? 'wake' : 'unknown';
+        device.powerStatus = (device.device && (device.device.includes('nvme') || device.device.includes('ssd'))) ? 'wake' : 'unknown';
       }
     }
 
@@ -3716,7 +4466,7 @@ if (snapraidDevice) {
         device.powerStatus = powerStatus;
       } catch (error) {
         // If hdparm fails, assume it's wake for NVMe/SSD devices
-        device.powerStatus = device.device.includes('nvme') || device.device.includes('ssd') ? 'wake' : 'unknown';
+        device.powerStatus = (device.device && (device.device.includes('nvme') || device.device.includes('ssd'))) ? 'wake' : 'unknown';
       }
     }
   }
@@ -3797,33 +4547,54 @@ if (snapraidDevice) {
 
     // Create keyfile if requested
     if (createKeyfile) {
-      // Generate deterministic keyfile from passphrase
-      await execPromise(`echo -n "${passphrase}" | sha256sum | awk '{print $1}' > ${keyfilePath}`);
+      // Store passphrase directly in keyfile (not hashed)
+      await execPromise(`echo -n "${passphrase}" > ${keyfilePath}`);
       await execPromise(`chmod 600 ${keyfilePath}`);
       console.log(`Created keyfile for pool '${poolName}' at ${keyfilePath}`);
     }
 
-    // Encrypt all devices with the passphrase
+    // Check if keyfile exists (might have been created by previous call)
+    let useKeyfile = createKeyfile;
+    if (!useKeyfile) {
+      try {
+        await fs.access(keyfilePath);
+        useKeyfile = true;
+      } catch (error) {
+        useKeyfile = false;
+      }
+    }
+
+    // Encrypt all devices
     for (let i = 0; i < devices.length; i++) {
       const device = devices[i];
       console.log(`Encrypting device ${device} for pool '${poolName}'`);
 
-      // Use passphrase directly for LUKS format
-      await execPromise(`echo "${passphrase}" | cryptsetup luksFormat ${device} --type luks2 -`);
+      if (useKeyfile) {
+        // Use keyfile for LUKS format
+        await execPromise(`cryptsetup luksFormat ${device} --type luks2 --key-file ${keyfilePath}`);
+      } else {
+        // Use passphrase directly for LUKS format
+        await execPromise(`echo "${passphrase}" | cryptsetup luksFormat ${device} --type luks2 -`);
+      }
     }
 
     return keyfilePath;
   }
 
+
+
   /**
    * Open LUKS devices for a pool
    * @param {string[]} devices - Array of device paths
    * @param {string} poolName - Pool name
-   * @param {string} passphrase - Encryption passphrase (used if no keyfile)
-   * @returns {Promise<string[]>} Array of mapped device paths
+   * @param {string} passphrase - Passphrase for LUKS devices (optional if keyfile exists)
+   * @param {Object} options - Options for device naming
+   * @param {boolean} options.isParity - Whether these are parity devices (uses different naming)
+   * @param {number} options.startSlot - Starting slot number for parity devices
+   * @returns {Promise<Object[]>} Array of objects with mappedDevice and uuid
    * @private
    */
-  async _openLuksDevices(devices, poolName, passphrase = null) {
+  async _openLuksDevices(devices, poolName, passphrase = null, options = {}) {
     const keyfilePath = `/boot/config/system/luks/${poolName}.key`;
     const mappedDevices = [];
     let useKeyfile = false;
@@ -3832,50 +4603,543 @@ if (snapraidDevice) {
     try {
       await fs.access(keyfilePath);
       useKeyfile = true;
-      console.log(`Using keyfile for pool '${poolName}': ${keyfilePath}`);
+      console.log(`Using keyfile for LUKS devices: ${keyfilePath}`);
     } catch (error) {
       if (!passphrase) {
-        throw new Error(`Keyfile missing for encrypted pool '${poolName}' and no passphrase provided`);
+        throw new Error(`No keyfile found at ${keyfilePath} and no passphrase provided`);
       }
-      console.log(`Keyfile not found for pool '${poolName}', using passphrase`);
+      console.log(`No keyfile found, using passphrase for LUKS devices`);
     }
 
-    // Open each device
     for (let i = 0; i < devices.length; i++) {
       const device = devices[i];
-      const luksName = `${poolName}_${i}`;
 
-      if (useKeyfile) {
-        await execPromise(`cryptsetup luksOpen ${device} ${luksName} --key-file ${keyfilePath}`);
+      // Use different naming scheme for parity devices
+      let luksName;
+      if (options.isParity) {
+        const slotNumber = (options.startSlot || 1) + i;
+        luksName = `parity_${poolName}_${slotNumber}`;
       } else {
-        await execPromise(`echo "${passphrase}" | cryptsetup luksOpen ${device} ${luksName} -`);
+        luksName = `${poolName}_${i}`;
       }
 
       const mappedDevice = `/dev/mapper/${luksName}`;
-      mappedDevices.push(mappedDevice);
-      console.log(`Opened LUKS device: ${device} -> ${mappedDevice}`);
+
+      // Check if LUKS device is already open
+      try {
+        await fs.access(mappedDevice);
+        console.log(`LUKS device ${luksName} is already open`);
+
+        // Get UUID of the mapped device partition
+        const partitionDevice = this._getPartitionPath(mappedDevice, 1);
+        const mappedDeviceUuid = await this.getDeviceUuid(partitionDevice);
+
+        const deviceInfo = {
+          originalDevice: device,
+          mappedDevice: mappedDevice,
+          uuid: mappedDeviceUuid
+        };
+
+        // Add slot info for parity devices
+        if (options.isParity) {
+          deviceInfo.slot = (options.startSlot || 1) + i;
+        }
+
+        mappedDevices.push(deviceInfo);
+        continue;
+      } catch (error) {
+        // Device is not open, proceed to open it
+      }
+
+      // Open the LUKS device
+      try {
+        if (useKeyfile) {
+          await execPromise(`cryptsetup luksOpen ${device} ${luksName} --key-file ${keyfilePath}`);
+        } else {
+          await execPromise(`echo "${passphrase}" | cryptsetup luksOpen ${device} ${luksName} -`);
+        }
+
+        // Get UUID of the mapped device partition for proper mounting
+        const partitionDevice = this._getPartitionPath(mappedDevice, 1);
+        const mappedDeviceUuid = await this.getDeviceUuid(partitionDevice);
+
+        const deviceInfo = {
+          originalDevice: device,
+          mappedDevice: mappedDevice,
+          uuid: mappedDeviceUuid
+        };
+
+        // Add slot info for parity devices
+        if (options.isParity) {
+          deviceInfo.slot = (options.startSlot || 1) + i;
+        }
+
+        mappedDevices.push(deviceInfo);
+
+        console.log(`Opened LUKS device: ${device} -> ${mappedDevice} (UUID: ${mappedDeviceUuid})`);
+      } catch (error) {
+        if (error.message.includes('already exists')) {
+          // Device is already open, get its partition UUID
+          const partitionDevice = this._getPartitionPath(mappedDevice, 1);
+          const mappedDeviceUuid = await this.getDeviceUuid(partitionDevice);
+
+          const deviceInfo = {
+            originalDevice: device,
+            mappedDevice: mappedDevice,
+            uuid: mappedDeviceUuid
+          };
+
+          // Add slot info for parity devices
+          if (options.isParity) {
+            deviceInfo.slot = (options.startSlot || 1) + i;
+          }
+
+          mappedDevices.push(deviceInfo);
+          console.log(`LUKS device ${luksName} was already open`);
+        } else {
+          throw error;
+        }
+      }
     }
 
     return mappedDevices;
   }
 
   /**
+   * Open LUKS devices for a pool using specific slot numbers
+   * @param {string[]} devices - Array of device paths
+   * @param {string} poolName - Pool name
+   * @param {number[]} slots - Array of slot numbers corresponding to devices
+   * @param {string} passphrase - Passphrase for LUKS devices (optional if keyfile exists)
+   * @param {boolean} isParity - Whether these are parity devices (uses different naming)
+   * @returns {Promise<Object[]>} Array of objects with mappedDevice and uuid
+   * @private
+   */
+  async _openLuksDevicesWithSlots(devices, poolName, slots, passphrase = null, isParity = false) {
+    const keyfilePath = `/boot/config/system/luks/${poolName}.key`;
+    const mappedDevices = [];
+    let useKeyfile = false;
+
+    // Check if keyfile exists
+    try {
+      await fs.access(keyfilePath);
+      useKeyfile = true;
+      console.log(`Using keyfile for LUKS devices: ${keyfilePath}`);
+    } catch (error) {
+      if (!passphrase) {
+        throw new Error(`No keyfile found at ${keyfilePath} and no passphrase provided`);
+      }
+      console.log(`No keyfile found, using passphrase for LUKS devices`);
+    }
+
+    for (let i = 0; i < devices.length; i++) {
+      const device = devices[i];
+      const slot = slots[i];
+
+      // Use slot-based naming scheme
+      let luksName;
+      if (isParity) {
+        luksName = `parity_${poolName}_${slot}`;
+      } else {
+        luksName = `${poolName}_${slot}`;
+      }
+
+      const mappedDevice = `/dev/mapper/${luksName}`;
+
+      // Check if LUKS device is already open
+      try {
+        await fs.access(mappedDevice);
+        console.log(`LUKS device ${luksName} is already open`);
+
+        // Get UUID of the mapped device partition
+        const partitionDevice = this._getPartitionPath(mappedDevice, 1);
+        const mappedDeviceUuid = await this.getDeviceUuid(partitionDevice);
+
+        const deviceInfo = {
+          originalDevice: device,
+          mappedDevice: mappedDevice,
+          uuid: mappedDeviceUuid,
+          slot: slot
+        };
+
+        mappedDevices.push(deviceInfo);
+        continue;
+      } catch (error) {
+        // Device is not open, proceed to open it
+      }
+
+      // Open the LUKS device
+      try {
+        if (useKeyfile) {
+          await execPromise(`cryptsetup luksOpen ${device} ${luksName} --key-file ${keyfilePath}`);
+        } else {
+          await execPromise(`echo "${passphrase}" | cryptsetup luksOpen ${device} ${luksName} -`);
+        }
+
+        // Get UUID of the mapped device partition for proper mounting
+        const partitionDevice = this._getPartitionPath(mappedDevice, 1);
+        const mappedDeviceUuid = await this.getDeviceUuid(partitionDevice);
+
+        const deviceInfo = {
+          originalDevice: device,
+          mappedDevice: mappedDevice,
+          uuid: mappedDeviceUuid,
+          slot: slot
+        };
+
+        mappedDevices.push(deviceInfo);
+
+        console.log(`Opened LUKS device: ${device} -> ${mappedDevice} (UUID: ${mappedDeviceUuid}, Slot: ${slot})`);
+      } catch (error) {
+        if (error.message.includes('already exists')) {
+          // Device is already open, get its partition UUID
+          const partitionDevice = this._getPartitionPath(mappedDevice, 1);
+          const mappedDeviceUuid = await this.getDeviceUuid(partitionDevice);
+
+          const deviceInfo = {
+            originalDevice: device,
+            mappedDevice: mappedDevice,
+            uuid: mappedDeviceUuid,
+            slot: slot
+          };
+
+          mappedDevices.push(deviceInfo);
+          console.log(`LUKS device ${luksName} was already open`);
+        } else {
+          throw error;
+        }
+      }
+    }
+
+    return mappedDevices;
+  }
+
+
+
+  /**
+   * Mount a multi-device BTRFS pool
+   * @param {Object} pool - Pool object
+   * @param {Object} options - Mount options
+   * @private
+   */
+  async _mountMultiDeviceBtrfsPool(pool, options = {}) {
+    const mountPoint = path.join(this.mountBasePath, pool.name);
+
+    // Ensure device paths are available
+    await this._ensureDevicePaths(pool);
+
+    // Handle LUKS encryption before mounting
+    if (pool.config?.encrypted) {
+      console.log(`Opening LUKS devices for encrypted multi-device BTRFS pool '${pool.name}'`);
+
+      // Check if we need to open LUKS devices or if they're already mapped
+      let physicalDevices = [];
+      let alreadyMapped = false;
+
+      // Check if devices are already LUKS mapped devices (from pool creation)
+      if (pool.devices && pool.devices.length > 0) {
+        // Use original physical devices for LUKS opening
+        physicalDevices = pool.devices;
+      } else {
+        // Fallback to data_devices (might be physical or already mapped)
+        physicalDevices = pool.data_devices.map(d => d.device);
+
+        // Check if first device is already a mapper device
+        if (physicalDevices[0].startsWith('/dev/mapper/')) {
+          alreadyMapped = true;
+          console.log(`LUKS devices appear to be already mapped for pool '${pool.name}'`);
+        }
+      }
+
+      if (!alreadyMapped) {
+        // For multi-device BTRFS pools, use slot-based naming
+        if (pool.type === 'btrfs' && pool.data_devices.length > 1) {
+          const dataSlots = pool.data_devices.map(d => parseInt(d.slot));
+          const luksDevices = await this._openLuksDevicesWithSlots(physicalDevices, pool.name, dataSlots, options.passphrase || null);
+          pool._luksDevices = luksDevices;
+        } else {
+          const luksDevices = await this._openLuksDevices(physicalDevices, pool.name, options.passphrase || null);
+          pool._luksDevices = luksDevices;
+        }
+      } else {
+        // Create _luksDevices structure for already mapped devices
+        pool._luksDevices = physicalDevices.map((device, index) => ({
+          originalDevice: pool.devices ? pool.devices[index] : device,
+          mappedDevice: device,
+          uuid: pool.data_devices[index].id
+        }));
+      }
+    }
+
+    // For BTRFS, we can mount using any device from the array
+    let mountDevice = pool.data_devices[0].device;
+
+    // For LUKS pools, use the first mapped device
+    if (pool.config?.encrypted && pool._luksDevices) {
+      mountDevice = pool._luksDevices[0].mappedDevice;
+    }
+
+    // Mount the BTRFS pool
+    const mountResult = await this.mountDevice(mountDevice, mountPoint, {
+      format: options.format,
+      filesystem: 'btrfs',
+      mountOptions: options.mountOptions
+    });
+
+    // Get space info after successful mount
+    const spaceInfo = await this.getDeviceSpace(mountPoint);
+
+    return {
+      success: true,
+      message: `Multi-device BTRFS pool "${pool.name}" mounted successfully`,
+      pool: {
+        id: pool.id,
+        name: pool.name,
+        status: spaceInfo
+      }
+    };
+  }
+
+  /**
+   * Mount a MergerFS pool
+   * @param {Object} pool - Pool object
+   * @param {Object} options - Mount options
+   * @private
+   */
+  async _mountMergerFSPool(pool, options = {}) {
+    const mountPoint = path.join(this.mountBasePath, pool.name);
+    const mergerfsBasePath = path.join(this.mergerfsBasePath, pool.name);
+
+    // Ensure device paths are available
+    await this._ensureDevicePaths(pool);
+
+    // Handle LUKS encryption before mounting
+    if (pool.config?.encrypted) {
+      console.log(`Opening LUKS devices for encrypted MergerFS pool '${pool.name}'`);
+
+      // Extract physical device paths from data_devices and parity_devices
+      const dataDevices = pool.data_devices.map(d => d.device);
+      const parityDevices = pool.parity_devices.map(d => d.device);
+
+      // Open data device LUKS mappers with slot-based naming
+      const dataSlots = pool.data_devices.map(d => parseInt(d.slot));
+      const luksDevices = await this._openLuksDevicesWithSlots(dataDevices, pool.name, dataSlots, options.passphrase || null);
+      pool._luksDevices = luksDevices;
+
+      // Open parity device LUKS mappers if they exist
+      if (parityDevices.length > 0) {
+        console.log(`Opening parity LUKS devices for encrypted MergerFS pool '${pool.name}'`);
+        const paritySlots = pool.parity_devices.map(d => parseInt(d.slot));
+        const parityLuksDevices = await this._openLuksDevicesWithSlots(parityDevices, pool.name, paritySlots, options.passphrase || null, true);
+        pool._parityLuksDevices = parityLuksDevices;
+      }
+    }
+
+    // Create mergerfs base directory
+    await this._createDirectoryWithOwnership(mergerfsBasePath);
+
+    // Mount individual data devices
+    const mountedDevices = [];
+    for (let i = 0; i < pool.data_devices.length; i++) {
+      const device = pool.data_devices[i];
+      let actualDevice = device.device;
+
+      // For LUKS pools, use the mapped device
+      if (pool.config?.encrypted && pool._luksDevices) {
+        actualDevice = pool._luksDevices[i].mappedDevice;
+      }
+
+      const deviceMountPoint = path.join(mergerfsBasePath, `disk${device.slot}`);
+
+      await this.mountDevice(actualDevice, deviceMountPoint, {
+        format: options.format,
+        filesystem: device.filesystem || 'xfs',
+        mountOptions: options.mountOptions
+      });
+
+      mountedDevices.push(deviceMountPoint);
+    }
+
+    // Mount parity devices if they exist
+    for (let i = 0; i < (pool.parity_devices || []).length; i++) {
+      const parityDevice = pool.parity_devices[i];
+      let actualParityDevice = parityDevice.device;
+
+      // For encrypted pools, use the mapped parity device
+      if (pool.config?.encrypted && pool._parityLuksDevices) {
+        const mappedParity = pool._parityLuksDevices.find(d => d.slot === parseInt(parityDevice.slot));
+        if (mappedParity) {
+          actualParityDevice = mappedParity.mappedDevice;
+        }
+      }
+
+      const snapraidPoolPath = path.join(this.snapraidBasePath, pool.name);
+      const parityMountPoint = path.join(snapraidPoolPath, `parity${parityDevice.slot}`);
+
+      await this.mountDevice(actualParityDevice, parityMountPoint, {
+        format: options.format,
+        filesystem: parityDevice.filesystem || 'xfs',
+        mountOptions: options.mountOptions
+      });
+    }
+
+    // Create main mount point
+    await this._createDirectoryWithOwnership(mountPoint);
+
+    // Mount MergerFS
+    const mergerfsOptions = 'defaults,allow_other,use_ino,cache.files=off,dropcacheonclose=true,category.create=mfs';
+    const mergerfsCommand = `mergerfs ${mountedDevices.join(':')} ${mountPoint} -o ${mergerfsOptions}`;
+    await execPromise(mergerfsCommand);
+
+    // Get space info after successful mount
+    const spaceInfo = await this.getDeviceSpace(mountPoint);
+
+    return {
+      success: true,
+      message: `MergerFS pool "${pool.name}" mounted successfully`,
+      pool: {
+        id: pool.id,
+        name: pool.name,
+        status: spaceInfo
+      }
+    };
+  }
+
+  /**
+   * Unmount a multi-device BTRFS pool
+   * @param {Object} pool - Pool object
+   * @param {boolean} force - Force unmount
+   * @private
+   */
+  async _unmountMultiDeviceBtrfsPool(pool, force = false) {
+    const mountPoint = path.join(this.mountBasePath, pool.name);
+
+    // Check if pool is mounted
+    if (await this._isMounted(mountPoint)) {
+      // Unmount the BTRFS pool
+      await this.unmountDevice(mountPoint, { force, removeDirectory: true });
+    }
+
+    // Close LUKS devices if pool is encrypted
+    if (pool.config?.encrypted) {
+      console.log(`Closing LUKS devices for encrypted multi-device BTRFS pool '${pool.name}'`);
+      // Ensure device paths are available before closing LUKS
+      await this._ensureDevicePaths(pool);
+      // Use original physical devices for closing with correct slot numbers
+      const physicalDevices = pool.devices || pool.data_devices.map(d => d.device);
+      const dataSlots = pool.data_devices.map(d => parseInt(d.slot));
+      await this._closeLuksDevicesWithSlots(physicalDevices, pool.name, dataSlots);
+    }
+
+
+
+    return {
+      success: true,
+      message: `Multi-device BTRFS pool "${pool.name}" unmounted successfully`,
+      pool: {
+        id: pool.id,
+        name: pool.name,
+        status: {
+          mounted: false
+        }
+      }
+    };
+  }
+
+  /**
+   * Check for and clean up existing LUKS mappers with the pool name
+   * @param {string} poolName - Pool name to check for existing mappers
+   * @private
+   */
+  async _cleanupExistingLuksMappers(poolName) {
+    try {
+      // List all device mapper devices
+      const { stdout } = await execPromise('ls /dev/mapper/ 2>/dev/null || true');
+      const mappers = stdout.trim().split('\n').filter(line => line.trim());
+
+      // Find mappers that match our pool name pattern exactly
+      // Use word boundaries to avoid matching similar pool names
+      const poolMappers = mappers.filter(mapper => {
+        // Match exact pool name followed by underscore and number (e.g., secure_pool1_0)
+        // or exact pool name followed by 'p' and number (e.g., secure_pool1p1)
+        // or parity devices with pattern parity_POOLNAME_SLOT (e.g., parity_secure_pool1_1)
+        const exactPattern = new RegExp(`^${poolName}_\\d+$|^${poolName}p\\d+$|^parity_${poolName}_\\d+$|^parity_${poolName}_\\d+p\\d+$`);
+        return exactPattern.test(mapper);
+      });
+
+      if (poolMappers.length > 0) {
+        console.log(`Found existing LUKS mappers for pool '${poolName}': ${poolMappers.join(', ')}`);
+
+        // Close each mapper
+        for (const mapper of poolMappers) {
+          try {
+            // Try cryptsetup first
+            await execPromise(`cryptsetup luksClose ${mapper}`);
+            console.log(`Cleaned up LUKS mapper: ${mapper}`);
+          } catch (error) {
+            // Fallback to dmsetup
+            try {
+              await execPromise(`dmsetup remove ${mapper}`);
+              console.log(`Cleaned up LUKS mapper with dmsetup: ${mapper}`);
+            } catch (dmError) {
+              console.warn(`Warning: Could not cleanup LUKS mapper ${mapper}: ${dmError.message}`);
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.warn(`Warning: Could not check for existing LUKS mappers: ${error.message}`);
+    }
+  }
+
+  /**
    * Close LUKS devices for a pool
    * @param {string[]} devices - Array of original device paths
    * @param {string} poolName - Pool name
+   * @param {Object} options - Options for device naming
+   * @param {boolean} options.isParity - Whether these are parity devices (uses different naming)
+   * @param {number} options.startSlot - Starting slot number for parity devices
    * @private
    */
-  async _closeLuksDevices(devices, poolName) {
+  async _closeLuksDevices(devices, poolName, options = {}) {
     for (let i = 0; i < devices.length; i++) {
-      const luksName = `${poolName}_${i}`;
+      // Use different naming scheme for parity devices
+      let luksName;
+      if (options.isParity) {
+        const slotNumber = (options.startSlot || 1) + i;
+        luksName = `parity_${poolName}_${slotNumber}`;
+      } else {
+        luksName = `${poolName}_${i}`;
+      }
+
+      const partitionName = `${luksName}p1`;
+
+      // Try to close partition first
+      try {
+        await execPromise(`cryptsetup luksClose ${partitionName}`);
+        console.log(`Closed LUKS partition: ${partitionName}`);
+      } catch (error) {
+        console.warn(`Warning: Could not close LUKS partition ${partitionName}: ${error.message}`);
+      }
+
+      // Then close main device
       try {
         await execPromise(`cryptsetup luksClose ${luksName}`);
         console.log(`Closed LUKS device: ${luksName}`);
       } catch (error) {
         console.warn(`Warning: Could not close LUKS device ${luksName}: ${error.message}`);
+        // Try dmsetup as fallback
+        try {
+          await execPromise(`dmsetup remove ${luksName}`);
+          console.log(`Force removed LUKS device using dmsetup: ${luksName}`);
+        } catch (dmError) {
+          console.warn(`Warning: Could not force remove LUKS device ${luksName}: ${dmError.message}`);
+        }
       }
     }
   }
+
+
 
   /**
    * Get power status for all disks in a pool

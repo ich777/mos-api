@@ -329,6 +329,34 @@ router.use('/', poolsWebSocketRoutes);
  *           type: boolean
  *           description: Whether to force format the device. If false and device has no filesystem, will error. If not provided, only formats if no filesystem exists.
  *           example: false
+ *         config:
+ *           type: object
+ *           description: Pool configuration options
+ *           properties:
+ *             encrypted:
+ *               type: boolean
+ *               default: false
+ *               description: |
+ *                 Enable LUKS encryption for the pool. When enabled:
+ *                 - All data is encrypted at rest using LUKS2
+ *                 - Requires passphrase for mounting
+ *                 - Can optionally create keyfile for automatic mounting
+ *               example: true
+ *             create_keyfile:
+ *               type: boolean
+ *               default: false
+ *               description: |
+ *                 Create keyfile for automatic mounting (requires encrypted=true).
+ *                 Keyfile is stored at /boot/config/system/luks/{poolname}.key
+ *                 and allows mounting without manual passphrase entry.
+ *               example: true
+ *         passphrase:
+ *           type: string
+ *           description: |
+ *             Encryption passphrase (required if config.encrypted=true).
+ *             Used to encrypt the devices and can be used for manual mounting.
+ *             If create_keyfile=true, this passphrase is also used to generate the keyfile.
+ *           example: "my_secure_password"
  *         options:
  *           type: object
  *           properties:
@@ -389,15 +417,13 @@ router.use('/', poolsWebSocketRoutes);
  *         schema:
  *           type: string
  *           enum: [mergerfs, btrfs, xfs, ext4]
- *         description: Filter pools by type (e.g., 'mergerfs', 'btrfs', 'xfs', 'ext4')
- *         example: mergerfs
+ *         description: Filter pools by type
  *       - in: query
  *         name: exclude_type
  *         schema:
  *           type: string
  *           enum: [mergerfs, btrfs, xfs, ext4]
- *         description: Exclude pools of specific type (e.g., 'mergerfs')
- *         example: mergerfs
+ *         description: Exclude pools of specific type
  *     responses:
  *       200:
  *         description: A list of pools with their status (filtered if parameters provided)
@@ -496,6 +522,36 @@ router.get('/:id', authenticateToken, async (req, res) => {
  *         application/json:
  *           schema:
  *             $ref: '#/components/schemas/CreateSingleDevicePoolRequest'
+ *           examples:
+ *             basic_pool:
+ *               summary: Basic unencrypted pool
+ *               value:
+ *                 name: "data_pool"
+ *                 device: "/dev/sdb"
+ *                 filesystem: "xfs"
+ *                 automount: true
+ *             encrypted_with_keyfile:
+ *               summary: Encrypted pool with keyfile
+ *               value:
+ *                 name: "secure_pool"
+ *                 device: "/dev/sdc"
+ *                 filesystem: "xfs"
+ *                 config:
+ *                   encrypted: true
+ *                   create_keyfile: true
+ *                 passphrase: "my_secure_password"
+ *                 automount: true
+ *             encrypted_manual:
+ *               summary: Encrypted pool without keyfile
+ *               value:
+ *                 name: "manual_secure_pool"
+ *                 device: "/dev/sdd"
+ *                 filesystem: "btrfs"
+ *                 config:
+ *                   encrypted: true
+ *                   create_keyfile: false
+ *                 passphrase: "another_secure_password"
+ *                 automount: false
  *     responses:
  *       200:
  *         description: Pool created successfully
@@ -685,6 +741,24 @@ router.post('/single', checkRole(['admin']), async (req, res) => {
  *                     type: string
  *                     description: Custom MergerFS mount options (overrides policies if set)
  *                     example: "defaults,allow_other,use_ino,cache.files=partial,dropcacheonclose=true,category.create=epmfs"
+ *                   config:
+ *                     type: object
+ *                     description: Pool configuration options
+ *                     properties:
+ *                       encrypted:
+ *                         type: boolean
+ *                         default: false
+ *                         description: |
+ *                           Enable LUKS encryption for all data devices in the MergerFS pool.
+ *                           Each device is individually encrypted with LUKS2.
+ *                         example: true
+ *                       create_keyfile:
+ *                         type: boolean
+ *                         default: false
+ *                         description: |
+ *                           Create keyfile for automatic mounting (requires encrypted=true).
+ *                           Keyfile is stored at /boot/config/system/luks/{poolname}.key
+ *                         example: true
  *                   snapraid:
  *                     type: object
  *                     description: Optional SnapRAID configuration
@@ -693,6 +767,12 @@ router.post('/single', checkRole(['admin']), async (req, res) => {
  *                         type: string
  *                         description: Device to use as SnapRAID parity device
  *                         example: "/dev/sdd"
+ *               passphrase:
+ *                 type: string
+ *                 description: |
+ *                   Encryption passphrase (required if options.config.encrypted=true).
+ *                   Used to encrypt all data devices in the MergerFS pool.
+ *                 example: "my_secure_password"
  *     responses:
  *       201:
  *         description: MergerFS pool created successfully
@@ -744,7 +824,8 @@ router.post('/mergerfs', checkRole(['admin']), async (req, res) => {
       filesystem = 'xfs',
       format,
       policies = {},
-      options = {}
+      options = {},
+      passphrase
     } = req.body;
 
     // Validate required fields
@@ -756,16 +837,27 @@ router.post('/mergerfs', checkRole(['admin']), async (req, res) => {
       return res.status(400).json({ error: 'At least one device is required for a MergerFS pool' });
     }
 
+    // Validate encryption parameters
+    if (options.config?.encrypted && !passphrase) {
+      return res.status(400).json({ error: 'Passphrase is required for encrypted pools' });
+    }
+
+    // Add passphrase to options if provided
+    const poolOptions = {
+      ...options,
+      policies: policies,
+      format: format
+    };
+    if (passphrase) {
+      poolOptions.passphrase = passphrase;
+    }
+
     // Create the pool
     const result = await poolsService.createMergerFSPool(
       name,
       devices,
       filesystem,
-      {
-        ...options,
-        policies: policies,
-        format: format
-      }
+      poolOptions
     );
 
     return res.status(201).json(result);

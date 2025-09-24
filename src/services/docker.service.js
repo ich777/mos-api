@@ -8,88 +8,6 @@ const axios = require('axios');
 const execPromise = util.promisify(exec);
 
 class DockerService {
-  /**
-   * Finds dependent containers that use the network of the main container
-   * via --network container:maincontainer and have the label "mos.backend": "docker"
-   * @param {string} mainContainerName - Name of the main container
-   * @param {boolean} autostartOnly - If true, only return containers with autostart: true
-   * @returns {Promise<Array>} Array of dependent container names
-   */
-  async getDependentContainers(mainContainerName, autostartOnly = false) {
-    try {
-      // 1. Get main container ID and all labeled containers in parallel using Docker API
-      const [mainContainerResponse, containersResponse] = await Promise.all([
-        axios({
-          method: 'GET',
-          url: `http://localhost/containers/${mainContainerName}/json`,
-          socketPath: '/var/run/docker.sock',
-          validateStatus: () => true
-        }),
-        axios({
-          method: 'GET',
-          url: 'http://localhost/containers/json?all=true&filters={"label":["mos.backend=docker"]}',
-          socketPath: '/var/run/docker.sock',
-          validateStatus: () => true
-        })
-      ]);
-
-      if (mainContainerResponse.status !== 200) {
-        return []; // Main container not found
-      }
-
-      if (containersResponse.status !== 200 || !containersResponse.data.length) {
-        return []; // No containers with label found
-      }
-
-      const mainContainerId = mainContainerResponse.data.Id;
-      const dependentContainers = [];
-
-      // 2. Filter containers that use the main container's network (no additional API calls needed)
-      for (const container of containersResponse.data) {
-        const containerName = container.Names[0].replace('/', ''); // Remove leading slash
-
-        if (containerName === mainContainerName) continue; // Skip main container
-
-        // Check if this container uses the main container's network
-        const networkMode = container.HostConfig?.NetworkMode;
-
-        const usesMainContainerNetwork =
-          networkMode === `container:${mainContainerName}` ||
-          networkMode === `container:/${mainContainerName}` ||
-          networkMode === `container:${mainContainerId}` ||
-          networkMode === `container:${mainContainerId.substring(0, 12)}`;
-
-        if (usesMainContainerNetwork) {
-          dependentContainers.push(containerName);
-        }
-      }
-
-      // Filter by autostart if requested
-      if (autostartOnly) {
-        try {
-          // Read containers file to get autostart information
-          const containersFilePath = '/var/lib/docker/mos/containers';
-          const containersData = await fs.readFile(containersFilePath, 'utf8');
-          const containers = JSON.parse(containersData);
-
-          // Filter dependents to only include those with autostart: true
-          const autostartDependents = dependentContainers.filter(dependentName => {
-            const containerConfig = containers.find(container => container.name === dependentName);
-            return containerConfig && containerConfig.autostart === true;
-          });
-
-          return autostartDependents;
-        } catch (fileError) {
-          // If containers file doesn't exist or can't be read, return empty array
-          return [];
-        }
-      }
-
-      return dependentContainers;
-    } catch (error) {
-      return [];
-    }
-  }
 
   /**
    * Reads the Docker containers file and checks for available updates
@@ -177,27 +95,9 @@ class DockerService {
         throw new Error(`Error restarting: ${stderr}`);
       }
 
-      // Find dependent containers before restart
-      const dependentContainers = await this.getDependentContainers(name);
-
-      // If there are dependent containers, restart them after 10 seconds delay
-      if (dependentContainers.length > 0) {
-        // Wait 10 seconds after main container restart
-        setTimeout(async () => {
-          for (const dependentName of dependentContainers) {
-            try {
-              await execPromise(`${dockerPath} container restart ${dependentName}`);
-            } catch (dependentError) {
-              // Silent fail - continue with other containers
-            }
-          }
-        }, 10000);
-      }
-
       // Try to parse the output as JSON, if possible
       return {
-        success: true,
-        dependentContainers: dependentContainers.length > 0 ? dependentContainers : undefined
+        success: true
       };
     } catch (error) {
       throw new Error(`Failed to restart: ${error.message}`);
@@ -211,8 +111,6 @@ class DockerService {
    */
   async Upgrade(name = null) {
     try {
-      // Find dependent containers before upgrade
-      const dependentContainers = name ? await this.getDependentContainers(name) : [];
 
       // Path to update script
       const scriptPath = '/usr/local/bin/mos-update_containers';
@@ -227,64 +125,14 @@ class DockerService {
         throw new Error(`Error executing upgrade: ${stderr}`);
       }
 
-      // If there are dependent containers and we upgraded a specific container, redeploy them after delay
-      if (name && dependentContainers.length > 0) {
-        // Wait 10 seconds after main container upgrade
-        setTimeout(async () => {
-          for (const dependentName of dependentContainers) {
-            try {
-              // Stop the dependent container using Docker Socket API
-              try {
-                await axios({
-                  method: 'POST',
-                  url: `http://localhost/containers/${dependentName}/stop`,
-                  socketPath: '/var/run/docker.sock',
-                  validateStatus: () => true,
-                  timeout: 30000
-                });
-              } catch (stopError) {
-                // Continue if stop fails
-              }
-
-              // Remove the dependent container using Docker Socket API
-              try {
-                await axios({
-                  method: 'DELETE',
-                  url: `http://localhost/containers/${dependentName}`,
-                  socketPath: '/var/run/docker.sock',
-                  validateStatus: () => true,
-                  timeout: 10000
-                });
-              } catch (removeError) {
-                // Continue if remove fails
-              }
-
-              // Redeploy using mos-deploy_docker (this still needs to use execPromise as it's a custom script)
-              const templateFile = `${dependentName}.json`;
-              await execPromise(`mos-deploy_docker ${templateFile}`, {
-                cwd: '/boot/config/system/docker/templates'
-              });
-
-            } catch (dependentError) {
-              // Silent fail - continue with other containers
-            }
-          }
-        }, 10000);
-      }
 
       // Try to parse the output as JSON, if possible
       try {
         const result = JSON.parse(stdout);
-        if (name && dependentContainers.length > 0) {
-          result.dependentContainers = dependentContainers;
-        }
         return result;
       } catch (parseError) {
         // If no JSON output, return text
         const result = { message: stdout.trim() };
-        if (name && dependentContainers.length > 0) {
-          result.dependentContainers = dependentContainers;
-        }
         return result;
       }
     } catch (error) {
@@ -580,16 +428,6 @@ class DockerService {
    */
   async removeContainer(name) {
     try {
-      // First find and stop dependent containers (don't remove them)
-      const dependentContainers = await this.getDependentContainers(name);
-
-      for (const dependentName of dependentContainers) {
-        try {
-          await execPromise(`docker stop ${dependentName}`);
-        } catch (stopError) {
-          // Continue - not critical
-        }
-      }
 
       const templateDir = '/boot/config/system/docker/templates';
       const removedDir = '/boot/config/system/docker/removed';
@@ -693,8 +531,7 @@ class DockerService {
             return {
               success: true,
               message: `Container '${name}' and its template have been removed`,
-              warning: warning,
-              stoppedDependents: dependentContainers.length > 0 ? dependentContainers : undefined
+              warning: warning
             };
           }
           throw err;
@@ -731,8 +568,7 @@ class DockerService {
       return {
         success: true,
         message: `Container '${name}' and its template have been removed`,
-        warning: warning,
-        stoppedDependents: dependentContainers.length > 0 ? dependentContainers : undefined
+        warning: warning
       };
     } catch (error) {
       throw new Error(`Container removal failed: ${error.message}`);
@@ -1062,6 +898,315 @@ class DockerService {
       };
     } catch (error) {
       throw new Error(`Failed to get all templates: ${error.message}`);
+    }
+  }
+
+  /**
+   * Get the groups file path
+   * @returns {string} Path to groups file
+   */
+  _getGroupsFilePath() {
+    return '/var/lib/docker/mos/groups';
+  }
+
+  /**
+   * Ensure groups directory exists
+   */
+  async _ensureGroupsDirectory() {
+    const groupsDir = path.dirname(this._getGroupsFilePath());
+    try {
+      await fs.access(groupsDir);
+    } catch (error) {
+      await fs.mkdir(groupsDir, { recursive: true });
+    }
+  }
+
+  /**
+   * Read groups from file
+   * @returns {Promise<Array>} Array of groups
+   */
+  async _readGroups() {
+    try {
+      await this._ensureGroupsDirectory();
+      const groupsData = await fs.readFile(this._getGroupsFilePath(), 'utf8');
+      return JSON.parse(groupsData);
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        return []; // File doesn't exist, return empty array
+      }
+      throw new Error(`Failed to read groups: ${error.message}`);
+    }
+  }
+
+  /**
+   * Write groups to file
+   * @param {Array} groups - Array of groups to write
+   */
+  async _writeGroups(groups) {
+    try {
+      await this._ensureGroupsDirectory();
+      await fs.writeFile(this._getGroupsFilePath(), JSON.stringify(groups, null, 2));
+    } catch (error) {
+      throw new Error(`Failed to write groups: ${error.message}`);
+    }
+  }
+
+  /**
+   * Generate timestamp-based ID
+   * @returns {string} Timestamp ID with nanoseconds
+   */
+  _generateTimestampId() {
+    const now = process.hrtime.bigint();
+    return now.toString();
+  }
+
+  /**
+   * Get all container groups
+   * @returns {Promise<Array>} Array of groups with their containers
+   */
+  async getContainerGroups() {
+    try {
+      const groups = await this._readGroups();
+
+      // Get current container order from containers file
+      const containers = await this.getDockerImages();
+
+      // Enrich groups with current container status and sort by index
+      const enrichedGroups = groups.map(group => {
+        const filteredContainers = group.containers.filter(containerName =>
+          containers.some(c => c.name === containerName)
+        );
+
+        return {
+          ...group,
+          containers: filteredContainers,
+          count: filteredContainers.length
+        };
+      }).sort((a, b) => a.index - b.index);
+
+      return enrichedGroups;
+    } catch (error) {
+      throw new Error(`Failed to get container groups: ${error.message}`);
+    }
+  }
+
+  /**
+   * Create a new container group
+   * @param {string} name - Group name
+   * @param {Array} containers - Array of container names
+   * @returns {Promise<Object>} Created group
+   */
+  async createContainerGroup(name, containers = []) {
+    try {
+      if (!name || typeof name !== 'string') {
+        throw new Error('Group name is required and must be a string');
+      }
+
+      const groups = await this._readGroups();
+
+      // Check if group name already exists
+      if (groups.some(group => group.name === name)) {
+        throw new Error(`Group with name '${name}' already exists`);
+      }
+
+      // Validate containers exist
+      const existingContainers = await this.getDockerImages();
+      const existingContainerNames = existingContainers.map(c => c.name);
+
+      const invalidContainers = containers.filter(containerName =>
+        !existingContainerNames.includes(containerName)
+      );
+
+      if (invalidContainers.length > 0) {
+        throw new Error(`Containers not found: ${invalidContainers.join(', ')}`);
+      }
+
+      // Get next index
+      const nextIndex = groups.length > 0 ? Math.max(...groups.map(g => g.index)) + 1 : 1;
+
+      const newGroup = {
+        id: this._generateTimestampId(),
+        name,
+        index: nextIndex,
+        containers
+      };
+
+      groups.push(newGroup);
+      await this._writeGroups(groups);
+
+      return newGroup;
+    } catch (error) {
+      throw new Error(`Failed to create container group: ${error.message}`);
+    }
+  }
+
+  /**
+   * Delete a container group
+   * @param {string} groupId - Group ID to delete
+   * @returns {Promise<boolean>} True if deleted successfully
+   */
+  async deleteContainerGroup(groupId) {
+    try {
+      const groups = await this._readGroups();
+      const groupIndex = groups.findIndex(group => group.id === groupId);
+
+      if (groupIndex === -1) {
+        throw new Error(`Group with ID '${groupId}' not found`);
+      }
+
+      groups.splice(groupIndex, 1);
+      await this._writeGroups(groups);
+
+      return true;
+    } catch (error) {
+      throw new Error(`Failed to delete container group: ${error.message}`);
+    }
+  }
+
+  /**
+   * Add containers to a group
+   * @param {string} groupId - Group ID
+   * @param {Array} containerNames - Array of container names to add
+   * @returns {Promise<Object>} Updated group
+   */
+  async addContainersToGroup(groupId, containerNames) {
+    try {
+      if (!Array.isArray(containerNames) || containerNames.length === 0) {
+        throw new Error('Container names must be a non-empty array');
+      }
+
+      const groups = await this._readGroups();
+      const group = groups.find(g => g.id === groupId);
+
+      if (!group) {
+        throw new Error(`Group with ID '${groupId}' not found`);
+      }
+
+      // Validate containers exist
+      const existingContainers = await this.getDockerImages();
+      const existingContainerNames = existingContainers.map(c => c.name);
+
+      const invalidContainers = containerNames.filter(containerName =>
+        !existingContainerNames.includes(containerName)
+      );
+
+      if (invalidContainers.length > 0) {
+        throw new Error(`Containers not found: ${invalidContainers.join(', ')}`);
+      }
+
+      // Add containers (avoid duplicates)
+      containerNames.forEach(containerName => {
+        if (!group.containers.includes(containerName)) {
+          group.containers.push(containerName);
+        }
+      });
+
+      await this._writeGroups(groups);
+      return group;
+    } catch (error) {
+      throw new Error(`Failed to add containers to group: ${error.message}`);
+    }
+  }
+
+  /**
+   * Remove containers from a group
+   * @param {string} groupId - Group ID
+   * @param {Array} containerNames - Array of container names to remove
+   * @returns {Promise<Object>} Updated group
+   */
+  async removeContainersFromGroup(groupId, containerNames) {
+    try {
+      if (!Array.isArray(containerNames) || containerNames.length === 0) {
+        throw new Error('Container names must be a non-empty array');
+      }
+
+      const groups = await this._readGroups();
+      const group = groups.find(g => g.id === groupId);
+
+      if (!group) {
+        throw new Error(`Group with ID '${groupId}' not found`);
+      }
+
+      // Remove containers
+      group.containers = group.containers.filter(containerName =>
+        !containerNames.includes(containerName)
+      );
+
+      await this._writeGroups(groups);
+      return group;
+    } catch (error) {
+      throw new Error(`Failed to remove containers from group: ${error.message}`);
+    }
+  }
+
+  /**
+   * Update group name
+   * @param {string} groupId - Group ID
+   * @param {string} newName - New group name
+   * @returns {Promise<Object>} Updated group
+   */
+  async updateGroupName(groupId, newName) {
+    try {
+      if (!newName || typeof newName !== 'string') {
+        throw new Error('Group name is required and must be a string');
+      }
+
+      const groups = await this._readGroups();
+      const group = groups.find(g => g.id === groupId);
+
+      if (!group) {
+        throw new Error(`Group with ID '${groupId}' not found`);
+      }
+
+      // Check if new name already exists (excluding current group)
+      if (groups.some(g => g.name === newName && g.id !== groupId)) {
+        throw new Error(`Group with name '${newName}' already exists`);
+      }
+
+      group.name = newName;
+
+      await this._writeGroups(groups);
+      return group;
+    } catch (error) {
+      throw new Error(`Failed to update group name: ${error.message}`);
+    }
+  }
+
+  /**
+   * Update group order/index
+   * @param {Array} groupOrder - Array of group objects with id and index
+   * @returns {Promise<Array>} Updated groups array
+   */
+  async updateGroupOrder(groupOrder) {
+    try {
+      if (!Array.isArray(groupOrder)) {
+        throw new Error('Group order must be an array');
+      }
+
+      const groups = await this._readGroups();
+
+      // Validate all group IDs exist
+      const groupIds = groups.map(g => g.id);
+      const invalidIds = groupOrder.filter(item => !groupIds.includes(item.id));
+
+      if (invalidIds.length > 0) {
+        throw new Error(`Invalid group IDs: ${invalidIds.map(item => item.id).join(', ')}`);
+      }
+
+      // Update indices
+      groupOrder.forEach(orderItem => {
+        const group = groups.find(g => g.id === orderItem.id);
+        if (group) {
+          group.index = orderItem.index;
+        }
+      });
+
+      await this._writeGroups(groups);
+
+      // Return sorted groups
+      return groups.sort((a, b) => a.index - b.index);
+    } catch (error) {
+      throw new Error(`Failed to update group order: ${error.message}`);
     }
   }
 }

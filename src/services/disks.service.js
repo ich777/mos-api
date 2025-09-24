@@ -599,10 +599,145 @@ class DisksService {
   }
 
   /**
-   * Prüft ob eine Disk bereits verwendet wird (gemountet oder in Pool)
+   * Get UUIDs of all partitions of a device
+   */
+  /**
+   * Get all UUIDs that belong to a device by reading /dev/disk/by-uuid/ symlinks
+   */
+  async _getDeviceUuidsBySymlinks(device) {
+    const uuids = [];
+    try {
+      // Read all UUID symlinks
+      const uuidDir = '/dev/disk/by-uuid';
+      const uuidFiles = await fs.readdir(uuidDir);
+
+      for (const uuid of uuidFiles) {
+        try {
+          const symlinkPath = path.join(uuidDir, uuid);
+          const realPath = await fs.realpath(symlinkPath);
+
+          // Check if this UUID points to our device or any of its partitions
+          if (realPath.startsWith(device)) {
+            uuids.push(uuid);
+          }
+
+          // Fallback for encrypted devices: check if this UUID points to a mapper device
+          // that could be created from our device
+          if (realPath.startsWith('/dev/mapper/')) {
+            // Try to find the underlying LUKS device
+            try {
+              const { stdout } = await execPromise(`cryptsetup status ${path.basename(realPath)} 2>/dev/null || echo ""`);
+              if (stdout.includes(device)) {
+                uuids.push(uuid);
+              }
+            } catch (error) {
+              // Ignore errors
+            }
+          }
+        } catch (error) {
+          // Skip broken symlinks
+        }
+      }
+    } catch (error) {
+      // Directory doesn't exist or can't be read
+    }
+
+    return uuids;
+  }
+
+  async _getDeviceUuids(device) {
+    try {
+      const uuids = [];
+
+      // Get partitions of this device
+      const partitions = await this._getPartitions(device);
+
+      for (const partition of partitions) {
+        if (partition.uuid) {
+          uuids.push(partition.uuid);
+        }
+      }
+
+      return uuids;
+    } catch (error) {
+      return [];
+    }
+  }
+
+  /**
+   * Checks if a disk is already in use (mounted or in pool)
    */
   async _isDiskInUse(device) {
     try {
+      // Check pool membership using UUID-based approach
+      try {
+        const pools = await poolsService.listPools();
+
+        // Get all UUIDs that belong to this device by reading /dev/disk/by-uuid/
+        const deviceUuids = await this._getDeviceUuidsBySymlinks(device);
+
+        for (const pool of pools) {
+          // Check data_devices
+          if (pool.data_devices) {
+            for (const poolDevice of pool.data_devices) {
+              // Skip devices without UUID
+              if (!poolDevice.id) {
+                continue;
+              }
+
+              // Check if any of this device's UUIDs match the pool device UUID
+              if (deviceUuids.includes(poolDevice.id)) {
+                return {
+                  inUse: true,
+                  reason: 'in_pool_data',
+                  poolName: pool.name || 'unknown',
+                  poolDevice: poolDevice.device || poolDevice.id
+                };
+              }
+            }
+          }
+
+          // Check parity_devices (SnapRAID)
+          if (pool.parity_devices) {
+            for (const parityDevice of pool.parity_devices) {
+              // Check by device path first (works for both encrypted and non-encrypted)
+              if (parityDevice.device === device ||
+                  this._isPartitionOfDevice(parityDevice.device, device)) {
+                return {
+                  inUse: true,
+                  reason: 'in_pool_parity',
+                  poolName: pool.name || 'unknown',
+                  poolDevice: parityDevice.device || parityDevice.id
+                };
+              }
+
+              // Additional UUID check for encrypted devices (when device path doesn't match)
+              if (parityDevice.id && deviceUuids.includes(parityDevice.id)) {
+                return {
+                  inUse: true,
+                  reason: 'in_pool_parity',
+                  poolName: pool.name || 'unknown',
+                  poolDevice: parityDevice.device || parityDevice.id
+                };
+              }
+            }
+          }
+
+          // Legacy: Check old disks structure if present
+          if (pool.disks && pool.disks.some(poolDisk =>
+            poolDisk.device === device || device.endsWith(poolDisk.name))) {
+            return {
+              inUse: true,
+              reason: 'in_pool_legacy',
+              poolName: pool.name || 'unknown'
+            };
+          }
+        }
+      } catch (error) {
+        // Pools service not available, ignore
+      }
+
+      // Erst NACH Pool-Prüfung: Mount-Prüfungen
       const mounts = await this._getMountInfo();
 
       // Prüfe direkte Mounts der ganzen Disk
@@ -632,108 +767,6 @@ class DisksService {
       const btrfsUsage = await this._checkBtrfsUsage(device);
       if (btrfsUsage.inUse) {
         return btrfsUsage;
-      }
-
-      // Prüfe Pool-Zugehörigkeit - erweitert für Partitionen
-      try {
-        const pools = await poolsService.getAllPools();
-        for (const pool of pools) {
-          // Prüfe data_devices
-          if (pool.data_devices) {
-            for (const poolDevice of pool.data_devices) {
-              // Direkte Übereinstimmung oder Partition der Disk (NVMe-kompatibel)
-              if (poolDevice.device === device || this._isPartitionOfDevice(poolDevice.device, device)) {
-                return {
-                  inUse: true,
-                  reason: 'in_pool_data',
-                  poolName: pool.name || 'unknown',
-                  poolDevice: poolDevice.device
-                };
-              }
-            }
-          }
-
-          // Prüfe parity_devices (SnapRAID)
-          if (pool.parity_devices) {
-            for (const parityDevice of pool.parity_devices) {
-              // Direkte Übereinstimmung oder Partition der Disk (NVMe-kompatibel)
-              if (parityDevice.device === device || this._isPartitionOfDevice(parityDevice.device, device)) {
-                return {
-                  inUse: true,
-                  reason: 'in_pool_parity',
-                  poolName: pool.name || 'unknown',
-                  poolDevice: parityDevice.device
-                };
-              }
-            }
-          }
-
-          // Legacy: Prüfe alte disks Struktur falls vorhanden
-          if (pool.disks && pool.disks.some(poolDisk =>
-            poolDisk.device === device || device.endsWith(poolDisk.name))) {
-            return {
-              inUse: true,
-              reason: 'in_pool_legacy',
-              poolName: pool.name || 'unknown'
-            };
-          }
-        }
-      } catch (error) {
-        // Pools-Service nicht verfügbar, ignorieren
-      }
-
-      return { inUse: false };
-    } catch (error) {
-      return { inUse: false };
-    }
-  }
-
-  /**
-   * Prüft ob eine Disk Teil eines BTRFS Multi-Device Setups ist
-   */
-  async _checkBtrfsUsage(device) {
-    try {
-      const devicePath = device.startsWith('/dev/') ? device : `/dev/${device}`;
-
-      // Hole UUID der zu prüfenden Disk
-      const { stdout: blkidOut } = await execPromise(`blkid ${devicePath} 2>/dev/null || echo ""`);
-      if (!blkidOut.trim()) {
-        return { inUse: false };
-      }
-
-      const uuidMatch = blkidOut.match(/UUID="([^"]+)"/);
-      const fsTypeMatch = blkidOut.match(/TYPE="([^"]+)"/);
-
-      if (!uuidMatch || !fsTypeMatch || fsTypeMatch[1] !== 'btrfs') {
-        return { inUse: false };
-      }
-
-      const diskUuid = uuidMatch[1];
-
-      // Prüfe alle gemounteten BTRFS Filesysteme
-      const mounts = await this._getMountInfo();
-      for (const [mountedDevice, mountInfo] of mounts) {
-        if (mountInfo.fstype === 'btrfs') {
-          try {
-            // Hole UUID des gemounteten BTRFS
-            const { stdout: mountedBlkid } = await execPromise(`blkid ${mountedDevice} 2>/dev/null || echo ""`);
-            const mountedUuidMatch = mountedBlkid.match(/UUID="([^"]+)"/);
-
-            if (mountedUuidMatch && mountedUuidMatch[1] === diskUuid) {
-              // Gleiche UUID gefunden - diese Disk ist Teil des BTRFS
-              return {
-                inUse: true,
-                reason: 'btrfs_multi_device',
-                mountpoint: mountInfo.mountpoint,
-                filesystem: 'btrfs',
-                primaryDevice: mountedDevice,
-                uuid: diskUuid
-              };
-            }
-          } catch (error) {
-            // Fehler beim Prüfen einzelner Devices ignorieren
-          }
-        }
       }
 
       return { inUse: false };
