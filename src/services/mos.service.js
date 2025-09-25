@@ -897,6 +897,38 @@ class MosService {
   }
 
   /**
+   * Get available CPU governors from the system
+   * @returns {Promise<Array>} Array of available governors
+   */
+  async getAvailableGovernors() {
+    try {
+      // Try to read from cpufreq system file first
+      try {
+        const data = await fs.readFile('/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors', 'utf8');
+        const governors = data.trim().split(/\s+/).filter(gov => gov.length > 0);
+        return governors;
+      } catch (sysError) {
+        // Fallback: try cpufreq-info if available
+        try {
+          const { stdout } = await execPromise('cpufreq-info --governors 2>/dev/null');
+          const governors = stdout.trim().split(/\s+/).filter(gov => gov.length > 0);
+          if (governors.length > 0) {
+            return governors;
+          }
+        } catch (cpufreqError) {
+          // Ignore cpufreq-info errors
+        }
+
+        // If both methods fail, return common default governors
+        console.warn('Could not read available governors, returning defaults');
+        return ['ondemand', 'performance', 'powersave', 'conservative'];
+      }
+    } catch (error) {
+      throw new Error(`Fehler beim Abrufen der verfügbaren Governors: ${error.message}`);
+    }
+  }
+
+  /**
    * Reads the system settings from the system.json file.
    * @returns {Promise<Object>} The system settings as an object
    */
@@ -912,12 +944,23 @@ class MosService {
           reboot: true,
           shutdown: true
         };
+      }
 
-        // Write back the updated settings with defaults
+      // Ensure cpufreq defaults are present
+      if (!settings.cpufreq) {
+        settings.cpufreq = {
+          governor: 'ondemand',
+          max_speed: 0,
+          min_speed: 0
+        };
+      }
+
+      // Write back the updated settings with defaults if any were added
+      if (!settings.notification_sound || !settings.cpufreq) {
         try {
           await fs.writeFile('/boot/config/system.json', JSON.stringify(settings, null, 2), 'utf8');
         } catch (writeError) {
-          console.warn('Warning: Could not write notification_sound defaults to system.json:', writeError.message);
+          console.warn('Warning: Could not write defaults to system.json:', writeError.message);
         }
       }
 
@@ -946,7 +989,7 @@ class MosService {
         if (error.code !== 'ENOENT') throw error;
       }
       // Only allowed fields are updated
-      const allowed = ['hostname', 'global_spindown', 'keymap', 'timezone', 'ntp', 'notification_sound'];
+      const allowed = ['hostname', 'global_spindown', 'keymap', 'timezone', 'ntp', 'notification_sound', 'cpufreq'];
       let ntpChanged = false;
       let keymapChanged = false;
       let timezoneChanged = false;
@@ -1004,6 +1047,25 @@ class MosService {
               startup: updates.notification_sound.startup !== undefined ? updates.notification_sound.startup : current.notification_sound.startup,
               reboot: updates.notification_sound.reboot !== undefined ? updates.notification_sound.reboot : current.notification_sound.reboot,
               shutdown: updates.notification_sound.shutdown !== undefined ? updates.notification_sound.shutdown : current.notification_sound.shutdown
+            };
+          }
+        } else if (key === 'cpufreq') {
+          // Initialize cpufreq with defaults if not present
+          if (!current.cpufreq) {
+            current.cpufreq = {
+              governor: 'ondemand',
+              max_speed: 0,
+              min_speed: 0
+            };
+          }
+
+          // Update cpufreq settings
+          if (typeof updates.cpufreq === 'object' && updates.cpufreq !== null) {
+            // Merge with existing settings, keeping defaults for missing values
+            current.cpufreq = {
+              governor: updates.cpufreq.governor !== undefined ? updates.cpufreq.governor : current.cpufreq.governor,
+              max_speed: updates.cpufreq.max_speed !== undefined ? updates.cpufreq.max_speed : current.cpufreq.max_speed,
+              min_speed: updates.cpufreq.min_speed !== undefined ? updates.cpufreq.min_speed : current.cpufreq.min_speed
             };
           }
         } else {

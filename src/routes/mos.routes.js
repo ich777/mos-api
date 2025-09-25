@@ -914,7 +914,124 @@ router.get('/settings/system', async (req, res) => {
   }
 });
 
-// POST: Update system settings (only hostname and global_spindown)
+/**
+ * @swagger
+ * /mos/settings/system:
+ *   post:
+ *     summary: Update system settings
+ *     description: Update system configuration including hostname, global_spindown, keymap, timezone, NTP, notification sounds, and CPU frequency settings (admin only)
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               hostname:
+ *                 type: string
+ *                 description: System hostname
+ *                 example: "my-server"
+ *               global_spindown:
+ *                 type: integer
+ *                 description: Global disk spindown time in minutes (0 = disabled)
+ *                 example: 30
+ *               keymap:
+ *                 type: string
+ *                 description: Keyboard layout
+ *                 example: "de"
+ *               timezone:
+ *                 type: string
+ *                 description: System timezone
+ *                 example: "Europe/Berlin"
+ *               ntp:
+ *                 type: object
+ *                 description: NTP configuration
+ *                 properties:
+ *                   enabled:
+ *                     type: boolean
+ *                     description: Enable NTP service
+ *                     example: true
+ *                   mode:
+ *                     type: string
+ *                     enum: [pool, server]
+ *                     description: NTP mode
+ *                     example: "pool"
+ *                   servers:
+ *                     type: array
+ *                     items:
+ *                       type: string
+ *                     description: NTP servers
+ *                     example: ["pool.ntp.org", "time.google.com"]
+ *               notification_sound:
+ *                 type: object
+ *                 description: Notification sound settings
+ *                 properties:
+ *                   startup:
+ *                     type: boolean
+ *                     description: Play sound on startup
+ *                     example: true
+ *                   reboot:
+ *                     type: boolean
+ *                     description: Play sound on reboot
+ *                     example: true
+ *                   shutdown:
+ *                     type: boolean
+ *                     description: Play sound on shutdown
+ *                     example: true
+ *               cpufreq:
+ *                 type: object
+ *                 description: CPU frequency scaling settings
+ *                 properties:
+ *                   governor:
+ *                     type: string
+ *                     description: CPU frequency governor
+ *                     example: "ondemand"
+ *                   max_speed:
+ *                     type: integer
+ *                     description: Maximum CPU frequency in kHz (0 = system default)
+ *                     example: 3000000
+ *                   min_speed:
+ *                     type: integer
+ *                     description: Minimum CPU frequency in kHz (0 = system default)
+ *                     example: 800000
+ *     responses:
+ *       200:
+ *         description: System settings updated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               description: Updated system settings
+ *       400:
+ *         description: Invalid request body
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+
+// POST: Update system settings
 router.post('/settings/system', async (req, res) => {
   try {
     if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
@@ -1037,6 +1154,55 @@ router.get('/settings/system/timezones', async (req, res) => {
   try {
     const timezones = await mosService.listTimezones();
     res.json(timezones);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /mos/settings/system/governors:
+ *   get:
+ *     summary: Get available CPU governors
+ *     description: Get list of available CPU frequency governors from the system
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: List of available CPU governors
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: string
+ *               example: ["ondemand", "performance", "powersave", "conservative", "userspace"]
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+
+// GET: List available CPU governors
+router.get('/settings/system/governors', checkRole('admin'), async (req, res) => {
+  try {
+    const governors = await mosService.getAvailableGovernors();
+    res.json(governors);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

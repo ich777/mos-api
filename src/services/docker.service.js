@@ -1028,7 +1028,8 @@ class DockerService {
         id: this._generateTimestampId(),
         name,
         index: nextIndex,
-        containers
+        containers,
+        icon: null
       };
 
       groups.push(newGroup);
@@ -1169,6 +1170,35 @@ class DockerService {
       return group;
     } catch (error) {
       throw new Error(`Failed to update group name: ${error.message}`);
+    }
+  }
+
+  /**
+   * Update a container group icon
+   * @param {string} groupId - Group ID
+   * @param {string|null} icon - New icon (can be null to remove icon)
+   * @returns {Promise<Object>} Updated group
+   */
+  async updateGroupIcon(groupId, icon) {
+    try {
+      const groups = await this._readGroups();
+      const group = groups.find(g => g.id === groupId);
+
+      if (!group) {
+        throw new Error(`Group with ID '${groupId}' not found`);
+      }
+
+      // Validate icon (allow null or string)
+      if (icon !== null && typeof icon !== 'string') {
+        throw new Error('Icon must be a string or null');
+      }
+
+      group.icon = icon;
+
+      await this._writeGroups(groups);
+      return group;
+    } catch (error) {
+      throw new Error(`Failed to update group icon: ${error.message}`);
     }
   }
 

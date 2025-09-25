@@ -20,8 +20,14 @@ class NotificationsService {
         throw new Error('Notifications file does not contain a valid array');
       }
 
+      // Ensure all notifications have a 'read' field (default: false)
+      const notificationsWithRead = notifications.map(notification => ({
+        ...notification,
+        read: notification.read !== undefined ? notification.read : false
+      }));
+
       // Sort by timestamp (newest first)
-      return notifications.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+      return notificationsWithRead.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
     } catch (error) {
       if (error.code === 'ENOENT') {
         // File doesn't exist, return empty array
@@ -84,6 +90,174 @@ class NotificationsService {
     }
   }
 
+  /**
+   * Marks a single notification as read by timestamp
+   * @param {string} timestamp - The timestamp of the notification to mark as read
+   * @returns {Promise<Object>} Result object with success status and message
+   */
+  async markNotificationAsRead(timestamp) {
+    try {
+      const notifications = await this.getNotifications();
+
+      // Find and update the notification
+      let notificationFound = false;
+      const updatedNotifications = notifications.map(notification => {
+        if (notification.timestamp === timestamp) {
+          notificationFound = true;
+          return { ...notification, read: true };
+        }
+        return notification;
+      });
+
+      if (!notificationFound) {
+        return {
+          success: false,
+          message: `Notification with timestamp ${timestamp} not found`
+        };
+      }
+
+      // Write the updated notifications back to the file
+      await this._writeNotifications(updatedNotifications);
+
+      return {
+        success: true,
+        message: `Notification with timestamp ${timestamp} marked as read`,
+        totalCount: updatedNotifications.length
+      };
+    } catch (error) {
+      throw new Error(`Error marking notification as read: ${error.message}`);
+    }
+  }
+
+  /**
+   * Marks multiple notifications as read by timestamps
+   * @param {Array<string>} timestamps - Array of timestamps to mark as read
+   * @returns {Promise<Object>} Result object with success status and details
+   */
+  async markMultipleNotificationsAsRead(timestamps) {
+    try {
+      if (!Array.isArray(timestamps) || timestamps.length === 0) {
+        return {
+          success: false,
+          message: 'Invalid timestamps array provided'
+        };
+      }
+
+      const notifications = await this.getNotifications();
+      const timestampSet = new Set(timestamps);
+      let markedCount = 0;
+
+      // Update notifications that match the provided timestamps
+      const updatedNotifications = notifications.map(notification => {
+        if (timestampSet.has(notification.timestamp) && !notification.read) {
+          markedCount++;
+          return { ...notification, read: true };
+        }
+        return notification;
+      });
+
+      if (markedCount === 0) {
+        return {
+          success: false,
+          message: 'No matching unread notifications found for the provided timestamps'
+        };
+      }
+
+      // Write the updated notifications back to the file
+      await this._writeNotifications(updatedNotifications);
+
+      return {
+        success: true,
+        message: `${markedCount} notification(s) marked as read`,
+        markedCount,
+        totalCount: updatedNotifications.length
+      };
+    } catch (error) {
+      throw new Error(`Error marking multiple notifications as read: ${error.message}`);
+    }
+  }
+
+  /**
+   * Marks all notifications as read
+   * @returns {Promise<Object>} Result object with success status and message
+   */
+  async markAllNotificationsAsRead() {
+    try {
+      const notifications = await this.getNotifications();
+      let markedCount = 0;
+
+      // Mark all unread notifications as read
+      const updatedNotifications = notifications.map(notification => {
+        if (!notification.read) {
+          markedCount++;
+          return { ...notification, read: true };
+        }
+        return notification;
+      });
+
+      if (markedCount === 0) {
+        return {
+          success: true,
+          message: 'All notifications are already marked as read',
+          markedCount: 0,
+          totalCount: notifications.length
+        };
+      }
+
+      // Write the updated notifications back to the file
+      await this._writeNotifications(updatedNotifications);
+
+      return {
+        success: true,
+        message: `All ${markedCount} unread notification(s) marked as read`,
+        markedCount,
+        totalCount: updatedNotifications.length
+      };
+    } catch (error) {
+      throw new Error(`Error marking all notifications as read: ${error.message}`);
+    }
+  }
+
+  /**
+   * Gets notification statistics including read/unread counts
+   * @returns {Promise<Object>} Statistics object
+   */
+  async getNotificationStats() {
+    try {
+      const notifications = await this.getNotifications();
+
+      const stats = {
+        total: notifications.length,
+        read: 0,
+        unread: 0,
+        priorities: {
+          high: 0,
+          normal: 0,
+          low: 0
+        }
+      };
+
+      notifications.forEach(notification => {
+        // Count read/unread
+        if (notification.read) {
+          stats.read++;
+        } else {
+          stats.unread++;
+        }
+
+        // Count priorities
+        const priority = notification.priority || 'normal';
+        if (stats.priorities[priority] !== undefined) {
+          stats.priorities[priority]++;
+        }
+      });
+
+      return stats;
+    } catch (error) {
+      throw new Error(`Error getting notification statistics: ${error.message}`);
+    }
+  }
+
 
   /**
    * Writes notifications array to the file
@@ -121,7 +295,8 @@ class NotificationsService {
       typeof notification.message === 'string' &&
       typeof notification.timestamp === 'string' &&
       (notification.priority === undefined ||
-       ['high', 'normal', 'low'].includes(notification.priority))
+       ['high', 'normal', 'low'].includes(notification.priority)) &&
+      (notification.read === undefined || typeof notification.read === 'boolean')
     );
   }
 }

@@ -1043,6 +1043,10 @@ async function waitForContainerState(containerId, expectedState, maxRetries = 10
  *             type: string
  *           description: Array of container names in this group
  *           example: ["nginx", "apache", "traefik"]
+ *         icon:
+ *           type: string
+ *           nullable: true
+ *           description: Icon name/identifier for the group
  */
 
 /**
@@ -1449,6 +1453,75 @@ router.put('/mos/groups/:groupId/name', async (req, res) => {
     }
 
     const group = await dockerService.updateGroupName(groupId, name);
+    res.json(group);
+  } catch (error) {
+    if (error.message.includes('not found')) {
+      res.status(404).json({ error: error.message });
+    } else {
+      res.status(400).json({ error: error.message });
+    }
+  }
+});
+
+/**
+ * @swagger
+ * /docker/mos/groups/{groupId}/icon:
+ *   put:
+ *     summary: Update container group icon
+ *     tags: [Docker]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: groupId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Group ID
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               icon:
+ *                 type: string
+ *                 nullable: true
+ *                 description: Icon name/identifier (null to remove icon)
+ *                 example: "fas fa-server"
+ *     responses:
+ *       200:
+ *         description: Group icon updated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ContainerGroup'
+ *       400:
+ *         description: Bad request
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Group not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+router.put('/mos/groups/:groupId/icon', async (req, res) => {
+  try {
+    const { groupId } = req.params;
+    const { icon } = req.body;
+
+    const group = await dockerService.updateGroupIcon(groupId, icon);
     res.json(group);
   } catch (error) {
     if (error.message.includes('not found')) {
