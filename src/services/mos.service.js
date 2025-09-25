@@ -18,14 +18,18 @@ class MosService {
       const poolsService = require('./pools.service');
       const pools = await poolsService._readPools();
 
-      // Find first mounted non-mergerfs pool
-      const suitablePool = pools.find(pool =>
-        pool.type !== 'mergerfs' &&
-        pool.status &&
-        pool.status.mounted
-      );
+      // Check mount status for each pool manually
+      for (const pool of pools) {
+        if (pool.type !== 'mergerfs') {
+          const mountPoint = `/mnt/${pool.name}`;
+          const isMounted = await poolsService._isMounted(mountPoint);
+          if (isMounted) {
+            return pool.name;
+          }
+        }
+      }
 
-      return suitablePool ? suitablePool.name : null;
+      return null;
     } catch (error) {
       console.warn('Could not determine default pool for path suggestions:', error.message);
       return null;
@@ -94,8 +98,8 @@ class MosService {
 
       try {
         // Check if Pool exists and status
-        // Since we only have the name, we need to search through all Pools
-        const pools = await poolsService._readPools();
+        // Use listPools() to get real-time mount status instead of static pools.json
+        const pools = await poolsService.listPools();
         const pool = pools.find(p => p.name === poolName);
 
         if (!pool) {
