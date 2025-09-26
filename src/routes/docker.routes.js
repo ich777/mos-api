@@ -1218,175 +1218,10 @@ router.delete('/mos/groups/:groupId', async (req, res) => {
 
 /**
  * @swagger
- * /docker/mos/groups/{groupId}/containers:
- *   post:
- *     summary: Add containers to a group
- *     tags: [Docker]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: path
- *         name: groupId
- *         required: true
- *         schema:
- *           type: string
- *         description: Group ID
- *         example: "1695384000123456789"
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - containers
- *             properties:
- *               containers:
- *                 type: array
- *                 items:
- *                   type: string
- *                 description: Array of container names to add
- *                 example: ["nginx", "apache"]
- *     responses:
- *       200:
- *         description: Containers added successfully
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ContainerGroup'
- *       400:
- *         description: Bad request
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/Error'
- *       401:
- *         description: Unauthorized
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/Error'
- *       404:
- *         description: Group not found
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/Error'
- *       500:
- *         description: Internal server error
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/Error'
- */
-router.post('/mos/groups/:groupId/containers', async (req, res) => {
-  try {
-    const { groupId } = req.params;
-    const { containers } = req.body;
-
-    if (!containers || !Array.isArray(containers) || containers.length === 0) {
-      return res.status(400).json({ error: 'Containers array is required and must not be empty' });
-    }
-
-    const group = await dockerService.addContainersToGroup(groupId, containers);
-    res.json(group);
-  } catch (error) {
-    if (error.message.includes('not found')) {
-      res.status(404).json({ error: error.message });
-    } else {
-      res.status(400).json({ error: error.message });
-    }
-  }
-});
-
-/**
- * @swagger
- * /docker/mos/groups/{groupId}/containers:
- *   delete:
- *     summary: Remove containers from a group
- *     tags: [Docker]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: path
- *         name: groupId
- *         required: true
- *         schema:
- *           type: string
- *         description: Group ID
- *         example: "1695384000123456789"
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - containers
- *             properties:
- *               containers:
- *                 type: array
- *                 items:
- *                   type: string
- *                 description: Array of container names to remove
- *                 example: ["nginx", "apache"]
- *     responses:
- *       200:
- *         description: Containers removed successfully
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ContainerGroup'
- *       400:
- *         description: Bad request
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/Error'
- *       401:
- *         description: Unauthorized
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/Error'
- *       404:
- *         description: Group not found
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/Error'
- *       500:
- *         description: Internal server error
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/Error'
- */
-router.delete('/mos/groups/:groupId/containers', async (req, res) => {
-  try {
-    const { groupId } = req.params;
-    const { containers } = req.body;
-
-    if (!containers || !Array.isArray(containers) || containers.length === 0) {
-      return res.status(400).json({ error: 'Containers array is required and must not be empty' });
-    }
-
-    const group = await dockerService.removeContainersFromGroup(groupId, containers);
-    res.json(group);
-  } catch (error) {
-    if (error.message.includes('not found')) {
-      res.status(404).json({ error: error.message });
-    } else {
-      res.status(400).json({ error: error.message });
-    }
-  }
-});
-
-/**
- * @swagger
- * /docker/mos/groups/{groupId}/name:
+ * /docker/mos/groups/{groupId}:
  *   put:
- *     summary: Update group name
+ *     summary: Update container group (name, icon, containers)
+ *     description: Update any combination of group properties in a single request
  *     tags: [Docker]
  *     security:
  *       - bearerAuth: []
@@ -1397,102 +1232,67 @@ router.delete('/mos/groups/:groupId/containers', async (req, res) => {
  *         schema:
  *           type: string
  *         description: Group ID
- *         example: "1695384000123456789"
  *     requestBody:
  *       required: true
  *       content:
  *         application/json:
  *           schema:
  *             type: object
- *             required:
- *               - name
  *             properties:
  *               name:
  *                 type: string
  *                 description: New group name
- *                 example: "Updated Web Services"
- *     responses:
- *       200:
- *         description: Group name updated successfully
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ContainerGroup'
- *       400:
- *         description: Bad request
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/Error'
- *       401:
- *         description: Unauthorized
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/Error'
- *       404:
- *         description: Group not found
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/Error'
- *       500:
- *         description: Internal server error
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/Error'
- */
-router.put('/mos/groups/:groupId/name', async (req, res) => {
-  try {
-    const { groupId } = req.params;
-    const { name } = req.body;
-
-    if (!name) {
-      return res.status(400).json({ error: 'Group name is required' });
-    }
-
-    const group = await dockerService.updateGroupName(groupId, name);
-    res.json(group);
-  } catch (error) {
-    if (error.message.includes('not found')) {
-      res.status(404).json({ error: error.message });
-    } else {
-      res.status(400).json({ error: error.message });
-    }
-  }
-});
-
-/**
- * @swagger
- * /docker/mos/groups/{groupId}/icon:
- *   put:
- *     summary: Update container group icon
- *     tags: [Docker]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: path
- *         name: groupId
- *         required: true
- *         schema:
- *           type: string
- *         description: Group ID
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
+ *                 example: "Web Servers"
  *               icon:
  *                 type: string
  *                 nullable: true
  *                 description: Icon name/identifier (null to remove icon)
  *                 example: "fas fa-server"
+ *               containers:
+ *                 type: array
+ *                 items:
+ *                   type: string
+ *                 description: Complete list of containers (replaces existing)
+ *                 example: ["nginx", "apache"]
+ *               addContainers:
+ *                 type: array
+ *                 items:
+ *                   type: string
+ *                 description: Containers to add to existing list
+ *                 example: ["redis"]
+ *               removeContainers:
+ *                 type: array
+ *                 items:
+ *                   type: string
+ *                 description: Containers to remove from existing list
+ *                 example: ["old-container"]
+ *           examples:
+ *             updateName:
+ *               summary: Update only name
+ *               value:
+ *                 name: "Database Servers"
+ *             updateIcon:
+ *               summary: Update only icon
+ *               value:
+ *                 icon: "fas fa-database"
+ *             replaceContainers:
+ *               summary: Replace all containers
+ *               value:
+ *                 containers: ["mysql", "postgres"]
+ *             addRemoveContainers:
+ *               summary: Add and remove containers
+ *               value:
+ *                 addContainers: ["redis"]
+ *                 removeContainers: ["old-cache"]
+ *             updateAll:
+ *               summary: Update multiple properties
+ *               value:
+ *                 name: "Updated Group"
+ *                 icon: "fas fa-cogs"
+ *                 addContainers: ["new-service"]
  *     responses:
  *       200:
- *         description: Group icon updated successfully
+ *         description: Group updated successfully
  *         content:
  *           application/json:
  *             schema:
@@ -1516,18 +1316,216 @@ router.put('/mos/groups/:groupId/name', async (req, res) => {
  *             schema:
  *               $ref: '#/components/schemas/Error'
  */
-router.put('/mos/groups/:groupId/icon', async (req, res) => {
+router.put('/mos/groups/:groupId', async (req, res) => {
   try {
     const { groupId } = req.params;
-    const { icon } = req.body;
+    const updateData = req.body;
 
-    const group = await dockerService.updateGroupIcon(groupId, icon);
+    // Validate that at least one field is provided
+    const validFields = ['name', 'icon', 'containers', 'addContainers', 'removeContainers'];
+    const providedFields = Object.keys(updateData).filter(key => validFields.includes(key));
+
+    if (providedFields.length === 0) {
+      return res.status(400).json({
+        error: 'At least one field must be provided: name, icon, containers, addContainers, or removeContainers'
+      });
+    }
+
+    // Validate that containers and addContainers/removeContainers are not used together
+    if (updateData.containers !== undefined &&
+        (updateData.addContainers !== undefined || updateData.removeContainers !== undefined)) {
+      return res.status(400).json({
+        error: 'Cannot use "containers" together with "addContainers" or "removeContainers"'
+      });
+    }
+
+    const group = await dockerService.updateGroup(groupId, updateData);
     res.json(group);
   } catch (error) {
     if (error.message.includes('not found')) {
       res.status(404).json({ error: error.message });
     } else {
       res.status(400).json({ error: error.message });
+    }
+  }
+});
+
+/**
+ * @swagger
+ * /docker/mos/groups/{groupId}/start:
+ *   post:
+ *     summary: Start all containers in a group
+ *     description: Start all containers that belong to the specified group
+ *     tags: [Docker]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: groupId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Group ID
+ *         example: "1695384000123456789"
+ *     responses:
+ *       200:
+ *         description: Group start operation completed
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 groupId:
+ *                   type: string
+ *                   description: Group ID
+ *                   example: "1695384000123456789"
+ *                 groupName:
+ *                   type: string
+ *                   description: Group name
+ *                   example: "Web Services"
+ *                 totalContainers:
+ *                   type: integer
+ *                   description: Total number of containers in group
+ *                   example: 3
+ *                 successCount:
+ *                   type: integer
+ *                   description: Number of containers started successfully
+ *                   example: 2
+ *                 failureCount:
+ *                   type: integer
+ *                   description: Number of containers that failed to start
+ *                   example: 1
+ *                 results:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       container:
+ *                         type: string
+ *                         description: Container name
+ *                         example: "nginx"
+ *                       status:
+ *                         type: string
+ *                         enum: [success, error]
+ *                         description: Operation status
+ *                         example: "success"
+ *                       message:
+ *                         type: string
+ *                         description: Status message
+ *                         example: "Container started successfully"
+ *       404:
+ *         description: Group not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+router.post('/mos/groups/:groupId/start', async (req, res) => {
+  try {
+    const { groupId } = req.params;
+    const result = await dockerService.startContainerGroup(groupId);
+    res.json(result);
+  } catch (error) {
+    if (error.message.includes('not found')) {
+      res.status(404).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
+/**
+ * @swagger
+ * /docker/mos/groups/{groupId}/stop:
+ *   post:
+ *     summary: Stop all containers in a group
+ *     description: Stop all containers that belong to the specified group
+ *     tags: [Docker]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: groupId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Group ID
+ *         example: "1695384000123456789"
+ *     responses:
+ *       200:
+ *         description: Group stop operation completed
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 groupId:
+ *                   type: string
+ *                   description: Group ID
+ *                   example: "1695384000123456789"
+ *                 groupName:
+ *                   type: string
+ *                   description: Group name
+ *                   example: "Web Services"
+ *                 totalContainers:
+ *                   type: integer
+ *                   description: Total number of containers in group
+ *                   example: 3
+ *                 successCount:
+ *                   type: integer
+ *                   description: Number of containers stopped successfully
+ *                   example: 3
+ *                 failureCount:
+ *                   type: integer
+ *                   description: Number of containers that failed to stop
+ *                   example: 0
+ *                 results:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       container:
+ *                         type: string
+ *                         description: Container name
+ *                         example: "nginx"
+ *                       status:
+ *                         type: string
+ *                         enum: [success, error]
+ *                         description: Operation status
+ *                         example: "success"
+ *                       message:
+ *                         type: string
+ *                         description: Status message
+ *                         example: "Container stopped successfully"
+ *       404:
+ *         description: Group not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+router.post('/mos/groups/:groupId/stop', async (req, res) => {
+  try {
+    const { groupId } = req.params;
+    const result = await dockerService.stopContainerGroup(groupId);
+    res.json(result);
+  } catch (error) {
+    if (error.message.includes('not found')) {
+      res.status(404).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: error.message });
     }
   }
 });

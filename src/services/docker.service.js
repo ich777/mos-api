@@ -961,6 +961,21 @@ class DockerService {
   }
 
   /**
+   * Get running container names from Docker
+   * @returns {Promise<Set>} Set of running container names
+   */
+  async _getRunningContainers() {
+    try {
+      const { stdout } = await execPromise('docker ps --format "{{.Names}}" --filter "status=running"');
+      const runningNames = stdout.trim().split('\n').filter(name => name.length > 0);
+      return new Set(runningNames);
+    } catch (error) {
+      // If docker command fails, return empty set (no running containers)
+      return new Set();
+    }
+  }
+
+  /**
    * Get all container groups
    * @returns {Promise<Array>} Array of groups with their containers
    */
@@ -971,16 +986,25 @@ class DockerService {
       // Get current container order from containers file
       const containers = await this.getDockerImages();
 
+      // Get running containers ONCE for all groups (performance optimization)
+      const runningContainers = await this._getRunningContainers();
+
       // Enrich groups with current container status and sort by index
       const enrichedGroups = groups.map(group => {
         const filteredContainers = group.containers.filter(containerName =>
           containers.some(c => c.name === containerName)
         );
 
+        // Count running containers in this group (O(1) lookup per container)
+        const runningCount = filteredContainers.filter(containerName =>
+          runningContainers.has(containerName)
+        ).length;
+
         return {
           ...group,
           containers: filteredContainers,
-          count: filteredContainers.length
+          count: filteredContainers.length,
+          runningCount: runningCount
         };
       }).sort((a, b) => a.index - b.index);
 
@@ -988,6 +1012,33 @@ class DockerService {
     } catch (error) {
       throw new Error(`Failed to get container groups: ${error.message}`);
     }
+  }
+
+  /**
+   * Check if containers are already assigned to other groups
+   * @param {Array} containers - Array of container names to check
+   * @param {string} excludeGroupId - Group ID to exclude from check (for updates)
+   * @returns {Promise<Array>} Array of conflicts: [{container, groupName, groupId}]
+   */
+  async _checkContainerConflicts(containers, excludeGroupId = null) {
+    const groups = await this._readGroups();
+    const conflicts = [];
+
+    for (const container of containers) {
+      for (const group of groups) {
+        if (group.id === excludeGroupId) continue; // Skip current group when updating
+
+        if (group.containers.includes(container)) {
+          conflicts.push({
+            container,
+            groupName: group.name,
+            groupId: group.id
+          });
+        }
+      }
+    }
+
+    return conflicts;
   }
 
   /**
@@ -1021,6 +1072,15 @@ class DockerService {
         throw new Error(`Containers not found: ${invalidContainers.join(', ')}`);
       }
 
+      // Check for container conflicts (containers already in other groups)
+      const conflicts = await this._checkContainerConflicts(containers);
+      if (conflicts.length > 0) {
+        const conflictMessages = conflicts.map(c =>
+          `'${c.container}' is already in group '${c.groupName}'`
+        );
+        throw new Error(`Container conflicts: ${conflictMessages.join(', ')}`);
+      }
+
       // Get next index
       const nextIndex = groups.length > 0 ? Math.max(...groups.map(g => g.index)) + 1 : 1;
 
@@ -1028,8 +1088,10 @@ class DockerService {
         id: this._generateTimestampId(),
         name,
         index: nextIndex,
-        containers,
-        icon: null
+        containers: [...new Set(containers)], // Remove duplicates
+        icon: null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
       };
 
       groups.push(newGroup);
@@ -1061,6 +1123,125 @@ class DockerService {
       return true;
     } catch (error) {
       throw new Error(`Failed to delete container group: ${error.message}`);
+    }
+  }
+
+  /**
+   * Start all containers in a group
+   * @param {string} groupId - Group ID
+   * @returns {Promise<Object>} Result with success/failure details
+   */
+  async startContainerGroup(groupId) {
+    try {
+      const groups = await this._readGroups();
+      const group = groups.find(g => g.id === groupId);
+
+      if (!group) {
+        throw new Error(`Group with ID '${groupId}' not found`);
+      }
+
+      const results = {
+        groupId,
+        groupName: group.name,
+        totalContainers: group.containers.length,
+        results: [],
+        successCount: 0,
+        failureCount: 0
+      };
+
+      // Start each container in the group
+      for (const containerName of group.containers) {
+        try {
+          await execPromise(`docker start ${containerName}`);
+          results.results.push({
+            container: containerName,
+            status: 'success',
+            message: 'Container started successfully'
+          });
+          results.successCount++;
+        } catch (error) {
+          results.results.push({
+            container: containerName,
+            status: 'error',
+            message: error.message
+          });
+          results.failureCount++;
+        }
+      }
+
+      return results;
+    } catch (error) {
+      throw new Error(`Failed to start container group: ${error.message}`);
+    }
+  }
+
+  /**
+   * Stop all containers in a group (parallel execution)
+   * @param {string} groupId - Group ID
+   * @returns {Promise<Object>} Result with success/failure details
+   */
+  async stopContainerGroup(groupId) {
+    try {
+      const groups = await this._readGroups();
+      const group = groups.find(g => g.id === groupId);
+
+      if (!group) {
+        throw new Error(`Group with ID '${groupId}' not found`);
+      }
+
+      const results = {
+        groupId,
+        groupName: group.name,
+        totalContainers: group.containers.length,
+        results: [],
+        successCount: 0,
+        failureCount: 0
+      };
+
+      // Stop all containers in parallel using Promise.allSettled
+      const stopPromises = group.containers.map(async (containerName) => {
+        try {
+          await execPromise(`docker stop ${containerName}`);
+          return {
+            container: containerName,
+            status: 'success',
+            message: 'Container stopped successfully'
+          };
+        } catch (error) {
+          return {
+            container: containerName,
+            status: 'error',
+            message: error.message
+          };
+        }
+      });
+
+      // Wait for all stop operations to complete (parallel)
+      const stopResults = await Promise.allSettled(stopPromises);
+
+      // Process results
+      stopResults.forEach((result) => {
+        if (result.status === 'fulfilled') {
+          results.results.push(result.value);
+          if (result.value.status === 'success') {
+            results.successCount++;
+          } else {
+            results.failureCount++;
+          }
+        } else {
+          // This should not happen since we catch errors in the promise
+          results.results.push({
+            container: 'unknown',
+            status: 'error',
+            message: result.reason?.message || 'Unknown error'
+          });
+          results.failureCount++;
+        }
+      });
+
+      return results;
+    } catch (error) {
+      throw new Error(`Failed to stop container group: ${error.message}`);
     }
   }
 
@@ -1141,65 +1322,139 @@ class DockerService {
   }
 
   /**
-   * Update group name
+   * Update group with partial data (name, icon, containers, etc.)
    * @param {string} groupId - Group ID
-   * @param {string} newName - New group name
+   * @param {Object} updateData - Data to update
+   * @param {string} [updateData.name] - New group name
+   * @param {string|null} [updateData.icon] - New icon (can be null to remove icon)
+   * @param {Array} [updateData.containers] - New containers array (replaces existing)
+   * @param {Array} [updateData.addContainers] - Containers to add to existing
+   * @param {Array} [updateData.removeContainers] - Containers to remove from existing
    * @returns {Promise<Object>} Updated group
    */
-  async updateGroupName(groupId, newName) {
+  async updateGroup(groupId, updateData) {
     try {
-      if (!newName || typeof newName !== 'string') {
-        throw new Error('Group name is required and must be a string');
-      }
-
       const groups = await this._readGroups();
       const group = groups.find(g => g.id === groupId);
 
       if (!group) {
-        throw new Error(`Group with ID '${groupId}' not found`);
+        throw new Error(`Group with ID ${groupId} not found`);
       }
 
-      // Check if new name already exists (excluding current group)
-      if (groups.some(g => g.name === newName && g.id !== groupId)) {
-        throw new Error(`Group with name '${newName}' already exists`);
+      // Update name if provided
+      if (updateData.name !== undefined) {
+        if (!updateData.name || typeof updateData.name !== 'string') {
+          throw new Error('Group name must be a non-empty string');
+        }
+
+        // Check if name already exists (excluding current group)
+        const existingGroup = groups.find(g => g.name === updateData.name && g.id !== groupId);
+        if (existingGroup) {
+          throw new Error(`Group with name '${updateData.name}' already exists`);
+        }
+
+        group.name = updateData.name;
       }
 
-      group.name = newName;
+      // Update icon if provided
+      if (updateData.icon !== undefined) {
+        // Allow null or string values for icon
+        if (updateData.icon !== null && typeof updateData.icon !== 'string') {
+          throw new Error('Icon must be a string or null');
+        }
+        group.icon = updateData.icon;
+      }
+
+      // Handle containers updates
+      if (updateData.containers !== undefined) {
+        // Replace entire containers array
+        if (!Array.isArray(updateData.containers)) {
+          throw new Error('Containers must be an array');
+        }
+
+        // Validate containers exist
+        const allContainers = await this._readContainers();
+        const containerNames = allContainers.map(c => c.name);
+        const invalidContainers = updateData.containers.filter(name => !containerNames.includes(name));
+
+        if (invalidContainers.length > 0) {
+          throw new Error(`Invalid containers: ${invalidContainers.join(', ')}`);
+        }
+
+        // Check for container conflicts (exclude current group)
+        const conflicts = await this._checkContainerConflicts(updateData.containers, groupId);
+        if (conflicts.length > 0) {
+          const conflictMessages = conflicts.map(c =>
+            `'${c.container}' is already in group '${c.groupName}'`
+          );
+          throw new Error(`Container conflicts: ${conflictMessages.join(', ')}`);
+        }
+
+        group.containers = [...new Set(updateData.containers)]; // Remove duplicates
+      } else {
+        // Handle add/remove operations
+        if (updateData.addContainers && Array.isArray(updateData.addContainers)) {
+          // Validate containers exist
+          const allContainers = await this._readContainers();
+          const containerNames = allContainers.map(c => c.name);
+          const invalidContainers = updateData.addContainers.filter(name => !containerNames.includes(name));
+
+          if (invalidContainers.length > 0) {
+            throw new Error(`Invalid containers to add: ${invalidContainers.join(', ')}`);
+          }
+
+          // Check for container conflicts for containers to add (exclude current group)
+          const conflicts = await this._checkContainerConflicts(updateData.addContainers, groupId);
+          if (conflicts.length > 0) {
+            const conflictMessages = conflicts.map(c =>
+              `'${c.container}' is already in group '${c.groupName}'`
+            );
+            throw new Error(`Container conflicts: ${conflictMessages.join(', ')}`);
+          }
+
+          // Add containers (avoid duplicates)
+          const currentContainers = new Set(group.containers);
+          updateData.addContainers.forEach(container => currentContainers.add(container));
+          group.containers = Array.from(currentContainers);
+        }
+
+        if (updateData.removeContainers && Array.isArray(updateData.removeContainers)) {
+          // Remove containers
+          group.containers = group.containers.filter(container =>
+            !updateData.removeContainers.includes(container)
+          );
+        }
+      }
+
+      group.updated_at = new Date().toISOString();
 
       await this._writeGroups(groups);
       return group;
     } catch (error) {
-      throw new Error(`Failed to update group name: ${error.message}`);
+      throw new Error(`Failed to update group: ${error.message}`);
     }
   }
 
   /**
-   * Update a container group icon
+   * Update group name
+   * @param {string} groupId - Group ID
+   * @param {string} newName - New group name
+   * @returns {Promise<Object>} Updated group
+   * @deprecated Use updateGroup() instead
+   */
+  async updateGroupName(groupId, newName) {
+    return this.updateGroup(groupId, { name: newName });
+  }
+
+  /**
+   * Update group icon
    * @param {string} groupId - Group ID
    * @param {string|null} icon - New icon (can be null to remove icon)
    * @returns {Promise<Object>} Updated group
+   * @deprecated Use updateGroup() instead
    */
   async updateGroupIcon(groupId, icon) {
-    try {
-      const groups = await this._readGroups();
-      const group = groups.find(g => g.id === groupId);
-
-      if (!group) {
-        throw new Error(`Group with ID '${groupId}' not found`);
-      }
-
-      // Validate icon (allow null or string)
-      if (icon !== null && typeof icon !== 'string') {
-        throw new Error('Icon must be a string or null');
-      }
-
-      group.icon = icon;
-
-      await this._writeGroups(groups);
-      return group;
-    } catch (error) {
-      throw new Error(`Failed to update group icon: ${error.message}`);
-    }
+    return this.updateGroup(groupId, { icon: icon });
   }
 
   /**
