@@ -208,6 +208,13 @@ const { checkRole } = require('../middleware/auth.middleware');
  *                   type: boolean
  *                   description: Enable NUT (Network UPS Tools) service
  *                   example: false
+ *             remote_mounting:
+ *               type: object
+ *               properties:
+ *                 enabled:
+ *                   type: boolean
+ *                   description: Enable remote mounting functionality (SMB/NFS shares)
+ *                   example: true
  *     SystemSettings:
  *       type: object
  *       properties:

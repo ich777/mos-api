@@ -19,6 +19,7 @@ const lxcRoutes = require('./routes/lxc.routes');
 const vmRoutes = require('./routes/vm.routes');
 const mosRoutes = require('./routes/mos.routes');
 const sharesRoutes = require('./routes/shares.routes');
+const remotesRoutes = require('./routes/remotes.routes');
 const iscsiRoutes = require('./routes/iscsi.routes');
 const iscsiInitiatorRoutes = require('./routes/iscsi-initiator.routes');
 const usersRoutes = require('./routes/users.routes');
@@ -146,6 +147,7 @@ async function startServer() {
   app.use('/api/v1/vm', authenticateToken, vmRoutes);
   app.use('/api/v1/mos', authenticateToken, mosRoutes);
   app.use('/api/v1/shares', authenticateToken, sharesRoutes);
+  app.use('/api/v1/remotes', authenticateToken, remotesRoutes);
   app.use('/api/v1/iscsi', authenticateToken, iscsiRoutes);
   app.use('/api/v1/iscsi/initiator', authenticateToken, iscsiInitiatorRoutes);
   app.use('/api/v1/users', authenticateToken, usersRoutes);

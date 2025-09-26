@@ -1373,7 +1373,7 @@ class DockerService {
         }
 
         // Validate containers exist
-        const allContainers = await this._readContainers();
+        const allContainers = await this.getDockerImages();
         const containerNames = allContainers.map(c => c.name);
         const invalidContainers = updateData.containers.filter(name => !containerNames.includes(name));
 
@@ -1395,7 +1395,7 @@ class DockerService {
         // Handle add/remove operations
         if (updateData.addContainers && Array.isArray(updateData.addContainers)) {
           // Validate containers exist
-          const allContainers = await this._readContainers();
+          const allContainers = await this.getDockerImages();
           const containerNames = allContainers.map(c => c.name);
           const invalidContainers = updateData.addContainers.filter(name => !containerNames.includes(name));
 

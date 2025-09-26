@@ -58,6 +58,10 @@ const options = {
         description: 'Network Shares Management (SMB/CIFS)'
       },
       {
+        name: 'Remotes',
+        description: 'Remote Shares Management (SMB/NFS Mount)'
+      },
+      {
         name: 'Cron',
         description: 'Cron Jobs Management'
       },

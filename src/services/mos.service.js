@@ -637,6 +637,8 @@ class MosService {
     try {
       const data = await fs.readFile('/boot/config/network.json', 'utf8');
       const settings = JSON.parse(data);
+
+
       return settings;
     } catch (error) {
       if (error.code === 'ENOENT') {
@@ -670,6 +672,20 @@ class MosService {
       let nmbdChanged = false, nmbdValue = null;
       let tailscaleChanged = false, tailscaleValue = null;
       let netbirdChanged = false, netbirdValue = null;
+
+      // Handle remote_mounting setting (now under services)
+      let remoteMountingChanged = false, remoteMountingValue = null;
+      if (updates.services && updates.services.remote_mounting && typeof updates.services.remote_mounting === 'object') {
+        if (!current.services) current.services = {};
+        if (!current.services.remote_mounting) current.services.remote_mounting = {};
+        if (typeof updates.services.remote_mounting.enabled === 'boolean') {
+          if (current.services.remote_mounting.enabled !== updates.services.remote_mounting.enabled) {
+            remoteMountingChanged = true;
+            remoteMountingValue = updates.services.remote_mounting.enabled;
+          }
+          current.services.remote_mounting.enabled = updates.services.remote_mounting.enabled;
+        }
+      }
 
       // Handle services
       if (updates.services) {
@@ -829,8 +845,21 @@ class MosService {
         primaryInterfaceChanged = true;
       }
 
-      // Write file
+      // Write updated settings
       await fs.writeFile('/boot/config/network.json', JSON.stringify(current, null, 2), 'utf8');
+
+      // Handle remote mounting changes
+      if (remoteMountingChanged && !remoteMountingValue) {
+        // If remote mounting is disabled, unmount all remotes
+        try {
+          const RemotesService = require('./remotes.service');
+          const remotesService = new RemotesService();
+          await remotesService.unmountAllRemotes();
+          console.log('All remotes unmounted due to remote_mounting being disabled');
+        } catch (error) {
+          console.warn('Failed to unmount remotes when disabling remote_mounting:', error.message);
+        }
+      }
 
       // Update LXC default.conf if interfaces or primary interface have changed
       if (interfacesChanged || primaryInterfaceChanged) {
@@ -1426,6 +1455,7 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
             }
           }
         }
+
       } catch (error) {
         // File not found or error - services are skipped
         console.warn('Network settings not accessible:', error.message);
