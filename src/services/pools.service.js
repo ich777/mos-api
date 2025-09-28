@@ -871,16 +871,25 @@ class PoolsService {
       // Validate encryption parameters
       if (options.config?.encrypted) {
         if (!options.passphrase) {
-          throw new Error('Passphrase is required for encrypted pools');
+          if (options.config?.create_keyfile) {
+            // Generate secure random passphrase if keyfile creation is requested
+            options.passphrase = this._generateSecurePassphrase();
+            console.log(`Generated secure passphrase for encrypted pool '${name}' (will be stored in keyfile)`);
+          } else {
+            throw new Error('Passphrase is required for encrypted pools');
+          }
+        }
+        if (options.passphrase.length < 8) {
+          throw new Error('Passphrase must be at least 8 characters long for LUKS encryption');
         }
       }
 
-      // Prüfen, ob es wirklich ein Multi-Device-Pool ist
+      // Check if it's really a multi-device pool
       if (!Array.isArray(devices)) {
         throw new Error('Devices must be an array of device paths');
       }
 
-      // Wenn nur ein Gerät übergeben wird, zur Single-Device-Methode umleiten
+      // If only one device is passed, redirect to single-device method
       if (devices.length === 1) {
         return this.createSingleDevicePool(name, devices[0], 'btrfs', options);
       }
@@ -1956,7 +1965,16 @@ class PoolsService {
       // Validate encryption parameters
       if (options.config?.encrypted) {
         if (!options.passphrase) {
-          throw new Error('Passphrase is required for encrypted pools');
+          if (options.config?.create_keyfile) {
+            // Generate secure random passphrase if keyfile creation is requested
+            options.passphrase = this._generateSecurePassphrase();
+            console.log(`Generated secure passphrase for encrypted pool '${name}' (will be stored in keyfile)`);
+          } else {
+            throw new Error('Passphrase is required for encrypted pools');
+          }
+        }
+        if (options.passphrase.length < 8) {
+          throw new Error('Passphrase must be at least 8 characters long for LUKS encryption');
         }
       }
 
@@ -3569,7 +3587,16 @@ class PoolsService {
       // Validate encryption parameters
       if (options.config?.encrypted) {
         if (!options.passphrase) {
-          throw new Error('Passphrase is required for encrypted pools');
+          if (options.config?.create_keyfile) {
+            // Generate secure random passphrase if keyfile creation is requested
+            options.passphrase = this._generateSecurePassphrase();
+            console.log(`Generated secure passphrase for encrypted pool '${name}' (will be stored in keyfile)`);
+          } else {
+            throw new Error('Passphrase is required for encrypted pools');
+          }
+        }
+        if (options.passphrase.length < 8) {
+          throw new Error('Passphrase must be at least 8 characters long for LUKS encryption');
         }
       }
 
@@ -4547,9 +4574,8 @@ if (snapraidDevice) {
 
     // Create keyfile if requested
     if (createKeyfile) {
-      // Store passphrase directly in keyfile (not hashed)
-      await execPromise(`echo -n "${passphrase}" > ${keyfilePath}`);
-      await execPromise(`chmod 600 ${keyfilePath}`);
+      // Store passphrase directly in keyfile (not hashed) - store unescaped
+      await fs.writeFile(keyfilePath, passphrase, { mode: 0o600 });
       console.log(`Created keyfile for pool '${poolName}' at ${keyfilePath}`);
     }
 
@@ -4573,8 +4599,9 @@ if (snapraidDevice) {
         // Use keyfile for LUKS format
         await execPromise(`cryptsetup luksFormat ${device} --type luks2 --key-file ${keyfilePath}`);
       } else {
-        // Use passphrase directly for LUKS format
-        await execPromise(`echo "${passphrase}" | cryptsetup luksFormat ${device} --type luks2 -`);
+        // Use passphrase directly for LUKS format - escape shell characters
+        const escapedPassphrase = passphrase.replace(/'/g, "'\"'\"'");
+        await execPromise(`echo '${escapedPassphrase}' | cryptsetup luksFormat ${device} --type luks2 -`);
       }
     }
 
@@ -4656,7 +4683,8 @@ if (snapraidDevice) {
         if (useKeyfile) {
           await execPromise(`cryptsetup luksOpen ${device} ${luksName} --key-file ${keyfilePath}`);
         } else {
-          await execPromise(`echo "${passphrase}" | cryptsetup luksOpen ${device} ${luksName} -`);
+          const escapedPassphrase = passphrase.replace(/'/g, "'\"'\"'");
+          await execPromise(`echo '${escapedPassphrase}' | cryptsetup luksOpen ${device} ${luksName} -`);
         }
 
         // Get UUID of the mapped device partition for proper mounting
@@ -4773,7 +4801,8 @@ if (snapraidDevice) {
         if (useKeyfile) {
           await execPromise(`cryptsetup luksOpen ${device} ${luksName} --key-file ${keyfilePath}`);
         } else {
-          await execPromise(`echo "${passphrase}" | cryptsetup luksOpen ${device} ${luksName} -`);
+          const escapedPassphrase = passphrase.replace(/'/g, "'\"'\"'");
+          await execPromise(`echo '${escapedPassphrase}' | cryptsetup luksOpen ${device} ${luksName} -`);
         }
 
         // Get UUID of the mapped device partition for proper mounting
@@ -5044,6 +5073,17 @@ if (snapraidDevice) {
         }
       }
     };
+  }
+
+  /**
+   * Generate a secure random passphrase for LUKS encryption
+   * @returns {string} - Secure random passphrase
+   * @private
+   */
+  _generateSecurePassphrase() {
+    const crypto = require('crypto');
+    // Generate 32 random bytes and convert to base64, then remove padding
+    return crypto.randomBytes(32).toString('base64').replace(/[=+/]/g, '').substring(0, 32);
   }
 
   /**
