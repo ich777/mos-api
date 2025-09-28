@@ -78,6 +78,7 @@ class SystemService {
     return 'binary'; // Default fallback
   }
 
+
   /**
    * Get basic system information
    * @returns {Promise<Object>} Basic system info
@@ -731,21 +732,40 @@ class SystemService {
   }
 
   /**
+   * Get system uptime in seconds (ultra-fast /proc/uptime read)
+   * @returns {Promise<number>} Uptime in seconds
+   */
+  async getUptime() {
+    try {
+      const fs = require('fs').promises;
+      const uptimeData = await fs.readFile('/proc/uptime', 'utf8');
+      const uptime = parseFloat(uptimeData.split(' ')[0]);
+      return Math.floor(uptime);
+    } catch (error) {
+      // Fallback to si.time() if /proc/uptime fails
+      const timeData = await si.time();
+      return timeData.uptime;
+    }
+  }
+
+  /**
    * Get system load and temperature information including per-core metrics, network utilization and memory info
    * @param {Object} user - User object with byte_format preference
    * @returns {Promise<Object>} Load, temperature, network and memory info
    */
   async getSystemLoad(user = null) {
     try {
-      // Combine CPU/Memory and Network data
-      const [cpuMemoryData, networkData] = await Promise.all([
+      // Combine CPU/Memory, Network data and Uptime
+      const [cpuMemoryData, networkData, uptime] = await Promise.all([
         this.getCpuMemoryLoad(user),
-        this.getNetworkLoad(user)
+        this.getNetworkLoad(user),
+        this.getUptime()
       ]);
 
       return {
         ...cpuMemoryData,
-        ...networkData
+        ...networkData,
+        uptime: uptime
       };
     } catch (error) {
       throw new Error(`Error getting system load: ${error.message}`);

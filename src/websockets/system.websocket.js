@@ -150,9 +150,18 @@ class SystemLoadWebSocketManager {
         const socketObj = firstSocketId ? this.io.sockets.get(firstSocketId) : null;
         const user = socketObj?.user || null;
 
-        // Get Memory data and send update
-        const memoryData = await this.getMemoryDataWithCache(false, user);
-        this.io.to('system-load').emit('load-update', memoryData);
+        // Get Memory and Uptime data and send update
+        const [memoryData, uptime] = await Promise.all([
+          this.getMemoryDataWithCache(false, user),
+          this.systemService.getUptime()
+        ]);
+
+        const memoryWithUptime = {
+          ...memoryData,
+          uptime: uptime
+        };
+
+        this.io.to('system-load').emit('load-update', memoryWithUptime);
       } catch (error) {
         console.error('Error in Memory monitoring:', error);
       }
@@ -258,17 +267,19 @@ class SystemLoadWebSocketManager {
    */
   async sendSystemLoadUpdate(socket, forceRefresh = false, sendFullData = false) {
     try {
-      // Get all data types for initial connection
-      const [cpuData, memoryData, networkData] = await Promise.all([
+      // Get all data types for initial connection including uptime
+      const [cpuData, memoryData, networkData, uptime] = await Promise.all([
         this.getCpuDataWithCache(forceRefresh, socket.user),
         this.getMemoryDataWithCache(forceRefresh, socket.user),
-        this.getNetworkDataWithCache(forceRefresh, socket.user)
+        this.getNetworkDataWithCache(forceRefresh, socket.user),
+        this.systemService.getUptime()
       ]);
 
       const loadData = {
         ...cpuData,
         ...memoryData,
-        ...networkData
+        ...networkData,
+        uptime: uptime
       };
 
       // Mark client as having received static data
