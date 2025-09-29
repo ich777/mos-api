@@ -618,8 +618,8 @@ router.post('/single', checkRole(['admin']), async (req, res) => {
     // make sure device is explicitly passed as string
     const devicePath = String(device || '');
 
-    // Validate encryption parameters
-    if (config.encrypted && !passphrase) {
+    // Validate encryption parameters - allow empty passphrase if keyfile creation is enabled
+    if (config.encrypted && (!passphrase || passphrase.trim() === '') && !config.create_keyfile) {
       return res.status(400).json({ error: 'Passphrase is required for encrypted pools' });
     }
 
@@ -631,8 +631,9 @@ router.post('/single', checkRole(['admin']), async (req, res) => {
     if (config && Object.keys(config).length > 0) {
       poolOptions.config = config;
     }
-    if (passphrase) {
-      poolOptions.passphrase = passphrase;
+    // Always pass passphrase (even if empty) when encryption is enabled
+    if (config.encrypted) {
+      poolOptions.passphrase = passphrase || '';
     }
 
     // Pass format flag and combined options
@@ -837,8 +838,8 @@ router.post('/mergerfs', checkRole(['admin']), async (req, res) => {
       return res.status(400).json({ error: 'At least one device is required for a MergerFS pool' });
     }
 
-    // Validate encryption parameters
-    if (options.config?.encrypted && !passphrase) {
+    // Validate encryption parameters - allow empty passphrase if keyfile creation is enabled
+    if (options.config?.encrypted && (!passphrase || passphrase.trim() === '') && !options.config?.create_keyfile) {
       return res.status(400).json({ error: 'Passphrase is required for encrypted pools' });
     }
 
@@ -848,8 +849,9 @@ router.post('/mergerfs', checkRole(['admin']), async (req, res) => {
       policies: policies,
       format: format
     };
-    if (passphrase) {
-      poolOptions.passphrase = passphrase;
+    // Always pass passphrase (even if empty) when encryption is enabled
+    if (options.config?.encrypted) {
+      poolOptions.passphrase = passphrase || '';
     }
 
     // Create the pool
@@ -998,8 +1000,8 @@ router.post('/multi', checkRole(['admin']), async (req, res) => {
     // make sure all devices are passed as strings
     const devicePaths = devices.map(dev => String(dev || ''));
 
-    // Validate encryption parameters
-    if (config.encrypted && !passphrase) {
+    // Validate encryption parameters - allow empty passphrase if keyfile creation is enabled
+    if (config.encrypted && (!passphrase || passphrase.trim() === '') && !config.create_keyfile) {
       return res.status(400).json({ error: 'Passphrase is required for encrypted pools' });
     }
 
@@ -1014,8 +1016,9 @@ router.post('/multi', checkRole(['admin']), async (req, res) => {
     if (config && Object.keys(config).length > 0) {
       poolOptions.config = config;
     }
-    if (passphrase) {
-      poolOptions.passphrase = passphrase;
+    // Always pass passphrase (even if empty) when encryption is enabled
+    if (config.encrypted) {
+      poolOptions.passphrase = passphrase || '';
     }
 
     // RAID level can be 'raid0' (Striping), 'raid1' (Mirroring) or 'raid10' (Combination)

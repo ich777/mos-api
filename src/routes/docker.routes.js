@@ -1218,6 +1218,80 @@ router.delete('/mos/groups/:groupId', async (req, res) => {
 
 /**
  * @swagger
+ * /docker/mos/groups/order:
+ *   put:
+ *     summary: Update group order/index
+ *     tags: [Docker]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: array
+ *             items:
+ *               type: object
+ *               properties:
+ *                 id:
+ *                   type: string
+ *                   description: Group ID
+ *                   example: "1695384000123456789"
+ *                 index:
+ *                   type: integer
+ *                   description: New index position
+ *                   example: 2
+ *             description: Array of group objects with id and new index
+ *             example:
+ *               - id: "1695384000123456789"
+ *                 index: 1
+ *               - id: "1695384000987654321"
+ *                 index: 2
+ *     responses:
+ *       200:
+ *         description: Group order updated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 $ref: '#/components/schemas/ContainerGroup'
+ *       400:
+ *         description: Bad request
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       401:
+ *         description: Unauthorized
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+router.put('/mos/groups/order', async (req, res) => {
+  try {
+    const groupOrder = req.body;
+
+    if (!Array.isArray(groupOrder)) {
+      return res.status(400).json({ error: 'Request body must be an array of group objects' });
+    }
+
+    const updatedGroups = await dockerService.updateGroupOrder(groupOrder);
+    res.json(updatedGroups);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
  * /docker/mos/groups/{groupId}:
  *   put:
  *     summary: Update container group (name, icon, containers)
@@ -1543,25 +1617,24 @@ router.post('/mos/groups/:groupId/stop', async (req, res) => {
  *       content:
  *         application/json:
  *           schema:
- *             type: object
- *             required:
- *               - groups
- *             properties:
- *               groups:
- *                 type: array
- *                 items:
- *                   type: object
- *                   properties:
- *                     id:
- *                       type: string
- *                       description: Group ID
- *                       example: "1695384000123456789"
- *                     index:
- *                       type: integer
- *                       description: New index position
- *                       example: 2
- *                 description: Array of group objects with id and new index
- *                 example: [{"id": "1695384000123456789", "index": 1}, {"id": "1695384000987654321", "index": 2}]
+ *             type: array
+ *             items:
+ *               type: object
+ *               properties:
+ *                 id:
+ *                   type: string
+ *                   description: Group ID
+ *                   example: "1695384000123456789"
+ *                 index:
+ *                   type: integer
+ *                   description: New index position
+ *                   example: 2
+ *             description: Array of group objects with id and new index
+ *             example:
+ *               - id: "1695384000123456789"
+ *                 index: 1
+ *               - id: "1695384000987654321"
+ *                 index: 2
  *     responses:
  *       200:
  *         description: Group order updated successfully
@@ -1592,13 +1665,13 @@ router.post('/mos/groups/:groupId/stop', async (req, res) => {
  */
 router.put('/mos/groups/order', async (req, res) => {
   try {
-    const { groups } = req.body;
+    const groupOrder = req.body;
 
-    if (!groups || !Array.isArray(groups)) {
-      return res.status(400).json({ error: 'Groups array is required' });
+    if (!Array.isArray(groupOrder)) {
+      return res.status(400).json({ error: 'Request body must be an array of group objects' });
     }
 
-    const updatedGroups = await dockerService.updateGroupOrder(groups);
+    const updatedGroups = await dockerService.updateGroupOrder(groupOrder);
     res.json(updatedGroups);
   } catch (error) {
     res.status(400).json({ error: error.message });

@@ -16,6 +16,9 @@ class PoolsService {
     this.snapraidBasePath = '/var/snapraid';
     this.eventEmitter = eventEmitter; // Optional event emitter for WebSocket integration
 
+    // Initialize MOS service for service dependency checks
+    this.mosService = null;
+
     // Default ownership settings for pool mount points
     // Can be overridden per pool or globally configured
     this.defaultOwnership = {
@@ -870,7 +873,7 @@ class PoolsService {
 
       // Validate encryption parameters
       if (options.config?.encrypted) {
-        if (!options.passphrase) {
+        if (!options.passphrase || options.passphrase.trim() === '') {
           if (options.config?.create_keyfile) {
             // Generate secure random passphrase if keyfile creation is requested
             options.passphrase = this._generateSecurePassphrase();
@@ -1964,7 +1967,7 @@ class PoolsService {
 
       // Validate encryption parameters
       if (options.config?.encrypted) {
-        if (!options.passphrase) {
+        if (!options.passphrase || options.passphrase.trim() === '') {
           if (options.config?.create_keyfile) {
             // Generate secure random passphrase if keyfile creation is requested
             options.passphrase = this._generateSecurePassphrase();
@@ -2314,6 +2317,183 @@ class PoolsService {
   }
 
   /**
+   * Check if the pool mount point is busy using findmnt
+   * @param {string} poolName - Name of the pool to check
+   * @returns {Promise<Object>} Busy check results
+   */
+  async _checkPoolBusy(poolName) {
+    try {
+      const poolMountPath = `/mnt/${poolName}`;
+
+      // Use findmnt to check if anything is mounted under the pool path
+      const { stdout } = await execPromise(`findmnt -R ${poolMountPath} -o TARGET,SOURCE -n 2>/dev/null || true`);
+
+      const mountedPaths = [];
+      if (stdout.trim()) {
+        const lines = stdout.trim().split('\n');
+        for (const line of lines) {
+          const parts = line.trim().split(/\s+/);
+          if (parts.length >= 1) {
+            const target = parts[0];
+            const source = parts[1] || 'unknown';
+
+            // Skip the pool mount itself, only check subdirectories
+            if (target !== poolMountPath) {
+              mountedPaths.push({
+                target,
+                source,
+                description: `Mounted filesystem at ${target}`
+              });
+            }
+          }
+        }
+      }
+
+      return {
+        isBusy: mountedPaths.length > 0,
+        mountedPaths,
+        poolMountPath
+      };
+
+    } catch (error) {
+      console.warn('Error checking pool busy status:', error.message);
+      return {
+        isBusy: false,
+        mountedPaths: [],
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * Check if any services are using the pool and would be affected by unmounting
+   * @param {string} poolName - Name of the pool to check
+   * @returns {Promise<Object>} Service dependency check results
+   */
+  async _checkServiceDependencies(poolName) {
+    try {
+      // First check if pool is busy using findmnt (more reliable)
+      const busyCheck = await this._checkPoolBusy(poolName);
+
+      if (busyCheck.isBusy) {
+        return {
+          hasDependencies: true,
+          dependencies: busyCheck.mountedPaths.map(mount => ({
+            service: 'System',
+            type: 'mount',
+            path: mount.target,
+            description: `Active mount point (${mount.source})`
+          })),
+          poolMountPath: busyCheck.poolMountPath,
+          busyReason: 'active_mounts'
+        };
+      }
+
+      // Initialize MOS service if not already done
+      if (!this.mosService) {
+        this.mosService = require('./mos.service');
+      }
+
+      const poolMountPath = `/mnt/${poolName}`;
+      const dependencies = [];
+
+      // Get all service statuses
+      const serviceStatus = await this.mosService.getAllServiceStatus();
+
+      // Check Docker dependencies
+      if (serviceStatus.docker.enabled) {
+        try {
+          const dockerSettings = await this.mosService.getDockerSettings();
+
+          // Check Docker system directory
+          if (dockerSettings.directory && dockerSettings.directory.startsWith(poolMountPath)) {
+            dependencies.push({
+              service: 'Docker',
+              type: 'system',
+              path: dockerSettings.directory,
+              description: 'Docker system directory'
+            });
+          }
+
+          // Check Docker appdata directory
+          if (dockerSettings.appdata && dockerSettings.appdata.startsWith(poolMountPath)) {
+            dependencies.push({
+              service: 'Docker',
+              type: 'appdata',
+              path: dockerSettings.appdata,
+              description: 'Docker application data directory'
+            });
+          }
+        } catch (error) {
+          console.warn('Could not check Docker settings:', error.message);
+        }
+      }
+
+      // Check LXC dependencies
+      if (serviceStatus.lxc.enabled) {
+        try {
+          const lxcSettings = await this.mosService.getLxcSettings();
+
+          if (lxcSettings.directory && lxcSettings.directory.startsWith(poolMountPath)) {
+            dependencies.push({
+              service: 'LXC',
+              type: 'system',
+              path: lxcSettings.directory,
+              description: 'LXC container directory'
+            });
+          }
+        } catch (error) {
+          console.warn('Could not check LXC settings:', error.message);
+        }
+      }
+
+      // Check VM dependencies
+      if (serviceStatus.vm.enabled) {
+        try {
+          const vmSettings = await this.mosService.getVmSettings();
+
+          // Check VM libvirt directory
+          if (vmSettings.directory && vmSettings.directory.startsWith(poolMountPath)) {
+            dependencies.push({
+              service: 'VM',
+              type: 'libvirt',
+              path: vmSettings.directory,
+              description: 'VM libvirt directory'
+            });
+          }
+
+          // Check VM vdisk directory
+          if (vmSettings.vdisk_directory && vmSettings.vdisk_directory.startsWith(poolMountPath)) {
+            dependencies.push({
+              service: 'VM',
+              type: 'vdisk',
+              path: vmSettings.vdisk_directory,
+              description: 'VM virtual disk directory'
+            });
+          }
+        } catch (error) {
+          console.warn('Could not check VM settings:', error.message);
+        }
+      }
+
+
+      return {
+        hasDependencies: dependencies.length > 0,
+        dependencies,
+        poolMountPath
+      };
+
+    } catch (error) {
+      console.warn('Error checking service dependencies:', error.message);
+      return {
+        hasDependencies: false,
+        dependencies: [],
+        error: error.message
+      };
+    }
+  }
+
+  /**
    * Unmount a pool by ID
    */
   async unmountPoolById(poolId, options = {}) {
@@ -2323,6 +2503,22 @@ class PoolsService {
 
       if (!pool) {
         throw new Error(`Pool with ID "${poolId}" not found`);
+      }
+
+      // Check for service dependencies unless force is used
+      if (!options.force) {
+        const dependencyCheck = await this._checkServiceDependencies(pool.name);
+
+        if (dependencyCheck.hasDependencies) {
+          const serviceList = dependencyCheck.dependencies.map(dep =>
+            `- ${dep.service} (${dep.description}: ${dep.path})`
+          ).join('\n');
+
+          throw new Error(
+            `Cannot unmount pool "${pool.name}" because it is being used by active services:\n\n${serviceList}\n\n` +
+            `Please stop the affected services first, or use force=true to override this check.`
+          );
+        }
       }
 
       // For single device pools
@@ -2362,6 +2558,22 @@ class PoolsService {
       }
 
       const pool = pools[poolIndex];
+
+      // Check for service dependencies unless force is used
+      if (!options.force) {
+        const dependencyCheck = await this._checkServiceDependencies(pool.name);
+
+        if (dependencyCheck.hasDependencies) {
+          const serviceList = dependencyCheck.dependencies.map(dep =>
+            `- ${dep.service} (${dep.description}: ${dep.path})`
+          ).join('\n');
+
+          throw new Error(
+            `Cannot delete pool "${pool.name}" because it is being used by active services:\n\n${serviceList}\n\n` +
+            `Please stop the affected services first, or use force=true to override this check.`
+          );
+        }
+      }
 
       // Perform pool-type-specific unmounting
       await this._performCompletePoolUnmount(pool, options);
@@ -3586,7 +3798,7 @@ class PoolsService {
 
       // Validate encryption parameters
       if (options.config?.encrypted) {
-        if (!options.passphrase) {
+        if (!options.passphrase || options.passphrase.trim() === '') {
           if (options.config?.create_keyfile) {
             // Generate secure random passphrase if keyfile creation is requested
             options.passphrase = this._generateSecurePassphrase();

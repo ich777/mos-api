@@ -1089,9 +1089,7 @@ class DockerService {
         name,
         index: nextIndex,
         containers: [...new Set(containers)], // Remove duplicates
-        icon: null,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
+        icon: null
       };
 
       groups.push(newGroup);
