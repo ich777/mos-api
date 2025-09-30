@@ -472,10 +472,10 @@ class RemotesService {
 
         // Guest access if no username/password provided (null or empty)
         if (!username || !password) {
-          options = `guest,vers=${version}`;
+          options = `guest,vers=${version},iocharset=utf8,noperm`;
         } else {
           // Authenticated access
-          options = `username=${username},password=${password},vers=${version}`;
+          options = `username=${username},password=${password},vers=${version},iocharset=utf8,noperm`;
           if (domain) {
             options += `,domain=${domain}`;
           }
