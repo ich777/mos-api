@@ -952,17 +952,18 @@ class DockerService {
   }
 
   /**
-   * Generate timestamp-based ID
-   * @returns {string} Timestamp ID with nanoseconds
+   * Generate timestamp-based ID for container groups
+   * @private
+   * @returns {string} Timestamp ID in milliseconds
    */
   _generateTimestampId() {
-    const now = process.hrtime.bigint();
-    return now.toString();
+    return Date.now().toString();
   }
 
   /**
    * Get running container names from Docker
    * @returns {Promise<Set>} Set of running container names
+{{ ... }}
    */
   async _getRunningContainers() {
     try {

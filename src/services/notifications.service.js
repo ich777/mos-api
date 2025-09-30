@@ -20,14 +20,15 @@ class NotificationsService {
         throw new Error('Notifications file does not contain a valid array');
       }
 
-      // Ensure all notifications have a 'read' field (default: false)
-      const notificationsWithRead = notifications.map(notification => ({
+      // Ensure all notifications have 'id' and 'read' fields
+      const notificationsWithDefaults = notifications.map(notification => ({
         ...notification,
+        id: notification.id || Date.now().toString(),
         read: notification.read !== undefined ? notification.read : false
       }));
 
       // Sort by timestamp (newest first)
-      return notificationsWithRead.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+      return notificationsWithDefaults.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
     } catch (error) {
       if (error.code === 'ENOENT') {
         // File doesn't exist, return empty array
@@ -38,24 +39,24 @@ class NotificationsService {
   }
 
   /**
-   * Deletes a notification by timestamp
-   * @param {string} timestamp - The timestamp of the notification to delete
+   * Deletes a notification by ID
+   * @param {string} id - The ID of the notification to delete
    * @returns {Promise<Object>} Result object with success status and message
    */
-  async deleteNotification(timestamp) {
+  async deleteNotification(id) {
     try {
       const notifications = await this.getNotifications();
 
-      // Find the notification with the matching timestamp
+      // Find the notification with the matching ID
       const initialLength = notifications.length;
       const filteredNotifications = notifications.filter(notification =>
-        notification.timestamp !== timestamp
+        notification.id !== id
       );
 
       if (filteredNotifications.length === initialLength) {
         return {
           success: false,
-          message: `Notification with timestamp ${timestamp} not found`
+          message: `Notification with ID ${id} not found`
         };
       }
 
@@ -64,7 +65,7 @@ class NotificationsService {
 
       return {
         success: true,
-        message: `Notification with timestamp ${timestamp} deleted successfully`,
+        message: `Notification with ID ${id} deleted successfully`,
         remainingCount: filteredNotifications.length
       };
     } catch (error) {
@@ -91,18 +92,18 @@ class NotificationsService {
   }
 
   /**
-   * Marks a single notification as read by timestamp
-   * @param {string} timestamp - The timestamp of the notification to mark as read
+   * Marks a single notification as read by ID
+   * @param {string} id - The ID of the notification to mark as read
    * @returns {Promise<Object>} Result object with success status and message
    */
-  async markNotificationAsRead(timestamp) {
+  async markNotificationAsRead(id) {
     try {
       const notifications = await this.getNotifications();
 
       // Find and update the notification
       let notificationFound = false;
       const updatedNotifications = notifications.map(notification => {
-        if (notification.timestamp === timestamp) {
+        if (notification.id === id) {
           notificationFound = true;
           return { ...notification, read: true };
         }
@@ -112,7 +113,7 @@ class NotificationsService {
       if (!notificationFound) {
         return {
           success: false,
-          message: `Notification with timestamp ${timestamp} not found`
+          message: `Notification with ID ${id} not found`
         };
       }
 
@@ -121,7 +122,7 @@ class NotificationsService {
 
       return {
         success: true,
-        message: `Notification with timestamp ${timestamp} marked as read`,
+        message: `Notification with ID ${id} marked as read`,
         totalCount: updatedNotifications.length
       };
     } catch (error) {
@@ -130,26 +131,26 @@ class NotificationsService {
   }
 
   /**
-   * Marks multiple notifications as read by timestamps
-   * @param {Array<string>} timestamps - Array of timestamps to mark as read
+   * Marks multiple notifications as read by IDs
+   * @param {Array<string>} ids - Array of notification IDs to mark as read
    * @returns {Promise<Object>} Result object with success status and details
    */
-  async markMultipleNotificationsAsRead(timestamps) {
+  async markMultipleNotificationsAsRead(ids) {
     try {
-      if (!Array.isArray(timestamps) || timestamps.length === 0) {
+      if (!Array.isArray(ids) || ids.length === 0) {
         return {
           success: false,
-          message: 'Invalid timestamps array provided'
+          message: 'Invalid IDs array provided'
         };
       }
 
       const notifications = await this.getNotifications();
-      const timestampSet = new Set(timestamps);
+      const idSet = new Set(ids);
       let markedCount = 0;
 
-      // Update notifications that match the provided timestamps
+      // Update notifications that match the provided IDs
       const updatedNotifications = notifications.map(notification => {
-        if (timestampSet.has(notification.timestamp) && !notification.read) {
+        if (idSet.has(notification.id) && !notification.read) {
           markedCount++;
           return { ...notification, read: true };
         }
@@ -159,7 +160,7 @@ class NotificationsService {
       if (markedCount === 0) {
         return {
           success: false,
-          message: 'No matching unread notifications found for the provided timestamps'
+          message: 'No matching unread notifications found for the provided IDs'
         };
       }
 
@@ -291,6 +292,7 @@ class NotificationsService {
     return (
       notification &&
       typeof notification === 'object' &&
+      typeof notification.id === 'string' &&
       typeof notification.title === 'string' &&
       typeof notification.message === 'string' &&
       typeof notification.timestamp === 'string' &&

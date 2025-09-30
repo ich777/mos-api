@@ -14,6 +14,10 @@ const { checkRole } = require('../middleware/auth.middleware');
  *     Notification:
  *       type: object
  *       properties:
+ *         id:
+ *           type: string
+ *           description: Unique notification ID (millisecond timestamp)
+ *           example: "1727725946123"
  *         title:
  *           type: string
  *           description: Notification title
@@ -125,12 +129,14 @@ router.use(checkRole(['admin']));
  *               items:
  *                 $ref: '#/components/schemas/Notification'
  *             example:
- *               - title: "chipsServer - test"
+ *               - id: "1727725946123"
+ *                 title: "chipsServer - test"
  *                 message: "hallo2"
  *                 priority: "normal"
  *                 timestamp: "2025-09-07T19:16:35.939580764+02:00"
  *                 read: false
- *               - title: "chipsServer - test"
+ *               - id: "1727725946122"
+ *                 title: "chipsServer - test"
  *                 message: "hallo"
  *                 priority: "normal"
  *                 timestamp: "2025-09-07T19:16:34.620280755+02:00"
@@ -166,22 +172,21 @@ router.get('/', async (req, res) => {
 
 /**
  * @swagger
- * /notifications/{timestamp}:
+ * /notifications/{id}:
  *   delete:
- *     summary: Delete notification by timestamp
- *     description: Delete a specific notification using its timestamp - admin only
+ *     summary: Delete notification by ID
+ *     description: Delete a specific notification using its ID - admin only
  *     tags: [Notifications]
  *     security:
  *       - bearerAuth: []
  *     parameters:
  *       - in: path
- *         name: timestamp
+ *         name: id
  *         required: true
  *         schema:
  *           type: string
- *           format: date-time
- *         description: The timestamp of the notification to delete
- *         example: "2025-09-07T19:16:34.620280755+02:00"
+ *         description: The ID of the notification to delete
+ *         example: "1727725946123"
  *     responses:
  *       200:
  *         description: Notification deleted successfully
@@ -214,15 +219,15 @@ router.get('/', async (req, res) => {
  *             schema:
  *               $ref: '#/components/schemas/Error'
  */
-router.delete('/:timestamp', async (req, res) => {
+router.delete('/:id', async (req, res) => {
   try {
-    const { timestamp } = req.params;
+    const { id } = req.params;
 
-    if (!timestamp) {
-      return res.status(400).json({ error: 'Timestamp parameter is required' });
+    if (!id) {
+      return res.status(400).json({ error: 'ID parameter is required' });
     }
 
-    const result = await notificationsService.deleteNotification(timestamp);
+    const result = await notificationsService.deleteNotification(id);
 
     if (result.success) {
       res.json(result);
@@ -324,22 +329,21 @@ router.get('/stats', async (req, res) => {
 
 /**
  * @swagger
- * /notifications/{timestamp}/read:
+ * /notifications/{id}/read:
  *   put:
  *     summary: Mark notification as read
- *     description: Mark a specific notification as read using its timestamp - admin only
+ *     description: Mark a specific notification as read using its ID - admin only
  *     tags: [Notifications]
  *     security:
  *       - bearerAuth: []
  *     parameters:
  *       - in: path
- *         name: timestamp
+ *         name: id
  *         required: true
  *         schema:
  *           type: string
- *           format: date-time
- *         description: The timestamp of the notification to mark as read
- *         example: "2025-09-07T19:16:34.620280755+02:00"
+ *         description: The ID of the notification to mark as read
+ *         example: "1727725946123"
  *     responses:
  *       200:
  *         description: Notification marked as read successfully
@@ -372,15 +376,15 @@ router.get('/stats', async (req, res) => {
  *             schema:
  *               $ref: '#/components/schemas/Error'
  */
-router.put('/:timestamp/read', async (req, res) => {
+router.put('/:id/read', async (req, res) => {
   try {
-    const { timestamp } = req.params;
+    const { id } = req.params;
 
-    if (!timestamp) {
-      return res.status(400).json({ error: 'Timestamp parameter is required' });
+    if (!id) {
+      return res.status(400).json({ error: 'ID parameter is required' });
     }
 
-    const result = await notificationsService.markNotificationAsRead(timestamp);
+    const result = await notificationsService.markNotificationAsRead(id);
 
     if (result.success) {
       res.json(result);
@@ -397,7 +401,7 @@ router.put('/:timestamp/read', async (req, res) => {
  * /notifications/read/multiple:
  *   put:
  *     summary: Mark multiple notifications as read
- *     description: Mark multiple notifications as read using their timestamps - admin only
+ *     description: Mark multiple notifications as read using their IDs - admin only
  *     tags: [Notifications]
  *     security:
  *       - bearerAuth: []
@@ -408,15 +412,14 @@ router.put('/:timestamp/read', async (req, res) => {
  *           schema:
  *             type: object
  *             properties:
- *               timestamps:
+ *               ids:
  *                 type: array
  *                 items:
  *                   type: string
- *                   format: date-time
- *                 description: Array of timestamps to mark as read
- *                 example: ["2025-09-07T19:16:34.620280755+02:00", "2025-09-07T19:16:35.939580764+02:00"]
+ *                 description: Array of notification IDs to mark as read
+ *                 example: ["1727725946123", "1727725946122"]
  *             required:
- *               - timestamps
+ *               - ids
  *     responses:
  *       200:
  *         description: Notifications marked as read successfully
@@ -457,13 +460,13 @@ router.put('/:timestamp/read', async (req, res) => {
  */
 router.put('/read/multiple', async (req, res) => {
   try {
-    const { timestamps } = req.body;
+    const { ids } = req.body;
 
-    if (!timestamps || !Array.isArray(timestamps)) {
-      return res.status(400).json({ error: 'timestamps array is required in request body' });
+    if (!ids || !Array.isArray(ids)) {
+      return res.status(400).json({ error: 'ids array is required in request body' });
     }
 
-    const result = await notificationsService.markMultipleNotificationsAsRead(timestamps);
+    const result = await notificationsService.markMultipleNotificationsAsRead(ids);
 
     if (result.success) {
       res.json(result);
