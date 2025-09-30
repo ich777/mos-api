@@ -1033,5 +1033,203 @@ router.post('/power/shutdown', checkRole(['admin']), async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /system/proxy:
+ *   get:
+ *     summary: Get proxy settings
+ *     description: Retrieve current proxy configuration from /boot/config/system/proxy.json (admin only)
+ *     tags: [System]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Proxy settings retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 http_proxy:
+ *                   type: string
+ *                   description: HTTP proxy URL
+ *                   example: "http://proxy-server:8080"
+ *                 https_proxy:
+ *                   type: string
+ *                   description: HTTPS proxy URL
+ *                   example: "http://proxy-server:8080"
+ *                 ftp_proxy:
+ *                   type: string
+ *                   description: FTP proxy URL
+ *                   example: "http://proxy-server:8080"
+ *                 no_proxy:
+ *                   type: string
+ *                   description: Comma-separated list of hosts to bypass proxy
+ *                   example: "localhost,127.0.0.1,localaddress,.localdomain.com"
+ *             examples:
+ *               with_proxy:
+ *                 summary: System with proxy configured
+ *                 value:
+ *                   http_proxy: "http://proxy-server:8080"
+ *                   https_proxy: "http://proxy-server:8080"
+ *                   ftp_proxy: "http://proxy-server:8080"
+ *                   no_proxy: "localhost,127.0.0.1,localaddress,.localdomain.com"
+ *               no_proxy:
+ *                 summary: System without proxy
+ *                 value: {}
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *             example:
+ *               error: "Error reading proxy settings: Permission denied"
+ */
+
+router.get('/proxy', checkRole(['admin']), async (req, res) => {
+  try {
+    const proxySettings = await systemService.getProxySettings();
+    res.json(proxySettings);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /system/proxy:
+ *   put:
+ *     summary: Update proxy settings
+ *     description: Update proxy configuration in /boot/config/system/proxy.json. Supports partial updates - you can update individual fields or all at once (admin only)
+ *     tags: [System]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               http_proxy:
+ *                 type: string
+ *                 description: HTTP proxy URL
+ *                 example: "http://proxy-server:8080"
+ *               https_proxy:
+ *                 type: string
+ *                 description: HTTPS proxy URL
+ *                 example: "http://proxy-server:8080"
+ *               ftp_proxy:
+ *                 type: string
+ *                 description: FTP proxy URL
+ *                 example: "http://proxy-server:8080"
+ *               no_proxy:
+ *                 type: string
+ *                 description: Comma-separated list of hosts to bypass proxy
+ *                 example: "localhost,127.0.0.1,localaddress,.localdomain.com"
+ *           examples:
+ *             full_update:
+ *               summary: Update all proxy settings
+ *               value:
+ *                 http_proxy: "http://proxy-server:8080"
+ *                 https_proxy: "http://proxy-server:8080"
+ *                 ftp_proxy: "http://proxy-server:8080"
+ *                 no_proxy: "localhost,127.0.0.1,localaddress,.localdomain.com"
+ *             partial_update:
+ *               summary: Update only HTTP proxy
+ *               value:
+ *                 http_proxy: "http://new-proxy:3128"
+ *             disable_proxy:
+ *               summary: Clear proxy settings
+ *               value:
+ *                 http_proxy: ""
+ *                 https_proxy: ""
+ *                 ftp_proxy: ""
+ *                 no_proxy: ""
+ *     responses:
+ *       200:
+ *         description: Proxy settings updated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 http_proxy:
+ *                   type: string
+ *                   description: HTTP proxy URL
+ *                   example: "http://proxy-server:8080"
+ *                 https_proxy:
+ *                   type: string
+ *                   description: HTTPS proxy URL
+ *                   example: "http://proxy-server:8080"
+ *                 ftp_proxy:
+ *                   type: string
+ *                   description: FTP proxy URL
+ *                   example: "http://proxy-server:8080"
+ *                 no_proxy:
+ *                   type: string
+ *                   description: Comma-separated list of hosts to bypass proxy
+ *                   example: "localhost,127.0.0.1,localaddress,.localdomain.com"
+ *             example:
+ *               http_proxy: "http://proxy-server:8080"
+ *               https_proxy: "http://proxy-server:8080"
+ *               ftp_proxy: "http://proxy-server:8080"
+ *               no_proxy: "localhost,127.0.0.1,localaddress,.localdomain.com"
+ *       400:
+ *         description: Invalid proxy field provided
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *             example:
+ *               error: "Invalid proxy field: invalid_field. Allowed fields: http_proxy, https_proxy, ftp_proxy, no_proxy"
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *             example:
+ *               error: "Error updating proxy settings: Permission denied"
+ */
+
+router.put('/proxy', checkRole(['admin']), async (req, res) => {
+  try {
+    const updatedSettings = await systemService.updateProxySettings(req.body);
+    res.json(updatedSettings);
+  } catch (error) {
+    if (error.message.includes('Invalid proxy field')) {
+      res.status(400).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
 
 module.exports = router; 

@@ -98,11 +98,11 @@ const remotesService = new RemotesService();
  *           example: "media"
  *         username:
  *           type: string
- *           description: Username for authentication
+ *           description: Username for authentication (optional for SMB guest access, not used for NFS)
  *           example: "nasuser"
  *         password:
  *           type: string
- *           description: Plain text password (will be encrypted)
+ *           description: Plain text password (will be encrypted, optional for SMB guest access, not used for NFS)
  *           example: "mypassword"
  *         domain:
  *           type: string
@@ -131,8 +131,6 @@ const remotesService = new RemotesService();
  *         - type
  *         - server
  *         - share
- *         - username
- *         - password
  *
  *     ConnectionTestResult:
  *       type: object
@@ -612,6 +610,99 @@ router.get('/:id/status', authenticateToken, checkRole(['admin']), async (req, r
     console.error('Error getting remote status:', error);
     if (error.message.includes('not found')) {
       res.status(404).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
+/**
+ * @swagger
+ * /remotes/listshares:
+ *   post:
+ *     summary: List all available shares from a server
+ *     description: Discover all available shares from a remote server without saving credentials. For SMB, username and password are optional (uses guest access if not provided). For NFS, only server address is needed.
+ *     tags: [Remotes]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - server
+ *               - type
+ *             properties:
+ *               server:
+ *                 type: string
+ *                 description: Server IP address or hostname
+ *                 example: "192.168.1.100"
+ *               type:
+ *                 type: string
+ *                 enum: [smb, nfs]
+ *                 description: Type of remote share
+ *                 example: "smb"
+ *               username:
+ *                 type: string
+ *                 description: Username for authentication (optional for SMB, uses guest if not provided)
+ *                 example: "nasuser"
+ *               password:
+ *                 type: string
+ *                 description: Password for authentication (optional for SMB, uses guest if not provided)
+ *                 example: "mypassword"
+ *               domain:
+ *                 type: string
+ *                 description: SMB domain (optional)
+ *                 example: "WORKGROUP"
+ *           examples:
+ *             smb_list_authenticated:
+ *               summary: List SMB Shares (Authenticated)
+ *               value:
+ *                 server: "192.168.1.100"
+ *                 type: "smb"
+ *                 username: "nasuser"
+ *                 password: "mypassword"
+ *                 domain: "WORKGROUP"
+ *             smb_list_guest:
+ *               summary: List SMB Shares (Guest Access)
+ *               value:
+ *                 server: "192.168.1.100"
+ *                 type: "smb"
+ *             nfs_list:
+ *               summary: List NFS Exports
+ *               value:
+ *                 server: "192.168.1.200"
+ *                 type: "nfs"
+ *     responses:
+ *       200:
+ *         description: List of available shares
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: string
+ *               example: ["media", "backup", "documents", "photos"]
+ *       400:
+ *         description: Bad request - Invalid input data
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden - Admin access required
+ *       500:
+ *         description: Internal server error
+ */
+router.post('/listshares', authenticateToken, checkRole(['admin']), async (req, res) => {
+  try {
+    const { server, type, username, password, domain } = req.body;
+    const result = await remotesService.listServerShares(server, type, username, password, domain);
+    res.json(result);
+  } catch (error) {
+    console.error('Error listing server shares:', error);
+    if (error.message.includes('required') || error.message.includes('Invalid')) {
+      res.status(400).json({ error: error.message });
     } else {
       res.status(500).json({ error: error.message });
     }

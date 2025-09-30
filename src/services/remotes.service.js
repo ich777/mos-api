@@ -21,8 +21,7 @@ class RemotesService {
    */
   async _isRemoteMountingEnabled() {
     try {
-      const MosService = require('./mos.service');
-      const mosService = new MosService();
+      const mosService = require('./mos.service');
       const networkSettings = await mosService.getNetworkSettings();
 
       // Return the actual enabled status from services section
@@ -46,7 +45,7 @@ class RemotesService {
     const key = crypto.scryptSync(process.env.JWT_SECRET, 'remotes-salt', 32);
     const iv = crypto.randomBytes(16);
 
-    const cipher = crypto.createCipher(algorithm, key);
+    const cipher = crypto.createCipheriv(algorithm, key, iv);
     cipher.setAAD(Buffer.from('remotes-auth'));
 
     let encrypted = cipher.update(plainPassword, 'utf8', 'hex');
@@ -77,7 +76,7 @@ class RemotesService {
       const iv = Buffer.from(ivHex, 'hex');
       const authTag = Buffer.from(authTagHex, 'hex');
 
-      const decipher = crypto.createDecipher(algorithm, key);
+      const decipher = crypto.createDecipheriv(algorithm, key, iv);
       decipher.setAuthTag(authTag);
       decipher.setAAD(Buffer.from('remotes-auth'));
 
@@ -112,7 +111,8 @@ class RemotesService {
    * @private
    */
   _validateRemoteData(data) {
-    const required = ['name', 'type', 'server', 'share', 'username', 'password'];
+    // Basic required fields
+    const required = ['name', 'type', 'server', 'share'];
 
     for (const field of required) {
       if (!data[field] || data[field].toString().trim() === '') {
@@ -123,6 +123,9 @@ class RemotesService {
     if (!['smb', 'nfs'].includes(data.type)) {
       throw new Error("Type must be 'smb' or 'nfs'");
     }
+
+    // For NFS, username and password are optional (not used)
+    // For SMB, username and password are optional (guest access if not provided)
 
     if (data.type === 'smb' && data.version && !['1.0', '2.0', '3.0'].includes(data.version)) {
       throw new Error("SMB version must be '1.0', '2.0', or '3.0'");
@@ -295,9 +298,9 @@ class RemotesService {
         type: data.type,
         server: data.server.trim(),
         share: data.share.trim(),
-        username: data.username.trim(),
-        password: this._encryptPassword(data.password),
-        domain: data.domain ? data.domain.trim() : null,
+        username: data.username && data.username.trim() ? data.username.trim() : null,
+        password: data.password && data.password.trim() ? this._encryptPassword(data.password) : null,
+        domain: data.domain && data.domain.trim() ? data.domain.trim() : null,
         version: data.version || (data.type === 'smb' ? '3.0' : null),
         uid: data.uid !== undefined ? data.uid : null,
         gid: data.gid !== undefined ? data.gid : null,
@@ -308,6 +311,19 @@ class RemotesService {
       await this._saveRemotes(remotes);
 
       console.log(`Created remote: ${remote.name} (${remote.id})`);
+
+      // Auto-mount if requested
+      if (data.auto_mount) {
+        try {
+          console.log(`Auto-mounting remote: ${remote.name}`);
+          await this.mountRemote(remote.id);
+          console.log(`Successfully auto-mounted remote: ${remote.name}`);
+        } catch (mountError) {
+          console.warn(`Failed to auto-mount remote ${remote.name}: ${mountError.message}`);
+          // Don't fail the creation if auto-mount fails, just log it
+        }
+      }
+
       return remote;
     } catch (error) {
       throw new Error(`Failed to create remote: ${error.message}`);
@@ -353,9 +369,9 @@ class RemotesService {
       if (updateData.type) remote.type = updateData.type;
       if (updateData.server) remote.server = updateData.server.trim();
       if (updateData.share) remote.share = updateData.share.trim();
-      if (updateData.username) remote.username = updateData.username.trim();
-      if (updateData.password) remote.password = this._encryptPassword(updateData.password);
-      if (updateData.domain !== undefined) remote.domain = updateData.domain ? updateData.domain.trim() : null;
+      if (updateData.username !== undefined) remote.username = updateData.username && updateData.username.trim() ? updateData.username.trim() : null;
+      if (updateData.password !== undefined) remote.password = updateData.password && updateData.password.trim() ? this._encryptPassword(updateData.password) : null;
+      if (updateData.domain !== undefined) remote.domain = updateData.domain && updateData.domain.trim() ? updateData.domain.trim() : null;
       if (updateData.version) remote.version = updateData.version;
       if (updateData.uid !== undefined) remote.uid = updateData.uid;
       if (updateData.gid !== undefined) remote.gid = updateData.gid;
@@ -399,13 +415,8 @@ class RemotesService {
       remotes.splice(remoteIndex, 1);
       await this._saveRemotes(remotes);
 
-      // Clean up empty mount point directory
-      try {
-        await fs.rmdir(mountPath);
-        console.log(`Removed empty mount point: ${mountPath}`);
-      } catch (error) {
-        // Ignore errors - directory might not be empty or not exist
-      }
+      // Cleanup empty directories
+      await this._cleanupMountPoint(remote.server, remote.share);
 
       console.log(`Deleted remote: ${remote.name} (${remote.id})`);
       return remote;
@@ -444,8 +455,8 @@ class RemotesService {
       // Create mount point
       await this._createMountPoint(mountPath);
 
-      // Decrypt password
-      const password = this._decryptPassword(remote.password);
+      // Decrypt password (null-safe)
+      const password = remote.password ? this._decryptPassword(remote.password) : null;
 
       let mountCommand;
 
@@ -457,9 +468,17 @@ class RemotesService {
         const domain = remote.domain;
         const version = remote.version || '3.0';
 
-        let options = `username=${username},password=${password},vers=${version}`;
-        if (domain) {
-          options += `,domain=${domain}`;
+        let options;
+
+        // Guest access if no username/password provided (null or empty)
+        if (!username || !password) {
+          options = `guest,vers=${version}`;
+        } else {
+          // Authenticated access
+          options = `username=${username},password=${password},vers=${version}`;
+          if (domain) {
+            options += `,domain=${domain}`;
+          }
         }
 
         // Add uid/gid if specified (null means root)
@@ -506,6 +525,43 @@ class RemotesService {
   }
 
   /**
+   * Clean up empty mount point directories
+   * @param {string} server - Server IP or hostname
+   * @param {string} share - Share name
+   * @private
+   */
+  async _cleanupMountPoint(server, share) {
+    try {
+      const sharePath = this._generateMountPath(server, share);
+      const serverPath = path.join(this.mountBasePath, server.replace(/[^a-zA-Z0-9.-]/g, '_'));
+
+      // Try to remove share directory (only works if empty)
+      try {
+        await execPromise(`rmdir "${sharePath}" 2>/dev/null`);
+        console.log(`Removed empty share directory: ${sharePath}`);
+      } catch (error) {
+        // Directory not empty or doesn't exist - that's fine
+      }
+
+      // Check if server directory is now empty and remove it
+      try {
+        const { stdout } = await execPromise(`ls -A "${serverPath}" 2>/dev/null | wc -l`);
+        const fileCount = parseInt(stdout.trim());
+
+        if (fileCount === 0) {
+          await execPromise(`rmdir "${serverPath}" 2>/dev/null`);
+          console.log(`Removed empty server directory: ${serverPath}`);
+        }
+      } catch (error) {
+        // Directory doesn't exist or can't be removed - that's fine
+      }
+    } catch (error) {
+      console.warn(`Warning: Could not cleanup mount point: ${error.message}`);
+      // Don't throw error, cleanup is optional
+    }
+  }
+
+  /**
    * Unmount remote share
    * @param {string} id - Remote ID
    * @returns {Object} Unmount result
@@ -530,6 +586,10 @@ class RemotesService {
       await execPromise(`umount "${mountPath}"`);
 
       console.log(`Successfully unmounted remote: ${remote.name}`);
+
+      // Cleanup empty directories
+      await this._cleanupMountPoint(remote.server, remote.share);
+
       return {
         success: true,
         message: `Remote '${remote.name}' unmounted successfully`
@@ -570,6 +630,101 @@ class RemotesService {
       };
     } catch (error) {
       throw new Error(`Failed to unmount all remotes: ${error.message}`);
+    }
+  }
+
+  /**
+   * List all available shares from a server
+   * @param {string} server - Server IP or hostname
+   * @param {string} type - Share type ('smb' or 'nfs')
+   * @param {string} username - Username for authentication (SMB optional, can use guest)
+   * @param {string} password - Password for authentication (SMB optional, can use guest)
+   * @param {string} domain - Domain for authentication (SMB only, optional)
+   * @returns {Array} List of share names
+   */
+  async listServerShares(server, type, username = '', password = '', domain = '') {
+    if (!server || !type) {
+      throw new Error('Server and type are required');
+    }
+
+    if (!['smb', 'nfs'].includes(type)) {
+      throw new Error("Type must be 'smb' or 'nfs'");
+    }
+
+    if (type === 'smb') {
+      // List SMB shares using smbclient
+      // Try with credentials if provided, otherwise use guest access
+      let smbCommand;
+
+      if (username && password) {
+        // Authenticated access
+        if (domain) {
+          smbCommand = `smbclient -L //${server} -U ${domain}/${username}%${password} -N 2>/dev/null | grep 'Disk' | awk '{print $1}'`;
+        } else {
+          smbCommand = `smbclient -L //${server} -U ${username}%${password} -N 2>/dev/null | grep 'Disk' | awk '{print $1}'`;
+        }
+      } else {
+        // Guest access (no credentials)
+        smbCommand = `smbclient -L //${server} -N 2>/dev/null | grep 'Disk' | awk '{print $1}'`;
+      }
+
+      console.log(`Listing SMB shares from ${server}`);
+
+      try {
+        const { stdout } = await execPromise(smbCommand);
+
+        // Parse share names from output
+        const shares = stdout
+          .split('\n')
+          .map(line => line.trim())
+          .filter(line => line.length > 0);
+
+        // If no shares found, it might be a connection error
+        if (shares.length === 0) {
+          throw new Error('No shares found or connection failed');
+        }
+
+        return shares;
+      } catch (error) {
+        throw new Error(`Failed to list SMB shares from ${server}: ${error.message}`);
+      }
+    } else if (type === 'nfs') {
+      // List NFS exports using showmount
+      console.log(`Listing NFS exports from ${server}`);
+
+      try {
+        // First check if server is reachable
+        await execPromise(`ping -c 1 -W 5 ${server}`);
+
+        // Get NFS exports
+        const { stdout } = await execPromise(`showmount -e ${server} 2>/dev/null`);
+        const lines = stdout.split('\n');
+
+        // Parse export paths (skip header line)
+        const shares = [];
+        for (let i = 1; i < lines.length; i++) {
+          const line = lines[i].trim();
+          if (line.length === 0) continue;
+
+          const parts = line.split(/\s+/);
+          if (parts.length > 0) {
+            let exportPath = parts[0];
+            // Remove leading slash for consistency
+            if (exportPath.startsWith('/')) {
+              exportPath = exportPath.substring(1);
+            }
+            shares.push(exportPath);
+          }
+        }
+
+        if (shares.length === 0) {
+          throw new Error('No NFS exports found or connection failed');
+        }
+
+        return shares;
+      } catch (error) {
+        throw new Error(`Failed to list NFS exports from ${server}: ${error.message}`);
+      }
     }
   }
 

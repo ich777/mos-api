@@ -880,6 +880,80 @@ class SystemService {
       throw new Error(`Error updating format settings: ${error.message}`);
     }
   }
+
+  /**
+   * Get proxy settings from /boot/config/system/proxy.json
+   * @returns {Object} Proxy settings or empty object if file doesn't exist
+   */
+  async getProxySettings() {
+    const fs = require('fs').promises;
+    const path = require('path');
+
+    try {
+      const proxyPath = '/boot/config/system/proxy.json';
+
+      try {
+        const content = await fs.readFile(proxyPath, 'utf8');
+        return JSON.parse(content);
+      } catch (error) {
+        if (error.code === 'ENOENT') {
+          // File doesn't exist, return empty object
+          return {};
+        }
+        throw error;
+      }
+    } catch (error) {
+      throw new Error(`Error reading proxy settings: ${error.message}`);
+    }
+  }
+
+  /**
+   * Update proxy settings in /boot/config/system/proxy.json
+   * @param {Object} proxyData - Proxy configuration data
+   * @returns {Object} Updated proxy settings
+   */
+  async updateProxySettings(proxyData) {
+    const fs = require('fs').promises;
+    const path = require('path');
+
+    try {
+      const proxyPath = '/boot/config/system/proxy.json';
+      const proxyDir = path.dirname(proxyPath);
+
+      // Ensure directory exists
+      await fs.mkdir(proxyDir, { recursive: true });
+
+      // Get current settings
+      let currentSettings = {};
+      try {
+        const content = await fs.readFile(proxyPath, 'utf8');
+        currentSettings = JSON.parse(content);
+      } catch (error) {
+        if (error.code !== 'ENOENT') {
+          throw error;
+        }
+        // File doesn't exist, start with empty object
+      }
+
+      // Merge with new data (partial updates supported)
+      const updatedSettings = { ...currentSettings, ...proxyData };
+
+      // Validate proxy URLs if provided
+      const validFields = ['http_proxy', 'https_proxy', 'ftp_proxy', 'no_proxy'];
+      for (const field of Object.keys(proxyData)) {
+        if (!validFields.includes(field)) {
+          throw new Error(`Invalid proxy field: ${field}. Allowed fields: ${validFields.join(', ')}`);
+        }
+      }
+
+      // Write updated settings
+      await fs.writeFile(proxyPath, JSON.stringify(updatedSettings, null, 2), { mode: 0o600 });
+
+      return updatedSettings;
+    } catch (error) {
+      throw new Error(`Error updating proxy settings: ${error.message}`);
+    }
+  }
 }
 
 module.exports = new SystemService();
