@@ -450,16 +450,11 @@ router.put('/:id/read', async (req, res) => {
  *       content:
  *         application/json:
  *           schema:
- *             type: object
- *             properties:
- *               ids:
- *                 type: array
- *                 items:
- *                   type: string
- *                 description: Array of notification IDs to mark as read
- *                 example: ["1727725946123", "1727725946122"]
- *             required:
- *               - ids
+ *             type: array
+ *             items:
+ *               type: number
+ *             description: Array of notification IDs to mark as read
+ *             example: [1727725946123, 1727725946122]
  *     responses:
  *       200:
  *         description: Notifications marked as read successfully
@@ -500,10 +495,10 @@ router.put('/:id/read', async (req, res) => {
  */
 router.put('/read/multiple', async (req, res) => {
   try {
-    const { ids } = req.body;
+    const ids = req.body;
 
-    if (!ids || !Array.isArray(ids)) {
-      return res.status(400).json({ error: 'ids array is required in request body' });
+    if (!Array.isArray(ids)) {
+      return res.status(400).json({ error: 'Request body must be an array of notification IDs' });
     }
 
     const result = await notificationsService.markMultipleNotificationsAsRead(ids);

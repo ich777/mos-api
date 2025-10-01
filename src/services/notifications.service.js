@@ -27,7 +27,7 @@ class NotificationsService {
       // Ensure all notifications have 'id' and 'read' fields
       let notificationsWithDefaults = notifications.map(notification => ({
         ...notification,
-        id: notification.id || Date.now().toString(),
+        id: notification.id !== undefined ? notification.id : Date.now(),
         read: notification.read !== undefined ? notification.read : false
       }));
 
@@ -67,7 +67,7 @@ class NotificationsService {
 
   /**
    * Deletes a notification by ID
-   * @param {string} id - The ID of the notification to delete
+   * @param {string|number} id - The ID of the notification to delete
    * @returns {Promise<Object>} Result object with success status and message
    */
   async deleteNotification(id) {
@@ -75,9 +75,11 @@ class NotificationsService {
       const notifications = await this.getNotifications();
 
       // Find the notification with the matching ID
+      // Convert string ID from URL params to number
+      const numericId = typeof id === 'string' ? Number(id) : id;
       const initialLength = notifications.length;
       const filteredNotifications = notifications.filter(notification =>
-        notification.id !== id
+        notification.id !== numericId
       );
 
       if (filteredNotifications.length === initialLength) {
@@ -120,7 +122,7 @@ class NotificationsService {
 
   /**
    * Marks a single notification as read by ID
-   * @param {string} id - The ID of the notification to mark as read
+   * @param {string|number} id - The ID of the notification to mark as read
    * @returns {Promise<Object>} Result object with success status and message
    */
   async markNotificationAsRead(id) {
@@ -128,9 +130,11 @@ class NotificationsService {
       const notifications = await this.getNotifications();
 
       // Find and update the notification
+      // Convert string ID from URL params to number
+      const numericId = typeof id === 'string' ? Number(id) : id;
       let notificationFound = false;
       const updatedNotifications = notifications.map(notification => {
-        if (notification.id === id) {
+        if (notification.id === numericId) {
           notificationFound = true;
           return { ...notification, read: true };
         }
@@ -159,7 +163,7 @@ class NotificationsService {
 
   /**
    * Marks multiple notifications as read by IDs
-   * @param {Array<string>} ids - Array of notification IDs to mark as read
+   * @param {Array<string|number>} ids - Array of notification IDs to mark as read
    * @returns {Promise<Object>} Result object with success status and details
    */
   async markMultipleNotificationsAsRead(ids) {
@@ -172,7 +176,9 @@ class NotificationsService {
       }
 
       const notifications = await this.getNotifications();
-      const idSet = new Set(ids);
+      // Convert all IDs to numbers
+      const numericIds = ids.map(id => typeof id === 'string' ? Number(id) : id);
+      const idSet = new Set(numericIds);
       let markedCount = 0;
 
       // Update notifications that match the provided IDs
@@ -319,7 +325,7 @@ class NotificationsService {
     return (
       notification &&
       typeof notification === 'object' &&
-      typeof notification.id === 'string' &&
+      typeof notification.id === 'number' &&
       typeof notification.title === 'string' &&
       typeof notification.message === 'string' &&
       typeof notification.timestamp === 'string' &&
