@@ -115,10 +115,28 @@ router.use(checkRole(['admin']));
  * /notifications:
  *   get:
  *     summary: Get all notifications
- *     description: Retrieve all system notifications sorted by timestamp (newest first) - admin only
+ *     description: Retrieve all system notifications with optional filtering by read status, limit, and sort order - admin only
  *     tags: [Notifications]
  *     security:
  *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: read
+ *         schema:
+ *           type: boolean
+ *         description: Filter by read status (true for read, false for unread)
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *         description: Limit the number of notifications returned
+ *       - in: query
+ *         name: order
+ *         schema:
+ *           type: string
+ *           enum: [asc, desc]
+ *         description: Sort order by timestamp (asc = oldest first, desc = newest first)
  *     responses:
  *       200:
  *         description: Notifications retrieved successfully
@@ -162,7 +180,29 @@ router.use(checkRole(['admin']));
  */
 router.get('/', async (req, res) => {
   try {
-    const notifications = await notificationsService.getNotifications();
+    const { read, limit, order } = req.query;
+
+    const options = {};
+
+    // Parse read parameter
+    if (read !== undefined) {
+      options.read = read === 'true' || read === true;
+    }
+
+    // Parse limit parameter
+    if (limit !== undefined) {
+      const parsedLimit = parseInt(limit, 10);
+      if (!isNaN(parsedLimit) && parsedLimit > 0) {
+        options.limit = parsedLimit;
+      }
+    }
+
+    // Parse order parameter (default: desc)
+    if (order !== undefined) {
+      options.order = order === 'asc' ? 'asc' : 'desc';
+    }
+
+    const notifications = await notificationsService.getNotifications(options);
     res.json(notifications);
   } catch (error) {
     res.status(500).json({ error: error.message });

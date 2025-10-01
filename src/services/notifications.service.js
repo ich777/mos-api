@@ -8,9 +8,13 @@ class NotificationsService {
 
   /**
    * Reads all notifications from the notifications.json file
+   * @param {Object} options - Filter options
+   * @param {boolean} options.read - Filter by read status (true/false)
+   * @param {number} options.limit - Limit number of results
+   * @param {string} options.order - Sort order ('asc' or 'desc', default: 'desc')
    * @returns {Promise<Array>} Array of notification objects
    */
-  async getNotifications() {
+  async getNotifications(options = {}) {
     try {
       const data = await fs.readFile(this.notificationsPath, 'utf8');
       const notifications = JSON.parse(data);
@@ -21,14 +25,37 @@ class NotificationsService {
       }
 
       // Ensure all notifications have 'id' and 'read' fields
-      const notificationsWithDefaults = notifications.map(notification => ({
+      let notificationsWithDefaults = notifications.map(notification => ({
         ...notification,
         id: notification.id || Date.now().toString(),
         read: notification.read !== undefined ? notification.read : false
       }));
 
-      // Sort by timestamp (newest first)
-      return notificationsWithDefaults.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+      // Filter by read status if specified
+      if (options.read !== undefined) {
+        const readFilter = options.read === true || options.read === 'true';
+        notificationsWithDefaults = notificationsWithDefaults.filter(
+          notification => notification.read === readFilter
+        );
+      }
+
+      // Sort by timestamp (default: newest first)
+      const order = options.order === 'asc' ? 'asc' : 'desc';
+      notificationsWithDefaults.sort((a, b) => {
+        const dateA = new Date(a.timestamp);
+        const dateB = new Date(b.timestamp);
+        return order === 'asc' ? dateA - dateB : dateB - dateA;
+      });
+
+      // Apply limit if specified
+      if (options.limit !== undefined) {
+        const limit = parseInt(options.limit, 10);
+        if (!isNaN(limit) && limit > 0) {
+          notificationsWithDefaults = notificationsWithDefaults.slice(0, limit);
+        }
+      }
+
+      return notificationsWithDefaults;
     } catch (error) {
       if (error.code === 'ENOENT') {
         // File doesn't exist, return empty array
