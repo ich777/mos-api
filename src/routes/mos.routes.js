@@ -63,6 +63,10 @@ const { checkRole } = require('../middleware/auth.middleware');
  *           type: string
  *           description: Wait time before starting Docker containers
  *           example: "0"
+ *         docker_options:
+ *           type: string
+ *           description: Additional Docker daemon command line arguments
+ *           example: "--log-level=info --storage-opt=overlay2.size=10G"
  *         update_check:
  *           type: object
  *           description: Docker update check configuration
@@ -271,6 +275,7 @@ const { checkRole } = require('../middleware/auth.middleware');
  *       example:
  *         enabled: true
  *         directory: "/mnt/pool1/docker"
+ *         docker_options: "--log-level=info"
  */
 
 // Only Admin can access these routes
@@ -339,6 +344,7 @@ router.use(checkRole(['admin']));
  *                   gateway: "10.0.0.5"
  *             filesystem: "btrfs"
  *             start_wait: "0"
+ *             docker_options: "--log-level=info --storage-opt=overlay2.size=10G"
  *             update_check:
  *               enabled: true
  *               update_check_schedule: "0 1 * * *"

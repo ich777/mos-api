@@ -264,7 +264,7 @@ class MosService {
         if (error.code !== 'ENOENT') throw error;
       }
       // Only allowed fields are updated
-      const allowed = ['enabled', 'directory', 'appdata', 'docker_net', 'filesystem', 'start_wait', 'update_check'];
+      const allowed = ['enabled', 'directory', 'appdata', 'docker_net', 'filesystem', 'start_wait', 'docker_options', 'update_check'];
       let updateCheckChanged = false;
 
       // Check directory paths for mount status

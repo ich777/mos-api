@@ -117,7 +117,7 @@ class PoolsService {
   }
 
   /**
-   * Trigger udev to refresh device symlinks (UUIDs, etc.)
+   * Refresh device symlinks with udev
    * @private
    */
   async _refreshDeviceSymlinks() {
@@ -130,6 +130,25 @@ class PoolsService {
       console.warn(`Warning: Could not refresh device symlinks: ${error.message}`);
       // Don't throw error as this is not critical for pool functionality
     }
+  }
+
+  /**
+   * Get the next available index for a new pool
+   * @param {Array} pools - Array of existing pools
+   * @returns {number} Next available index
+   * @private
+   */
+  _getNextPoolIndex(pools) {
+    if (!pools || pools.length === 0) {
+      return 1;
+    }
+
+    const maxIndex = pools.reduce((max, pool) => {
+      const poolIndex = pool.index || 0;
+      return poolIndex > max ? poolIndex : max;
+    }, 0);
+
+    return maxIndex + 1;
   }
 
   /**
@@ -1120,6 +1139,7 @@ class PoolsService {
         type: 'btrfs',
         automount: options.automount !== undefined ? options.automount : false,
         comment: options.comment || "",
+        index: this._getNextPoolIndex(pools),
         data_devices: dataDevices,
         parity_devices: [],
 
@@ -2288,6 +2308,7 @@ class PoolsService {
         type: poolType,
         automount: options.automount !== undefined ? options.automount : false,
         comment: options.comment || "",
+        index: this._getNextPoolIndex(pools),
         data_devices: [
           {
             slot: "1",
@@ -3477,6 +3498,51 @@ class PoolsService {
   }
 
   /**
+   * Update the order of all pools
+   * @param {Array} order - Array of objects with {id, index}
+   * @returns {Object} Result object with success status
+   */
+  async updatePoolsOrder(order) {
+    try {
+      if (!Array.isArray(order)) {
+        throw new Error('Order must be an array');
+      }
+
+      const pools = await this._readPools();
+
+      // Validate all pool IDs exist
+      for (const item of order) {
+        if (!item.id || typeof item.index !== 'number') {
+          throw new Error('Each order item must have id and index properties');
+        }
+
+        const pool = pools.find(p => p.id === item.id);
+        if (!pool) {
+          throw new Error(`Pool with ID "${item.id}" not found`);
+        }
+      }
+
+      // Update indices
+      for (const item of order) {
+        const pool = pools.find(p => p.id === item.id);
+        if (pool) {
+          pool.index = item.index;
+        }
+      }
+
+      await this._writePools(pools);
+
+      return {
+        success: true,
+        message: `Successfully updated order for ${order.length} pool(s)`,
+        updatedCount: order.length
+      };
+    } catch (error) {
+      throw new Error(`Error updating pools order: ${error.message}`);
+    }
+  }
+
+  /**
    * Remove parity devices from a MergerFS pool
    * @param {string} poolId - Pool ID
    * @param {string[]} parityDevices - Array of parity device paths to remove
@@ -4301,6 +4367,7 @@ class PoolsService {
         type: 'mergerfs',
         automount: options.automount !== false,
         comment: options.comment || '',
+        index: this._getNextPoolIndex(pools),
         data_devices: dataDevices,
         parity_devices: parityDevices,
 

@@ -46,6 +46,10 @@ router.use('/', poolsWebSocketRoutes);
  *           type: string
  *           description: Optional comment for the pool
  *           example: ""
+ *         index:
+ *           type: number
+ *           description: Order/index number for sorting pools in frontend
+ *           example: 1
  *         data_devices:
  *           type: array
  *           description: Array of data devices in the pool
@@ -1895,6 +1899,114 @@ router.patch('/:id/comment', checkRole(['admin']), async (req, res) => {
   try {
     const { comment } = req.body;
     const result = await poolsService.updatePoolComment(req.params.id, comment);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /pools/order:
+ *   put:
+ *     summary: Update order of all pools
+ *     description: Update the display order for multiple pools at once by providing an array of pool IDs with their new index values (admin only)
+ *     tags: [Pools]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - order
+ *             properties:
+ *               order:
+ *                 type: array
+ *                 description: Array of pool order objects with id and index
+ *                 items:
+ *                   type: object
+ *                   required:
+ *                     - id
+ *                     - index
+ *                   properties:
+ *                     id:
+ *                       type: string
+ *                       description: Pool ID
+ *                       example: "1746318722394"
+ *                     index:
+ *                       type: number
+ *                       description: New index/order number for the pool
+ *                       example: 1
+ *                 example:
+ *                   - id: "1746318722394"
+ *                     index: 1
+ *                   - id: "1746318722395"
+ *                     index: 2
+ *                   - id: "1746318722396"
+ *                     index: 3
+ *     responses:
+ *       200:
+ *         description: Pool order updated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "Successfully updated order for 3 pool(s)"
+ *                 updatedCount:
+ *                   type: number
+ *                   example: 3
+ *       400:
+ *         description: Invalid request parameters
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       401:
+ *         description: Unauthorized
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Pool not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+// Update pools order
+router.put('/order', checkRole(['admin']), async (req, res) => {
+  try {
+    const { order } = req.body;
+
+    if (!Array.isArray(order)) {
+      return res.status(400).json({
+        error: 'Order must be an array'
+      });
+    }
+
+    const result = await poolsService.updatePoolsOrder(order);
     res.json(result);
   } catch (error) {
     res.status(500).json({ error: error.message });
