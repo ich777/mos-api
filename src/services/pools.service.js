@@ -950,7 +950,7 @@ class PoolsService {
 
       // Prepare devices for BTRFS
       const preparedDevices = [];
-      
+
       if (options.format === true) {
         // format=true: Create partitions and format
         for (const device of devices) {
@@ -1012,7 +1012,7 @@ class PoolsService {
       let hasLuksDevices = false;
       let allDevicesAreLuks = false;
       actualDevices = [...preparedDevices]; // Initialize with prepared devices
-      
+
       if (options.format === false) {
         // Check if any device is already LUKS encrypted (only for format=false)
         const luksDeviceIndices = [];
@@ -1025,7 +1025,7 @@ class PoolsService {
 
         hasLuksDevices = luksDeviceIndices.length > 0;
         allDevicesAreLuks = luksDeviceIndices.length === preparedDevices.length;
-        
+
         if (hasLuksDevices && (!options.passphrase || options.passphrase.trim() === '')) {
           throw new Error(`Some devices are LUKS encrypted but no passphrase provided. Please provide a passphrase to unlock the devices.`);
         }
@@ -1033,11 +1033,11 @@ class PoolsService {
         for (let i = 0; i < preparedDevices.length; i++) {
           const preparedDevice = preparedDevices[i];
           const deviceInfo = await this.checkDeviceFilesystem(preparedDevice);
-          
+
           if (deviceInfo.isFormatted && deviceInfo.filesystem === 'crypto_LUKS') {
             // Device is LUKS - need to open it to check filesystem inside
             console.log(`Device ${preparedDevice} is LUKS encrypted, opening to check filesystem...`);
-            
+
             await this._cleanupExistingLuksMappers(name);
             let luksDevices;
             try {
@@ -1045,14 +1045,14 @@ class PoolsService {
             } catch (error) {
               throw new Error(`Failed to open LUKS device ${preparedDevice}: ${error.message}. Please check your passphrase or keyfile.`);
             }
-            
+
             const luksDevice = luksDevices[0].mappedDevice;
             const luksFilesystemInfo = await this.checkDeviceFilesystem(luksDevice);
-            
+
             if (!luksFilesystemInfo.isFormatted || luksFilesystemInfo.filesystem !== 'btrfs') {
               throw new Error(`LUKS container ${luksDevice} has filesystem ${luksFilesystemInfo.filesystem || 'none'}, but BTRFS is required. Use format: true to reformat.`);
             }
-            
+
             console.log(`LUKS device ${preparedDevice} contains BTRFS - will be used as-is`);
             // Replace with LUKS device for mounting
             actualDevices[i] = luksDevice;
@@ -1090,7 +1090,7 @@ class PoolsService {
         const devicesToFormat = encryptionEnabled ? actualDevices : preparedDevices;
         const deviceArgs = devicesToFormat.join(' ');
         const formatCommand = `mkfs.btrfs -f -d ${raidLevel} -m ${raidLevel} -L "${name}" ${deviceArgs}`;
-        
+
         await execPromise(formatCommand);
         await this._refreshDeviceSymlinks();
       } else {
@@ -2081,30 +2081,30 @@ class PoolsService {
           // Device is LUKS but format=true without encryption - will destroy LUKS and create new filesystem
           console.log(`Device ${actualDeviceToUse} is LUKS encrypted but will be reformatted without encryption`);
         }
-        
+
         if (isAlreadyLuks && options.format === false) {
           // Device is already LUKS - need to open it
           console.log(`Device ${actualDeviceToUse} is LUKS encrypted, attempting to open...`);
-          
+
           // Check if passphrase is provided
           if (!options.passphrase) {
             throw new Error(`Device ${actualDeviceToUse} is LUKS encrypted but no passphrase provided. Please provide a passphrase to unlock the device.`);
           }
-          
+
           await this._cleanupExistingLuksMappers(name);
-          
+
           let luksDevices;
           try {
             luksDevices = await this._openLuksDevicesWithSlots([actualDeviceToUse], name, [1], options.passphrase);
           } catch (error) {
             throw new Error(`Failed to open LUKS device ${actualDeviceToUse}: ${error.message}. Please check your passphrase or keyfile.`);
           }
-          
+
           const luksDevice = luksDevices[0].mappedDevice;
-          
+
           // Check filesystem inside LUKS container
           const luksFilesystemInfo = await this.checkDeviceFilesystem(luksDevice);
-          
+
           if (options.format === false) {
             // Import mode - validate filesystem
             if (!luksFilesystemInfo.isFormatted) {
@@ -2122,32 +2122,32 @@ class PoolsService {
             await this._refreshDeviceSymlinks();
             actualDeviceToUse = formatResult.device;
           }
-          
+
           // Get UUID from physical device
           const physicalDevice = luksDevices[0].originalDevice;
           const physicalUuid = await this.getDeviceUuid(physicalDevice);
-          
+
           deviceInfo = {
             isFormatted: true,
             filesystem,
             uuid: physicalUuid,
             actualDevice: physicalDevice
           };
-          
+
           encryptionEnabled = true;
-          
+
           // Close LUKS if automount=false
           if (!options.automount) {
             console.log(`Closing LUKS device (automount=false)`);
             const partitionDevice = actualDeviceToUse.split('/').pop();
             const mainDevice = luksDevice.split('/').pop();
-            
+
             try {
               await execPromise(`cryptsetup luksClose ${partitionDevice}`);
             } catch (error) {
               console.warn(`Failed to close LUKS partition: ${error.message}`);
             }
-            
+
             try {
               await execPromise(`cryptsetup luksClose ${mainDevice}`);
             } catch (error) {
@@ -3959,7 +3959,7 @@ class PoolsService {
       // Prepare devices
       console.log('Preparing devices...');
       const preparedDevices = [];
-      
+
       if (options.format === true) {
         // format=true: Create partitions and format
         for (const device of devices) {
@@ -3995,7 +3995,7 @@ class PoolsService {
       let actualDevices = [...preparedDevices]; // Initialize with prepared devices
       let luksDevices = null;
       let encryptionEnabled = false;
-      
+
       if (options.format === false) {
         // Check if any device is already LUKS encrypted (only for format=false)
         const luksDeviceIndices = [];
@@ -4007,27 +4007,27 @@ class PoolsService {
         }
 
         hasLuksDevices = luksDeviceIndices.length > 0;
-        
+
         if (hasLuksDevices && (!options.passphrase || options.passphrase.trim() === '')) {
           throw new Error(`Some devices are LUKS encrypted but no passphrase provided. Please provide a passphrase to unlock the devices.`);
         }
 
         for (let i = 0; i < devices.length; i++) {
           const preparedDevice = preparedDevices[i];
-          
+
           // Check if device is already mounted
           const mountStatus = await this._isDeviceMounted(preparedDevice);
           if (mountStatus.isMounted) {
             throw new Error(`Device ${preparedDevice} is already mounted at ${mountStatus.mountPoint}. Please unmount it first before creating a pool.`);
           }
-          
+
           // Validate filesystem
           const deviceInfo = await this.checkDeviceFilesystem(preparedDevice);
-          
+
           if (deviceInfo.isFormatted && deviceInfo.filesystem === 'crypto_LUKS') {
             // Device is LUKS - need to open it to check filesystem inside
             console.log(`Device ${preparedDevice} is LUKS encrypted, opening to check filesystem...`);
-            
+
             await this._cleanupExistingLuksMappers(name);
             let luksDevicesList;
             try {
@@ -4035,17 +4035,17 @@ class PoolsService {
             } catch (error) {
               throw new Error(`Failed to open LUKS device ${preparedDevice}: ${error.message}. Please check your passphrase or keyfile.`);
             }
-            
+
             const luksDevice = luksDevicesList[0].mappedDevice;
             const luksFilesystemInfo = await this.checkDeviceFilesystem(luksDevice);
-            
+
             if (!luksFilesystemInfo.isFormatted) {
               throw new Error(`LUKS container ${luksDevice} has no filesystem. Use format: true to format.`);
             }
             if (luksFilesystemInfo.filesystem !== filesystem) {
               throw new Error(`LUKS container has filesystem ${luksFilesystemInfo.filesystem}, but ${filesystem} was requested. Use format: true to reformat.`);
             }
-            
+
             console.log(`LUKS device ${preparedDevice} contains ${filesystem} - will be used as-is`);
             // Replace with LUKS device for mounting
             actualDevices[i] = luksDevice;
@@ -4126,14 +4126,14 @@ class PoolsService {
             preparedSnapraidDevice = snapraidDevice;
           }
         }
-        
+
         // Validate SnapRAID filesystem BEFORE encryption (for format=false)
         if (options.format === false) {
           const snapraidMountStatus = await this._isDeviceMounted(preparedSnapraidDevice);
           if (snapraidMountStatus.isMounted) {
             throw new Error(`SnapRAID device ${preparedSnapraidDevice} is already mounted at ${snapraidMountStatus.mountPoint}. Please unmount it first before creating a pool.`);
           }
-          
+
           const snapraidInfo = await this.checkDeviceFilesystem(preparedSnapraidDevice);
           if (!snapraidInfo.isFormatted) {
             throw new Error(`SnapRAID device ${preparedSnapraidDevice} has no filesystem. Use format: true to create partition and format.`);
@@ -4161,17 +4161,17 @@ class PoolsService {
         // format=true: Format all devices (partitions already created, encryption already setup)
         for (let i = 0; i < devices.length; i++) {
           const actualDevice = actualDevices[i];
-          
+
           // Check if device is already mounted
           const mountStatus = await this._isDeviceMounted(actualDevice);
           if (mountStatus.isMounted) {
             throw new Error(`Device ${actualDevice} is already mounted at ${mountStatus.mountPoint}. Please unmount it first before creating a pool.`);
           }
-          
+
           // Format the device (LUKS device if encrypted, partition if not)
           await this.formatDevice(actualDevice, filesystem);
         }
-        
+
         // Format SnapRAID device if provided
         if (snapraidDevice && actualSnapraidDevice) {
           const snapraidMountStatus = await this._isDeviceMounted(actualSnapraidDevice);
