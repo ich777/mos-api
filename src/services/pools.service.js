@@ -1022,9 +1022,8 @@ class PoolsService {
             // Device is already formatted with BTRFS - perfect for a BTRFS pool
             console.log(`Device ${preparedDevice} is already formatted with BTRFS - will be used as-is`);
           } else {
-            // At least one device is not formatted
-            allDevicesAreBtrfs = false;
-            needsFormatting = true;
+            // Device is not formatted - require explicit format option
+            throw new Error(`Device ${preparedDevice} is not formatted. Use format: true to format the device with BTRFS.`);
           }
         }
       }
@@ -1199,11 +1198,15 @@ class PoolsService {
       }
 
       // Check device format status
-      if (options.format !== true) {
-        const deviceInfo = await this.checkDeviceFilesystem(device);
-        if (deviceInfo.isFormatted) {
-          throw new Error(`Device ${device} is already formatted. Use format: true to overwrite.`);
+      const deviceInfo = await this.checkDeviceFilesystem(device);
+      if (!deviceInfo.isFormatted) {
+        // Device is not formatted - BTRFS device add will format it, but require explicit confirmation
+        if (options.format !== true) {
+          throw new Error(`Device ${device} is not formatted. Use format: true to confirm adding and formatting the device.`);
         }
+      } else if (deviceInfo.isFormatted && deviceInfo.filesystem !== 'btrfs') {
+        // Device has wrong filesystem
+        throw new Error(`Device ${device} is already formatted with ${deviceInfo.filesystem}. BTRFS pools require unformatted devices or devices with BTRFS filesystem.`);
       }
     }
 
@@ -1334,7 +1337,11 @@ class PoolsService {
       const isUsingPartition = deviceInfo.actualDevice && deviceInfo.actualDevice !== deviceToCheck;
 
       let actualDevice = deviceToCheck;
-      if (!deviceInfo.isFormatted || options.format === true) {
+      if (!deviceInfo.isFormatted) {
+        // Device is not formatted - require explicit format option
+        throw new Error(`Device ${deviceToCheck} is not formatted. Use format: true to format the device with ${existingFilesystem}.`);
+      } else if (options.format === true) {
+        // Explicit format requested - reformat the device
         const formatResult = await this.formatDevice(deviceToCheck, existingFilesystem);
         actualDevice = formatResult.device; // Use the partition created by formatDevice
 
@@ -2104,23 +2111,8 @@ class PoolsService {
             filesystem = deviceInfo.filesystem;
           }
         } else {
-          // Device is not formatted
-          if (options.format === false) {
-            throw new Error(`Device ${device} is not formatted and format=false was specified.`);
-          } else {
-            // Format with specified or default filesystem (xfs as default if nothing specified)
-            filesystem = filesystem || 'xfs';
-            const formatResult = await this.formatDevice(device, filesystem);
-            // Refresh device symlinks after formatting
-            await this._refreshDeviceSymlinks();
-            deviceInfo = {
-              isFormatted: true,
-              filesystem,
-              uuid: formatResult.uuid,
-              actualDevice: formatResult.device // Use the actual formatted device (partition)
-            };
-            actualDeviceToUse = formatResult.device;
-          }
+          // Device is not formatted - require explicit format option
+          throw new Error(`Device ${device} is not formatted. Use format: true to format the device.`);
         }
       }
 
@@ -3923,15 +3915,12 @@ class PoolsService {
             }
           }
         } else {
-          if (options.format === false) {
-            invalidDevices.push({
-              device: actualDevice,
-              currentFs: null,
-              expectedFs: filesystem
-            });
-          } else {
-            formatDevices.push(actualDevice);
-          }
+          // Device is not formatted - always require explicit format option
+          invalidDevices.push({
+            device: actualDevice,
+            currentFs: null,
+            expectedFs: filesystem
+          });
         }
       }
 
@@ -3961,15 +3950,12 @@ class PoolsService {
             }
           }
         } else {
-          if (options.format === false) {
-            invalidDevices.push({
-              device: deviceToCheck,
-              currentFs: null,
-              expectedFs: filesystem
-            });
-          } else {
-            formatDevices.push(deviceToCheck);
-          }
+          // SnapRAID device is not formatted - always require explicit format option
+          invalidDevices.push({
+            device: deviceToCheck,
+            currentFs: null,
+            expectedFs: filesystem
+          });
         }
       }
 
@@ -4317,7 +4303,11 @@ if (snapraidDevice) {
         const deviceInfo = await this.checkDeviceFilesystem(deviceToCheck);
         const expectedFilesystem = pool.data_devices.length > 0 ? pool.data_devices[0].filesystem : 'xfs';
 
-        if (!deviceInfo.isFormatted || options.format === true) {
+        if (!deviceInfo.isFormatted) {
+          // Device is not formatted - require explicit format option
+          throw new Error(`Device ${deviceToCheck} is not formatted. Use format: true to format the device with ${expectedFilesystem}.`);
+        } else if (options.format === true) {
+          // Explicit format requested - reformat the device
           const formatResult = await this.formatDevice(deviceToCheck, expectedFilesystem);
           // For encrypted devices, the actualParityDevices array is already updated
         } else if (deviceInfo.filesystem !== expectedFilesystem) {
@@ -4454,7 +4444,11 @@ if (snapraidDevice) {
       const deviceInfo = await this.checkDeviceFilesystem(newDevice);
       const expectedFilesystem = pool.data_devices.length > 0 ? pool.data_devices[0].filesystem : 'xfs';
 
-      if (!deviceInfo.isFormatted || options.format === true) {
+      if (!deviceInfo.isFormatted) {
+        // Device is not formatted - require explicit format option
+        throw new Error(`Device ${newDevice} is not formatted. Use format: true to format the device with ${expectedFilesystem}.`);
+      } else if (options.format === true) {
+        // Explicit format requested - reformat the device
         await this.formatDevice(newDevice, expectedFilesystem);
       } else if (deviceInfo.filesystem !== expectedFilesystem) {
         throw new Error(`Device ${newDevice} has filesystem ${deviceInfo.filesystem}, expected ${expectedFilesystem}. Use format: true to reformat.`);
