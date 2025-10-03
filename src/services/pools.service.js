@@ -948,100 +948,153 @@ class PoolsService {
       };
       await this._createDirectoryWithOwnership(mountPoint, ownershipOptions);
 
-      // Prepare devices for BTRFS formatting (create partitions if needed)
+      // Prepare devices for BTRFS
       const preparedDevices = [];
-      for (const device of devices) {
-        const isPartition = this._isPartitionPath(device);
-        if (!isPartition) {
-          // Create partition table and partition for whole disks
-          console.log(`${device} is a whole disk, creating partition table and partition...`);
+      
+      if (options.format === true) {
+        // format=true: Create partitions and format
+        for (const device of devices) {
+          const isPartition = this._isPartitionPath(device);
+          if (!isPartition) {
+            // Whole disk - create partition table and partition
+            console.log(`${device} is a whole disk, creating partition table and partition...`);
 
-          // Create GPT partition table
-          await execPromise(`parted -s ${device} mklabel gpt`);
+            // Create GPT partition table (deletes old partitions)
+            await execPromise(`parted -s ${device} mklabel gpt`);
 
-          // Create a single partition using the entire disk
-          await execPromise(`parted -s ${device} mkpart primary 2048s 100%`);
+            // Create a single partition using the entire disk
+            await execPromise(`parted -s ${device} mkpart primary 2048s 100%`);
 
-          // Wait a moment for the partition to be recognized by the kernel
-          await new Promise(resolve => setTimeout(resolve, 1000));
+            // Wait a moment for the partition to be recognized by the kernel
+            await new Promise(resolve => setTimeout(resolve, 1000));
 
-          // Inform kernel about partition table changes
-          try {
-            await execPromise(`partprobe ${device}`);
-          } catch (error) {
-            console.warn(`partprobe failed: ${error.message}`);
+            // Inform kernel about partition table changes
+            try {
+              await execPromise(`partprobe ${device}`);
+            } catch (error) {
+              console.warn(`partprobe failed: ${error.message}`);
+            }
+
+            // Determine partition path
+            const partitionPath = this._getPartitionPath(device, 1);
+            preparedDevices.push(partitionPath);
+            console.log(`Created partition: ${partitionPath}`);
+          } else {
+            // Already a partition - use as-is (will be formatted later)
+            preparedDevices.push(device);
           }
+        }
+      } else {
+        // format=false: Import mode - use existing filesystems as-is
+        for (const device of devices) {
+          const isPartition = this._isPartitionPath(device);
+          if (!isPartition) {
+            // Whole disk - check what's on it
+            const deviceInfo = await this.checkDeviceFilesystem(device);
+            if (deviceInfo.actualDevice) {
+              // Has partition with filesystem - use the partition
+              preparedDevices.push(deviceInfo.actualDevice);
+            } else if (deviceInfo.isFormatted && !['dos', 'gpt', 'mbr'].includes(deviceInfo.filesystem)) {
+              // Whole disk has filesystem directly (no partition) - use whole disk
+              preparedDevices.push(device);
+            } else {
+              // No usable filesystem found
+              throw new Error(`Device ${device} has no usable filesystem. Use format: true to create partition and format.`);
+            }
+          } else {
+            // Already a partition - use as-is
+            preparedDevices.push(device);
+          }
+        }
+      }
 
-          // Determine partition path
-          const partitionPath = this._getPartitionPath(device, 1);
-          preparedDevices.push(partitionPath);
-          console.log(`Created partition: ${partitionPath}`);
-        } else {
-          preparedDevices.push(device);
+      // Validate filesystems BEFORE encryption (for format=false)
+      let hasLuksDevices = false;
+      let allDevicesAreLuks = false;
+      actualDevices = [...preparedDevices]; // Initialize with prepared devices
+      
+      if (options.format === false) {
+        // Check if any device is already LUKS encrypted (only for format=false)
+        const luksDeviceIndices = [];
+        for (let i = 0; i < preparedDevices.length; i++) {
+          const deviceInfo = await this.checkDeviceFilesystem(preparedDevices[i]);
+          if (deviceInfo.isFormatted && deviceInfo.filesystem === 'crypto_LUKS') {
+            luksDeviceIndices.push(i);
+          }
+        }
+
+        hasLuksDevices = luksDeviceIndices.length > 0;
+        allDevicesAreLuks = luksDeviceIndices.length === preparedDevices.length;
+        
+        if (hasLuksDevices && (!options.passphrase || options.passphrase.trim() === '')) {
+          throw new Error(`Some devices are LUKS encrypted but no passphrase provided. Please provide a passphrase to unlock the devices.`);
+        }
+
+        for (let i = 0; i < preparedDevices.length; i++) {
+          const preparedDevice = preparedDevices[i];
+          const deviceInfo = await this.checkDeviceFilesystem(preparedDevice);
+          
+          if (deviceInfo.isFormatted && deviceInfo.filesystem === 'crypto_LUKS') {
+            // Device is LUKS - need to open it to check filesystem inside
+            console.log(`Device ${preparedDevice} is LUKS encrypted, opening to check filesystem...`);
+            
+            await this._cleanupExistingLuksMappers(name);
+            let luksDevices;
+            try {
+              luksDevices = await this._openLuksDevicesWithSlots([preparedDevice], name, [i + 1], options.passphrase);
+            } catch (error) {
+              throw new Error(`Failed to open LUKS device ${preparedDevice}: ${error.message}. Please check your passphrase or keyfile.`);
+            }
+            
+            const luksDevice = luksDevices[0].mappedDevice;
+            const luksFilesystemInfo = await this.checkDeviceFilesystem(luksDevice);
+            
+            if (!luksFilesystemInfo.isFormatted || luksFilesystemInfo.filesystem !== 'btrfs') {
+              throw new Error(`LUKS container ${luksDevice} has filesystem ${luksFilesystemInfo.filesystem || 'none'}, but BTRFS is required. Use format: true to reformat.`);
+            }
+            
+            console.log(`LUKS device ${preparedDevice} contains BTRFS - will be used as-is`);
+            // Replace with LUKS device for mounting
+            actualDevices[i] = luksDevice;
+            encryptionEnabled = true;
+          } else if (deviceInfo.isFormatted) {
+            if (deviceInfo.filesystem !== 'btrfs') {
+              throw new Error(`Device ${preparedDevice} is already formatted with ${deviceInfo.filesystem}, but BTRFS is required for multi-device pools. Use format: true to overwrite.`);
+            }
+            console.log(`Device ${preparedDevice} is already formatted with BTRFS - will be used as-is`);
+          } else {
+            throw new Error(`Device ${preparedDevice} is not formatted. Use format: true to format the device with BTRFS.`);
+          }
         }
       }
 
       // Store original devices for UUID retrieval before encryption
       const originalDevices = [...preparedDevices];
 
-      // Handle LUKS encryption after getting UUIDs
-      if (options.config?.encrypted) {
+      // Handle LUKS encryption for new encryption (format=true)
+      if (options.config?.encrypted && !hasLuksDevices) {
         console.log(`Setting up LUKS encryption for multi-device pool '${name}' on prepared devices`);
-        // Clean up any existing LUKS mappers with this pool name first
         await this._cleanupExistingLuksMappers(name);
         await this._setupPoolEncryption(preparedDevices, name, options.passphrase, options.config.create_keyfile);
 
-        // Use slot-based naming for multi-device BTRFS pools
         const dataSlots = preparedDevices.map((_, i) => i + 1);
         const luksDevices = await this._openLuksDevicesWithSlots(preparedDevices, name, dataSlots, options.passphrase);
         actualDevices = luksDevices.map(d => d.mappedDevice);
         encryptionEnabled = true;
-
-        // Use encrypted devices for formatting
-        preparedDevices.splice(0, preparedDevices.length, ...actualDevices);
+      } else if (hasLuksDevices && !allDevicesAreLuks) {
+        throw new Error(`Cannot mix LUKS encrypted and non-encrypted devices in the same pool. All devices must be either encrypted or non-encrypted.`);
       }
 
-      // Format with BTRFS and specified RAID level using prepared devices (partitions or encrypted devices)
-      let deviceArgs = preparedDevices.join(' ');
-      let formatCommand = `mkfs.btrfs -f -d ${raidLevel} -m ${raidLevel} -L "${name}" ${deviceArgs}`;
-
-      // Check if any device is already formatted and user didn't specify format: true
-      let needsFormatting = false;
-      let allDevicesAreBtrfs = true;
-
+      // Format with BTRFS only if format=true
       if (options.format === true) {
-        needsFormatting = true;
-      } else {
-        for (const preparedDevice of preparedDevices) {
-          const deviceInfo = await this.checkDeviceFilesystem(preparedDevice);
-          if (deviceInfo.isFormatted) {
-            // If the device is already formatted with BTRFS, it's OK for a BTRFS pool
-            if (deviceInfo.filesystem !== 'btrfs') {
-              throw new Error(`Device ${preparedDevice} is already formatted with ${deviceInfo.filesystem}, but BTRFS is required for multi-device pools. Use format: true to overwrite.`);
-            }
-            // Device is already formatted with BTRFS - perfect for a BTRFS pool
-            console.log(`Device ${preparedDevice} is already formatted with BTRFS - will be used as-is`);
-          } else {
-            // Device is not formatted - require explicit format option
-            throw new Error(`Device ${preparedDevice} is not formatted. Use format: true to format the device with BTRFS.`);
-          }
-        }
-      }
-
-      // Execute format command only if needed
-      if (needsFormatting) {
-        if (!allDevicesAreBtrfs) {
-          // If not all devices are BTRFS, we need to format all of them
-          await execPromise(formatCommand);
-        } else {
-          // All devices are already BTRFS, but format=true was explicitly set
-          await execPromise(formatCommand);
-        }
-
-        // Refresh device symlinks after formatting
+        const devicesToFormat = encryptionEnabled ? actualDevices : preparedDevices;
+        const deviceArgs = devicesToFormat.join(' ');
+        const formatCommand = `mkfs.btrfs -f -d ${raidLevel} -m ${raidLevel} -L "${name}" ${deviceArgs}`;
+        
+        await execPromise(formatCommand);
         await this._refreshDeviceSymlinks();
       } else {
-        console.log(`All devices are already formatted with BTRFS - skipping formatting`);
+        console.log(`Skipping formatting - importing existing BTRFS filesystem`);
       }
 
       // Create pool object with multiple devices
@@ -1083,8 +1136,9 @@ class PoolsService {
       // Mount the pool if automount is true
       if (newPool.automount) {
         try {
-          // Use the first prepared device (partition) for mounting BTRFS
-          await this.mountDevice(preparedDevices[0], mountPoint, { mountOptions: `device=${preparedDevices[0]}` });
+          // Use the first actual device (LUKS device if encrypted, partition if not) for mounting BTRFS
+          const deviceToMount = actualDevices[0];
+          await this.mountDevice(deviceToMount, mountPoint, { mountOptions: `device=${deviceToMount}` });
 
           // After mounting, update device paths from btrfs filesystem show
           await this._updateBtrfsDevicePathsInPool(newPool, mountPoint);
@@ -2012,107 +2066,193 @@ class PoolsService {
       let actualDeviceToUse = deviceInfo.actualDevice || actualDevice;
       const isUsingPartition = deviceInfo.actualDevice && deviceInfo.actualDevice !== actualDevice;
 
-      // Format the device if it is not formatted or if the filesystem does not match
-      // Handle LUKS encryption first if encryption is enabled
-      if (options.config?.encrypted) {
-        console.log(`Setting up LUKS encryption for single device pool '${name}' on ${actualDeviceToUse}`);
-        // Clean up any existing LUKS mappers with this pool name first
-        await this._cleanupExistingLuksMappers(name);
-        await this._setupPoolEncryption([actualDeviceToUse], name, options.passphrase, options.config.create_keyfile);
+      // Check if device is already LUKS encrypted (only relevant for format=false)
+      const isAlreadyLuks = deviceInfo.isFormatted && deviceInfo.filesystem === 'crypto_LUKS';
 
-        // Always open LUKS devices to format the mapped device (use slot 1 for single device)
-        const luksDevices = await this._openLuksDevicesWithSlots([actualDeviceToUse], name, [1], options.passphrase);
-        actualDeviceToUse = luksDevices[0].mappedDevice; // Use the mapped device for formatting and mounting
-
-        // Format the mapped LUKS device (always format encrypted devices)
-        filesystem = filesystem || 'xfs';
-        const formatResult = await this.formatDevice(actualDeviceToUse, filesystem);
-
-        // Refresh device symlinks after formatting
-        await this._refreshDeviceSymlinks();
-
-        // Get UUID from the physical device after LUKS setup
-        // The originalDevice should be the partition that was encrypted
-        const physicalDevice = luksDevices[0].originalDevice;
-        console.log(`Getting UUID from physical device: ${physicalDevice}`);
-        const physicalUuid = await this.getDeviceUuid(physicalDevice);
-        console.log(`Physical device UUID: ${physicalUuid}`);
-
-        deviceInfo = {
-          isFormatted: true,
-          filesystem,
-          uuid: physicalUuid, // Use physical device UUID for mounting
-          actualDevice: physicalDevice // Store the original physical device path
-        };
-
-        encryptionEnabled = true;
-
-        // If automount is false, close the LUKS device after formatting
-        if (!options.automount) {
-          console.log(`Closing LUKS device after formatting (automount=false)`);
-          // Close partition first, then main device
-          const partitionDevice = formatResult.device.split('/').pop();
-          const mainDevice = luksDevices[0].mappedDevice.split('/').pop();
-
-          // Try to close partition first
-          try {
-            await execPromise(`cryptsetup luksClose ${partitionDevice}`);
-            console.log(`Closed LUKS partition: ${partitionDevice}`);
-          } catch (error) {
-            console.warn(`Failed to close LUKS partition ${partitionDevice}: ${error.message}`);
+      // Handle LUKS encryption
+      if (options.config?.encrypted || (isAlreadyLuks && options.format === false)) {
+        if (isAlreadyLuks && !options.config?.encrypted && options.format === false) {
+          // Device is LUKS but user didn't request encryption - need to open it to check filesystem
+          console.log(`Device ${actualDeviceToUse} is LUKS encrypted, opening to check filesystem...`);
+        } else if (!isAlreadyLuks && options.config?.encrypted && options.format === false) {
+          // User wants to encrypt but format=false - cannot encrypt without formatting
+          throw new Error(`Cannot encrypt device ${device} without formatting. Use format: true to encrypt.`);
+        } else if (isAlreadyLuks && options.format === true && !options.config?.encrypted) {
+          // Device is LUKS but format=true without encryption - will destroy LUKS and create new filesystem
+          console.log(`Device ${actualDeviceToUse} is LUKS encrypted but will be reformatted without encryption`);
+        }
+        
+        if (isAlreadyLuks && options.format === false) {
+          // Device is already LUKS - need to open it
+          console.log(`Device ${actualDeviceToUse} is LUKS encrypted, attempting to open...`);
+          
+          // Check if passphrase is provided
+          if (!options.passphrase) {
+            throw new Error(`Device ${actualDeviceToUse} is LUKS encrypted but no passphrase provided. Please provide a passphrase to unlock the device.`);
           }
-
-          // Always try to close main device, even if partition close failed
+          
+          await this._cleanupExistingLuksMappers(name);
+          
+          let luksDevices;
           try {
-            await execPromise(`cryptsetup luksClose ${mainDevice}`);
-            console.log(`Closed LUKS main device: ${mainDevice}`);
+            luksDevices = await this._openLuksDevicesWithSlots([actualDeviceToUse], name, [1], options.passphrase);
           } catch (error) {
-            console.warn(`Failed to close LUKS main device ${mainDevice}: ${error.message}`);
-            // If main device close fails, try alternative approach
+            throw new Error(`Failed to open LUKS device ${actualDeviceToUse}: ${error.message}. Please check your passphrase or keyfile.`);
+          }
+          
+          const luksDevice = luksDevices[0].mappedDevice;
+          
+          // Check filesystem inside LUKS container
+          const luksFilesystemInfo = await this.checkDeviceFilesystem(luksDevice);
+          
+          if (options.format === false) {
+            // Import mode - validate filesystem
+            if (!luksFilesystemInfo.isFormatted) {
+              throw new Error(`LUKS container ${luksDevice} has no filesystem. Use format: true to format.`);
+            }
+            if (filesystem && filesystem !== luksFilesystemInfo.filesystem) {
+              throw new Error(`LUKS container has filesystem ${luksFilesystemInfo.filesystem}, but ${filesystem} was requested. Use format: true to reformat.`);
+            }
+            filesystem = luksFilesystemInfo.filesystem;
+            actualDeviceToUse = luksDevice;
+          } else {
+            // Format mode - format the LUKS container
+            filesystem = filesystem || 'xfs';
+            const formatResult = await this.formatDevice(luksDevice, filesystem);
+            await this._refreshDeviceSymlinks();
+            actualDeviceToUse = formatResult.device;
+          }
+          
+          // Get UUID from physical device
+          const physicalDevice = luksDevices[0].originalDevice;
+          const physicalUuid = await this.getDeviceUuid(physicalDevice);
+          
+          deviceInfo = {
+            isFormatted: true,
+            filesystem,
+            uuid: physicalUuid,
+            actualDevice: physicalDevice
+          };
+          
+          encryptionEnabled = true;
+          
+          // Close LUKS if automount=false
+          if (!options.automount) {
+            console.log(`Closing LUKS device (automount=false)`);
+            const partitionDevice = actualDeviceToUse.split('/').pop();
+            const mainDevice = luksDevice.split('/').pop();
+            
             try {
-              await execPromise(`dmsetup remove ${mainDevice}`);
-              console.log(`Force removed LUKS device using dmsetup: ${mainDevice}`);
-            } catch (dmError) {
-              console.warn(`Failed to force remove LUKS device ${mainDevice}: ${dmError.message}`);
+              await execPromise(`cryptsetup luksClose ${partitionDevice}`);
+            } catch (error) {
+              console.warn(`Failed to close LUKS partition: ${error.message}`);
+            }
+            
+            try {
+              await execPromise(`cryptsetup luksClose ${mainDevice}`);
+            } catch (error) {
+              console.warn(`Failed to close LUKS main device: ${error.message}`);
+              try {
+                await execPromise(`dmsetup remove ${mainDevice}`);
+              } catch (dmError) {
+                console.warn(`Failed to force remove LUKS device: ${dmError.message}`);
+              }
             }
           }
+        } else if (options.config?.encrypted) {
+          // Create new LUKS encryption
+          console.log(`Setting up LUKS encryption for single device pool '${name}' on ${actualDeviceToUse}`);
+          await this._cleanupExistingLuksMappers(name);
+          await this._setupPoolEncryption([actualDeviceToUse], name, options.passphrase, options.config.create_keyfile);
 
-          // For non-automount, we still store the mapped device path for mounting later
-          // The LUKS devices will be reopened during mount
-          actualDeviceToUse = formatResult.device;
-        } else {
-          // For automount=true, keep the mapped device for immediate mounting
-          actualDeviceToUse = formatResult.device;
+          // Open LUKS devices (use slot 1 for single device)
+          const luksDevices = await this._openLuksDevicesWithSlots([actualDeviceToUse], name, [1], options.passphrase);
+          const luksDevice = luksDevices[0].mappedDevice;
+
+          // Get UUID from the physical device
+          const physicalDevice = luksDevices[0].originalDevice;
+          console.log(`Getting UUID from physical device: ${physicalDevice}`);
+          const physicalUuid = await this.getDeviceUuid(physicalDevice);
+          console.log(`Physical device UUID: ${physicalUuid}`);
+
+          // Format LUKS device only if format=true
+          if (options.format === true) {
+            filesystem = filesystem || 'xfs';
+            const formatResult = await this.formatDevice(luksDevice, filesystem);
+            await this._refreshDeviceSymlinks();
+            actualDeviceToUse = formatResult.device;
+          } else {
+            // format=false: Import existing filesystem (no formatting)
+            actualDeviceToUse = luksDevice;
+          }
+
+          deviceInfo = {
+            isFormatted: true,
+            filesystem,
+            uuid: physicalUuid,
+            actualDevice: physicalDevice
+          };
+
+          encryptionEnabled = true;
+
+          // If automount is false, close the LUKS device
+          if (!options.automount) {
+            console.log(`Closing LUKS device (automount=false)`);
+            const partitionDevice = actualDeviceToUse.split('/').pop();
+            const mainDevice = luksDevice.split('/').pop();
+
+            try {
+              await execPromise(`cryptsetup luksClose ${partitionDevice}`);
+              console.log(`Closed LUKS partition: ${partitionDevice}`);
+            } catch (error) {
+              console.warn(`Failed to close LUKS partition ${partitionDevice}: ${error.message}`);
+            }
+
+            try {
+              await execPromise(`cryptsetup luksClose ${mainDevice}`);
+              console.log(`Closed LUKS main device: ${mainDevice}`);
+            } catch (error) {
+              console.warn(`Failed to close LUKS main device ${mainDevice}: ${error.message}`);
+              try {
+                await execPromise(`dmsetup remove ${mainDevice}`);
+                console.log(`Force removed LUKS device using dmsetup: ${mainDevice}`);
+              } catch (dmError) {
+                console.warn(`Failed to force remove LUKS device ${dmError.message}`);
+              }
+            }
+          }
         }
       } else {
         // Handle non-encrypted devices
-        if (deviceInfo.isFormatted) {
-          // Device is already formatted, check if we need to reformat
-          if (filesystem && filesystem !== deviceInfo.filesystem) {
-            if (options.format === true) {
-                          // Reformat with the new filesystem
-            const formatResult = await this.formatDevice(actualDeviceToUse, filesystem);
-            // Refresh device symlinks after formatting
-            await this._refreshDeviceSymlinks();
-            deviceInfo = {
-              isFormatted: true,
-              filesystem,
-              uuid: formatResult.uuid,
-              actualDevice: formatResult.device // Use the actual formatted device (partition)
-            };
-            actualDeviceToUse = formatResult.device;
-            } else {
-              // Otherwise cancel to prevent data loss
-              const deviceDisplayName = isUsingPartition ? `${device} (partition ${actualDeviceToUse})` : device;
-              throw new Error(`Device ${deviceDisplayName} is already formatted with ${deviceInfo.filesystem}, not with ${filesystem}. Use format: true to format.`);
-            }
-          } else {
-            // If no filesystem is specified or matches, use the existing one
-            filesystem = deviceInfo.filesystem;
-          }
+        if (options.format === true) {
+          // format=true: Create partition and format
+          filesystem = filesystem || 'xfs';
+          const formatResult = await this.formatDevice(actualDeviceToUse, filesystem);
+          // Refresh device symlinks after formatting
+          await this._refreshDeviceSymlinks();
+          deviceInfo = {
+            isFormatted: true,
+            filesystem,
+            uuid: formatResult.uuid,
+            actualDevice: formatResult.device
+          };
+          actualDeviceToUse = formatResult.device;
         } else {
-          // Device is not formatted - require explicit format option
-          throw new Error(`Device ${device} is not formatted. Use format: true to format the device.`);
+          // format=false: Import mode - use existing filesystem as-is
+          if (deviceInfo.isFormatted) {
+            // Device has filesystem - use it (with or without partition)
+            if (filesystem && filesystem !== deviceInfo.filesystem) {
+              // Filesystem mismatch - inform user
+              const deviceDisplayName = isUsingPartition ? `${device} (partition ${actualDeviceToUse})` : device;
+              throw new Error(`Device ${deviceDisplayName} has filesystem ${deviceInfo.filesystem}, but ${filesystem} was requested. Use format: true to reformat.`);
+            }
+            // Use existing filesystem
+            filesystem = deviceInfo.filesystem;
+            // actualDeviceToUse is already set correctly (partition or whole disk)
+          } else {
+            // Device has no filesystem
+            throw new Error(`Device ${device} has no filesystem. Use format: true to create partition and format.`);
+          }
         }
       }
 
@@ -3816,19 +3956,110 @@ class PoolsService {
       const mountPoint = path.join(this.mountBasePath, name);
       const mergerfsBasePath = path.join(this.mergerfsBasePath, name);
 
-      // Prepare devices (create partitions if needed)
-      console.log('Preparing devices (creating partitions if needed)...');
+      // Prepare devices
+      console.log('Preparing devices...');
       const preparedDevices = [];
-      for (const device of devices) {
-        const preparedDevice = await this._ensurePartition(device);
-        preparedDevices.push(preparedDevice);
+      
+      if (options.format === true) {
+        // format=true: Create partitions and format
+        for (const device of devices) {
+          const preparedDevice = await this._ensurePartition(device);
+          preparedDevices.push(preparedDevice);
+        }
+      } else {
+        // format=false: Import mode - use existing filesystems as-is
+        for (const device of devices) {
+          const isPartition = this._isPartitionPath(device);
+          if (!isPartition) {
+            // Whole disk - check what's on it
+            const deviceInfo = await this.checkDeviceFilesystem(device);
+            if (deviceInfo.actualDevice) {
+              // Has partition with filesystem - use the partition
+              preparedDevices.push(deviceInfo.actualDevice);
+            } else if (deviceInfo.isFormatted && !['dos', 'gpt', 'mbr'].includes(deviceInfo.filesystem)) {
+              // Whole disk has filesystem directly (no partition) - use whole disk
+              preparedDevices.push(device);
+            } else {
+              // No usable filesystem found
+              throw new Error(`Device ${device} has no usable filesystem. Use format: true to create partition and format.`);
+            }
+          } else {
+            // Already a partition - use as-is
+            preparedDevices.push(device);
+          }
+        }
       }
 
-      // Handle LUKS encryption for data devices
-      let actualDevices = preparedDevices;
+      // Validate filesystems BEFORE encryption (for format=false)
+      let hasLuksDevices = false;
+      let actualDevices = [...preparedDevices]; // Initialize with prepared devices
       let luksDevices = null;
       let encryptionEnabled = false;
-      if (options.config?.encrypted) {
+      
+      if (options.format === false) {
+        // Check if any device is already LUKS encrypted (only for format=false)
+        const luksDeviceIndices = [];
+        for (let i = 0; i < preparedDevices.length; i++) {
+          const deviceInfo = await this.checkDeviceFilesystem(preparedDevices[i]);
+          if (deviceInfo.isFormatted && deviceInfo.filesystem === 'crypto_LUKS') {
+            luksDeviceIndices.push(i);
+          }
+        }
+
+        hasLuksDevices = luksDeviceIndices.length > 0;
+        
+        if (hasLuksDevices && (!options.passphrase || options.passphrase.trim() === '')) {
+          throw new Error(`Some devices are LUKS encrypted but no passphrase provided. Please provide a passphrase to unlock the devices.`);
+        }
+
+        for (let i = 0; i < devices.length; i++) {
+          const preparedDevice = preparedDevices[i];
+          
+          // Check if device is already mounted
+          const mountStatus = await this._isDeviceMounted(preparedDevice);
+          if (mountStatus.isMounted) {
+            throw new Error(`Device ${preparedDevice} is already mounted at ${mountStatus.mountPoint}. Please unmount it first before creating a pool.`);
+          }
+          
+          // Validate filesystem
+          const deviceInfo = await this.checkDeviceFilesystem(preparedDevice);
+          
+          if (deviceInfo.isFormatted && deviceInfo.filesystem === 'crypto_LUKS') {
+            // Device is LUKS - need to open it to check filesystem inside
+            console.log(`Device ${preparedDevice} is LUKS encrypted, opening to check filesystem...`);
+            
+            await this._cleanupExistingLuksMappers(name);
+            let luksDevicesList;
+            try {
+              luksDevicesList = await this._openLuksDevicesWithSlots([preparedDevice], name, [i + 1], options.passphrase);
+            } catch (error) {
+              throw new Error(`Failed to open LUKS device ${preparedDevice}: ${error.message}. Please check your passphrase or keyfile.`);
+            }
+            
+            const luksDevice = luksDevicesList[0].mappedDevice;
+            const luksFilesystemInfo = await this.checkDeviceFilesystem(luksDevice);
+            
+            if (!luksFilesystemInfo.isFormatted) {
+              throw new Error(`LUKS container ${luksDevice} has no filesystem. Use format: true to format.`);
+            }
+            if (luksFilesystemInfo.filesystem !== filesystem) {
+              throw new Error(`LUKS container has filesystem ${luksFilesystemInfo.filesystem}, but ${filesystem} was requested. Use format: true to reformat.`);
+            }
+            
+            console.log(`LUKS device ${preparedDevice} contains ${filesystem} - will be used as-is`);
+            // Replace with LUKS device for mounting
+            actualDevices[i] = luksDevice;
+            encryptionEnabled = true;
+          } else if (!deviceInfo.isFormatted) {
+            throw new Error(`Device ${preparedDevice} has no filesystem. Use format: true to create partition and format.`);
+          } else if (deviceInfo.filesystem !== filesystem) {
+            throw new Error(`Device ${preparedDevice} has filesystem ${deviceInfo.filesystem}, but ${filesystem} was requested. Use format: true to reformat.`);
+          }
+        }
+      }
+
+      // Handle LUKS encryption for data devices (new encryption)
+      if (options.config?.encrypted && !hasLuksDevices) {
         console.log(`Setting up LUKS encryption for MergerFS pool '${name}'`);
         // Clean up any existing LUKS mappers with this pool name first
         await this._cleanupExistingLuksMappers(name);
@@ -3869,9 +4100,48 @@ class PoolsService {
           throw new Error('SnapRAID parity device must be at least as large as the largest data device');
         }
 
-        // Prepare SnapRAID device (create partition if needed)
+        // Prepare SnapRAID device
         console.log(`Preparing SnapRAID parity device '${snapraidDevice}'...`);
-        preparedSnapraidDevice = await this._ensurePartition(snapraidDevice);
+        if (options.format === true) {
+          // format=true: Create partition and format
+          preparedSnapraidDevice = await this._ensurePartition(snapraidDevice);
+        } else {
+          // format=false: Import mode - use existing filesystem as-is
+          const isSnapraidPartition = this._isPartitionPath(snapraidDevice);
+          if (!isSnapraidPartition) {
+            // Whole disk - check what's on it
+            const snapraidDeviceInfo = await this.checkDeviceFilesystem(snapraidDevice);
+            if (snapraidDeviceInfo.actualDevice) {
+              // Has partition with filesystem - use the partition
+              preparedSnapraidDevice = snapraidDeviceInfo.actualDevice;
+            } else if (snapraidDeviceInfo.isFormatted && !['dos', 'gpt', 'mbr'].includes(snapraidDeviceInfo.filesystem)) {
+              // Whole disk has filesystem directly (no partition) - use whole disk
+              preparedSnapraidDevice = snapraidDevice;
+            } else {
+              // No usable filesystem found
+              throw new Error(`SnapRAID device ${snapraidDevice} has no usable filesystem. Use format: true to create partition and format.`);
+            }
+          } else {
+            // Already a partition - use as-is
+            preparedSnapraidDevice = snapraidDevice;
+          }
+        }
+        
+        // Validate SnapRAID filesystem BEFORE encryption (for format=false)
+        if (options.format === false) {
+          const snapraidMountStatus = await this._isDeviceMounted(preparedSnapraidDevice);
+          if (snapraidMountStatus.isMounted) {
+            throw new Error(`SnapRAID device ${preparedSnapraidDevice} is already mounted at ${snapraidMountStatus.mountPoint}. Please unmount it first before creating a pool.`);
+          }
+          
+          const snapraidInfo = await this.checkDeviceFilesystem(preparedSnapraidDevice);
+          if (!snapraidInfo.isFormatted) {
+            throw new Error(`SnapRAID device ${preparedSnapraidDevice} has no filesystem. Use format: true to create partition and format.`);
+          }
+          if (snapraidInfo.filesystem !== filesystem) {
+            throw new Error(`SnapRAID device ${preparedSnapraidDevice} has filesystem ${snapraidInfo.filesystem}, but ${filesystem} was requested. Use format: true to reformat.`);
+          }
+        }
 
         // Handle LUKS encryption for SnapRAID device if encryption is enabled
         if (encryptionEnabled) {
@@ -3886,91 +4156,32 @@ class PoolsService {
         }
       }
 
-      // Check if all devices are formatted with the correct filesystem
-      const formatDevices = [];
-      const invalidDevices = [];
-
-      for (let i = 0; i < devices.length; i++) {
-        const device = devices[i];
-        const actualDevice = actualDevices[i]; // Use mapped device for LUKS
-
-        // Check if device is already mounted
-        const mountStatus = await this._isDeviceMounted(actualDevice);
-        if (mountStatus.isMounted) {
-          throw new Error(`Device ${actualDevice} is already mounted at ${mountStatus.mountPoint}. Please unmount it first before creating a pool.`);
-        }
-
-        const deviceInfo = await this.checkDeviceFilesystem(actualDevice);
-
-        if (deviceInfo.isFormatted) {
-          if (deviceInfo.filesystem !== filesystem) {
-            if (options.format === true) {
-              formatDevices.push(actualDevice);
-            } else {
-              invalidDevices.push({
-                device: actualDevice,
-                currentFs: deviceInfo.filesystem,
-                expectedFs: filesystem
-              });
-            }
+      // Format devices if format=true (AFTER encryption setup)
+      if (options.format === true) {
+        // format=true: Format all devices (partitions already created, encryption already setup)
+        for (let i = 0; i < devices.length; i++) {
+          const actualDevice = actualDevices[i];
+          
+          // Check if device is already mounted
+          const mountStatus = await this._isDeviceMounted(actualDevice);
+          if (mountStatus.isMounted) {
+            throw new Error(`Device ${actualDevice} is already mounted at ${mountStatus.mountPoint}. Please unmount it first before creating a pool.`);
           }
-        } else {
-          // Device is not formatted - always require explicit format option
-          invalidDevices.push({
-            device: actualDevice,
-            currentFs: null,
-            expectedFs: filesystem
-          });
+          
+          // Format the device (LUKS device if encrypted, partition if not)
+          await this.formatDevice(actualDevice, filesystem);
         }
-      }
-
-      // Check snapraid device if provided
-      if (snapraidDevice) {
-        // Use actual snapraid device for checking (encrypted or not)
-        const deviceToCheck = actualSnapraidDevice || snapraidDevice;
-
-        // Check if snapraid device is already mounted
-        const snapraidMountStatus = await this._isDeviceMounted(deviceToCheck);
-        if (snapraidMountStatus.isMounted) {
-          throw new Error(`SnapRAID device ${deviceToCheck} is already mounted at ${snapraidMountStatus.mountPoint}. Please unmount it first before creating a pool.`);
-        }
-
-        const snapraidInfo = await this.checkDeviceFilesystem(deviceToCheck);
-
-        if (snapraidInfo.isFormatted) {
-          if (snapraidInfo.filesystem !== filesystem) {
-            if (options.format === true) {
-              formatDevices.push(deviceToCheck);
-            } else {
-              invalidDevices.push({
-                device: deviceToCheck,
-                currentFs: snapraidInfo.filesystem,
-                expectedFs: filesystem
-              });
-            }
+        
+        // Format SnapRAID device if provided
+        if (snapraidDevice && actualSnapraidDevice) {
+          const snapraidMountStatus = await this._isDeviceMounted(actualSnapraidDevice);
+          if (snapraidMountStatus.isMounted) {
+            throw new Error(`SnapRAID device ${actualSnapraidDevice} is already mounted at ${snapraidMountStatus.mountPoint}. Please unmount it first before creating a pool.`);
           }
-        } else {
-          // SnapRAID device is not formatted - always require explicit format option
-          invalidDevices.push({
-            device: deviceToCheck,
-            currentFs: null,
-            expectedFs: filesystem
-          });
+          await this.formatDevice(actualSnapraidDevice, filesystem);
         }
       }
-
-      // If there are invalid devices, throw error
-      if (invalidDevices.length > 0) {
-        throw new Error(
-          `Some devices have incompatible filesystems: ${JSON.stringify(invalidDevices)}. ` +
-          `Use format option to reformat them.`
-        );
-      }
-
-      // Format devices if needed
-      for (const device of formatDevices) {
-        await this.formatDevice(device, filesystem);
-      }
+      // Note: format=false validation already done BEFORE encryption
 
       // Refresh device symlinks after formatting
       await this._refreshDeviceSymlinks();
@@ -3992,27 +4203,14 @@ class PoolsService {
         const diskMountPoint = path.join(mergerfsBasePath, `disk${diskIndex}`);
         await this._createDirectoryWithOwnership(diskMountPoint, ownershipOptions);
 
-        // Check if filesystem is on device or partition
-        const deviceInfo = await this.checkDeviceFilesystem(actualDevice);
-        const actualDeviceToUse = deviceInfo.actualDevice || actualDevice;
-        const isUsingPartition = deviceInfo.actualDevice && deviceInfo.actualDevice !== actualDevice;
-
         // Mount the device to its individual mount point
         await this.mountDevice(actualDevice, diskMountPoint);
 
         // Get device UUID from the prepared device (partition)
-        let deviceUuid;
-        let physicalDevicePath;
-
-        if (encryptionEnabled && luksDevices) {
-          // For LUKS devices, get UUID from the prepared physical device/partition
-          const preparedDevice = preparedDevices[i];
-          deviceUuid = await this.getDeviceUuid(preparedDevice);
-          physicalDevicePath = preparedDevice;
-        } else {
-          deviceUuid = await this.getDeviceUuid(actualDeviceToUse);
-          physicalDevicePath = actualDeviceToUse;
-        }
+        // For LUKS: preparedDevice is the physical partition
+        // For non-LUKS: preparedDevice is the partition or whole disk
+        const preparedDevice = preparedDevices[i];
+        const deviceUuid = await this.getDeviceUuid(preparedDevice);
 
         dataDevices.push({
           slot: diskIndex.toString(),
