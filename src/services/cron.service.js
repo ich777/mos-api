@@ -163,10 +163,19 @@ class CronService {
       if (!jobData.schedule || typeof jobData.schedule !== 'string') {
         throw new Error('Schedule is required and must be a string');
       }
-      // Einfache Cron-Format Validierung (5 Felder)
-      const cronParts = jobData.schedule.trim().split(/\s+/);
-      if (cronParts.length !== 5) {
-        throw new Error('Schedule must be in Cron format (5 fields: Minute Hour Day Month Weekday)');
+
+      const schedule = jobData.schedule.trim();
+
+      // Check for special cron shortcuts
+      const validShortcuts = ['@reboot', '@yearly', '@annually', '@monthly', '@weekly', '@daily', '@midnight', '@hourly'];
+      const isShortcut = validShortcuts.includes(schedule);
+
+      if (!isShortcut) {
+        // Standard Cron-Format Validierung (5 Felder)
+        const cronParts = schedule.split(/\s+/);
+        if (cronParts.length !== 5) {
+          throw new Error('Schedule must be in Cron format (5 fields: Minute Hour Day Month Weekday) or a valid shortcut (@reboot, @daily, @hourly, etc.)');
+        }
       }
     }
 
