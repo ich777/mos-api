@@ -114,18 +114,8 @@ class CronService {
       const safeFilename = this._generateSafeFilename(name);
       const scriptPath = path.join(scriptsDir, `${safeFilename}.sh`);
 
-      // Check if file already exists
-      try {
-        await fs.access(scriptPath);
-        throw new Error(`Script file already exists: ${scriptPath}. Please use a different name or reference the existing script with scriptPath.`);
-      } catch (error) {
-        if (error.code !== 'ENOENT') {
-          throw error;
-        }
-      }
-
       // Create script content with shebang
-      const fullScriptContent = `#!/bin/bash\n# Cron-Job: ${name}\n# Generated automatically\n\n${scriptContent}\n`;
+      const fullScriptContent = `${scriptContent}`;
 
       // Create script and make it executable
       await fs.writeFile(scriptPath, fullScriptContent, 'utf8');
@@ -171,7 +161,7 @@ class CronService {
       const isShortcut = validShortcuts.includes(schedule);
 
       if (!isShortcut) {
-        // Standard Cron-Format Validierung (5 Felder)
+        // Default Cron-Format validation (5 fields)
         const cronParts = schedule.split(/\s+/);
         if (cronParts.length !== 5) {
           throw new Error('Schedule must be in Cron format (5 fields: Minute Hour Day Month Weekday) or a valid shortcut (@reboot, @daily, @hourly, etc.)');
@@ -179,9 +169,29 @@ class CronService {
       }
     }
 
+    // Validate script content if provided
+    if (jobData.script !== undefined) {
+      if (typeof jobData.script !== 'string' || jobData.script.trim() === '') {
+        throw new Error('Script must be a non-empty string');
+      }
+    }
+
+    // Validate scriptPath if provided
+    if (jobData.scriptPath !== undefined) {
+      if (typeof jobData.scriptPath !== 'string' || jobData.scriptPath.trim() === '') {
+        throw new Error('ScriptPath must be a non-empty string');
+      }
+    }
+
+    // Command is only required if neither script nor scriptPath is provided
     if (!isUpdate || jobData.command !== undefined) {
-      if (!jobData.command || typeof jobData.command !== 'string') {
-        throw new Error('Command is required and must be a string');
+      const hasScript = jobData.script && typeof jobData.script === 'string' && jobData.script.trim() !== '';
+      const hasScriptPath = jobData.scriptPath && typeof jobData.scriptPath === 'string' && jobData.scriptPath.trim() !== '';
+
+      if (!hasScript && !hasScriptPath) {
+        if (!jobData.command || typeof jobData.command !== 'string' || jobData.command.trim() === '') {
+          throw new Error('Command is required and must be a non-empty string (unless script or scriptPath is provided)');
+        }
       }
     }
 
@@ -220,14 +230,14 @@ class CronService {
       }
 
       let scriptPath = null;
-      let finalCommand = jobData.command;
+      let finalCommand = jobData.command || null;
 
       // If script content is provided, create the script
       if (jobData.script) {
         const convertToUnix = jobData.convert_to_unix || false;
         scriptPath = await this._createCronScript(jobData.name, jobData.script, convertToUnix);
-        // Set the command to the created script
-        finalCommand = `bash ${scriptPath}`;
+        // Set the command to the created script with output suppression
+        finalCommand = `bash ${scriptPath} > /dev/null 2>&1`;
       }
 
       // If scriptPath is provided, use it
@@ -239,8 +249,13 @@ class CronService {
         } catch (error) {
           throw new Error(`Referenced script does not exist: ${scriptPath}`);
         }
-        // Set the command to the referenced script
-        finalCommand = `bash ${scriptPath}`;
+        // Set the command to the referenced script with output suppression
+        finalCommand = `bash ${scriptPath} > /dev/null 2>&1`;
+      }
+
+      // Ensure we have a command at this point
+      if (!finalCommand) {
+        throw new Error('No command could be determined. Provide either command, script, or scriptPath.');
       }
 
       // Create new job
@@ -326,7 +341,7 @@ class CronService {
 
           const convertToUnix = updates.convert_to_unix || false;
           newScriptPath = await this._createCronScript(updates.name || cronJobs[jobIndex].name, updates.script, convertToUnix);
-          newCommand = `bash ${newScriptPath}`;
+          newCommand = `bash ${newScriptPath} > /dev/null 2>&1`;
         }
 
         // If scriptPath is provided, use it
@@ -338,7 +353,7 @@ class CronService {
           } catch (error) {
             throw new Error(`Referenced script does not exist: ${newScriptPath}`);
           }
-          newCommand = `bash ${newScriptPath}`;
+          newCommand = `bash ${newScriptPath} > /dev/null 2>&1`;
         }
 
         cronJobs[jobIndex].scriptPath = newScriptPath;

@@ -71,7 +71,6 @@ const { checkRole } = require('../middleware/auth.middleware');
  *       required:
  *         - name
  *         - schedule
- *         - command
  *       properties:
  *         name:
  *           type: string
@@ -84,7 +83,7 @@ const { checkRole } = require('../middleware/auth.middleware');
  *           example: "0 2 * * *"
  *         command:
  *           type: string
- *           description: Shell command to execute
+ *           description: Shell command to execute (required if script or scriptPath not provided)
  *           example: "/usr/local/bin/backup-db.sh"
  *         enabled:
  *           type: boolean
@@ -92,11 +91,11 @@ const { checkRole } = require('../middleware/auth.middleware');
  *           example: true
  *         script:
  *           type: string
- *           description: Optional script content to create in /boot/optional/scripts/cron
+ *           description: Optional script content to create in /boot/optional/scripts/cron (mutually exclusive with scriptPath, auto-generates command)
  *           example: "#!/bin/bash\necho 'Starting backup...'\n/usr/bin/backup-tool\necho 'Backup completed'"
  *         scriptPath:
  *           type: string
- *           description: Optional path to existing script file (mutually exclusive with script)
+ *           description: Optional path to existing script file (mutually exclusive with script, auto-generates command)
  *           example: "/boot/optional/scripts/cron/existing_script.sh"
  *         convert_to_unix:
  *           type: boolean
@@ -710,10 +709,19 @@ router.post('/', checkRole(['admin']), async (req, res) => {
   try {
     const { name, schedule, command, script, scriptPath, enabled, convert_to_unix } = req.body;
 
-    if (!name || !schedule || !command) {
+    // Basic validation - name and schedule are always required
+    if (!name || !schedule) {
       return res.status(400).json({
         success: false,
-        error: 'Name, Schedule and Command are required'
+        error: 'Name and Schedule are required'
+      });
+    }
+
+    // Command is only required if neither script nor scriptPath is provided
+    if (!command && !script && !scriptPath) {
+      return res.status(400).json({
+        success: false,
+        error: 'Either command, script, or scriptPath must be provided'
       });
     }
 

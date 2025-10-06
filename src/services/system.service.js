@@ -954,6 +954,130 @@ class SystemService {
       throw new Error(`Error updating proxy settings: ${error.message}`);
     }
   }
+
+  /**
+   * List all log files in /var/log recursively (excludes empty files)
+   * @returns {Promise<Array>} Simple array of log file paths
+   */
+  async listLogFiles() {
+    try {
+      const fs = require('fs').promises;
+      const path = require('path');
+      const logDir = '/var/log';
+
+      /**
+       * Recursively scan directory for log files
+       * @param {string} dir - Directory to scan
+       * @param {string} relativePath - Relative path from /var/log
+       * @returns {Promise<Array>} Array of file paths
+       */
+      async function scanDirectory(dir, relativePath = '') {
+        const files = [];
+
+        try {
+          const entries = await fs.readdir(dir, { withFileTypes: true });
+
+          for (const entry of entries) {
+            const fullPath = path.join(dir, entry.name);
+            const relPath = path.join(relativePath, entry.name);
+
+            try {
+              const stats = await fs.stat(fullPath);
+
+              if (entry.isDirectory()) {
+                // Recursively scan subdirectories
+                const subFiles = await scanDirectory(fullPath, relPath);
+                files.push(...subFiles);
+              } else if (entry.isFile() && stats.size > 0) {
+                // Only include files with content (size > 0)
+                files.push(relPath);
+              }
+            } catch (statError) {
+              // Skip files/directories we can't access
+              continue;
+            }
+          }
+        } catch (readError) {
+          // Skip directories we can't read
+        }
+
+        return files;
+      }
+
+      const logFiles = await scanDirectory(logDir);
+
+      // Sort alphabetically for better readability
+      logFiles.sort();
+
+      return logFiles;
+    } catch (error) {
+      throw new Error(`Error listing log files: ${error.message}`);
+    }
+  }
+
+  /**
+   * Read content of a specific log file
+   * @param {string} logPath - Relative path to log file from /var/log
+   * @param {number} lines - Number of lines to read (default: 100, max: 1000000)
+   * @param {boolean} tail - Read from end of file (default: true)
+   * @returns {Promise<Object>} Log file content and metadata
+   */
+  async readLogFile(logPath, lines = 100, tail = true) {
+    try {
+      const fs = require('fs').promises;
+      const path = require('path');
+
+      // Security: Prevent path traversal
+      const normalizedPath = path.normalize(logPath).replace(/^(\.\.(\/|\\|$))+/, '');
+      const fullPath = path.join('/var/log', normalizedPath);
+
+      // Ensure the path is within /var/log
+      if (!fullPath.startsWith('/var/log/')) {
+        throw new Error('Invalid log path: Path must be within /var/log');
+      }
+
+      // Check if file exists and is a file
+      const stats = await fs.stat(fullPath);
+      if (!stats.isFile()) {
+        throw new Error('Path is not a file');
+      }
+
+      // Limit lines
+      const maxLines = Math.min(Math.max(1, lines), 1000000);
+
+      // Read file content
+      let content;
+      if (tail) {
+        // Use tail command for efficient reading from end
+        const { stdout } = await execAsync(`tail -n ${maxLines} "${fullPath}"`);
+        content = stdout;
+      } else {
+        // Use head command for reading from start
+        const { stdout } = await execAsync(`head -n ${maxLines} "${fullPath}"`);
+        content = stdout;
+      }
+
+      const contentLines = content.split('\n').filter(line => line.trim() !== '');
+
+      return {
+        path: normalizedPath,
+        full_path: fullPath,
+        size: stats.size,
+        size_human: this.formatBytes(stats.size),
+        modified: stats.mtime,
+        lines_requested: maxLines,
+        lines_returned: contentLines.length,
+        content: contentLines
+      };
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        throw new Error('Log file not found');
+      } else if (error.code === 'EACCES') {
+        throw new Error('Permission denied to read log file');
+      }
+      throw new Error(`Error reading log file: ${error.message}`);
+    }
+  }
 }
 
 module.exports = new SystemService();

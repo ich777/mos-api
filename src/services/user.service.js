@@ -210,6 +210,7 @@ class UserService {
       darkmode,
       samba_user: samba_user || role === 'samba_only',
       byte_format: 'binary', // Default byte format setting
+      show_menu: true, // Default menu visibility setting
       createdAt: new Date().toISOString()
     };
 
@@ -305,7 +306,7 @@ class UserService {
           throw new Error('You are not allowed to change your role to admin. Only administrators can modify user roles.');
         }
 
-        const allowedFields = ['language', 'primary_color', 'darkmode', 'password'];
+        const allowedFields = ['language', 'primary_color', 'darkmode', 'password', 'show_menu'];
         const filteredUpdates = {};
 
         for (const [key, value] of Object.entries(updates)) {

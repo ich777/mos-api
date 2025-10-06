@@ -4785,10 +4785,10 @@ if (snapraidDevice) {
       }
 
       // Check power status with hdparm
-      let powerStatus = 'unknown';
+      let powerStatus = 'active';
       try {
         const { stdout } = await execPromise(`hdparm -C ${disk.device} 2>/dev/null`);
-        if (stdout.includes('active/idle')) powerStatus = 'wake';
+        if (stdout.includes('active/idle') || stdout.includes('idle')) powerStatus = 'active';
         else if (stdout.includes('standby')) powerStatus = 'standby';
         else if (stdout.includes('sleeping')) powerStatus = 'standby';
       } catch (error) {
@@ -4931,9 +4931,9 @@ if (snapraidDevice) {
       try {
         const { stdout } = await execPromise(`hdparm -C ${device.device} 2>/dev/null`);
 
-        let powerStatus = 'unknown';
-        if (stdout.includes('active/idle')) {
-          powerStatus = 'wake';
+        let powerStatus = 'active';
+        if (stdout.includes('active/idle') || stdout.includes('idle')) {
+          powerStatus = 'active';
         } else if (stdout.includes('standby')) {
           powerStatus = 'standby';
         } else if (stdout.includes('sleeping')) {
@@ -4952,9 +4952,9 @@ if (snapraidDevice) {
       try {
         const { stdout } = await execPromise(`hdparm -C ${device.device} 2>/dev/null`);
 
-        let powerStatus = 'unknown';
-        if (stdout.includes('active/idle')) {
-          powerStatus = 'wake';
+        let powerStatus = 'active';
+        if (stdout.includes('active/idle') || stdout.includes('idle')) {
+          powerStatus = 'active';
         } else if (stdout.includes('standby')) {
           powerStatus = 'standby';
         } else if (stdout.includes('sleeping')) {
@@ -4994,8 +4994,8 @@ if (snapraidDevice) {
         try {
           const { stdout } = await execPromise(`hdparm -C ${disk.device} 2>/dev/null`);
 
-          let powerStatus = 'unknown';
-          if (stdout.includes('active/idle')) {
+          let powerStatus = 'active';
+          if (stdout.includes('active/idle') || stdout.includes('idle')) {
             powerStatus = 'active';
           } else if (stdout.includes('standby')) {
             powerStatus = 'standby';

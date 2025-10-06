@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { checkRole, authenticateToken } = require('../middleware/auth.middleware');
 const systemService = require('../services/system.service');
+const mosService = require('../services/mos.service');
 
 /**
  * @swagger
@@ -843,85 +844,6 @@ router.get('/load', authenticateToken, async (req, res) => {
 
 /**
  * @swagger
- * /system/services:
- *   get:
- *     summary: Get services status
- *     description: Retrieve status information for all system services (admin only)
- *     tags: [System]
- *     security:
- *       - bearerAuth: []
- *     responses:
- *       200:
- *         description: Services status retrieved successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: array
- *               items:
- *                 type: object
- *                 properties:
- *                   name:
- *                     type: string
- *                     description: Service name
- *                     example: "nginx"
- *                   running:
- *                     type: boolean
- *                     description: Service running status
- *                     example: true
- *                   startmode:
- *                     type: string
- *                     description: Service start mode
- *                     example: "automatic"
- *                   pids:
- *                     type: array
- *                     items:
- *                       type: integer
- *                     description: Process IDs
- *                     example: [1234, 1235]
- *                   cpu:
- *                     type: number
- *                     description: CPU usage percentage
- *                     example: 2.5
- *                   mem:
- *                     type: number
- *                     description: Memory usage percentage
- *                     example: 1.8
- *       401:
- *         description: Not authenticated
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/Error'
- *       403:
- *         description: Admin permission required
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/Error'
- *       500:
- *         description: Server error
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/Error'
- *             example:
- *               error: "Error getting services status: systeminformation module failed"
- */
-
-// Services status (admin only)
-router.get('/services', checkRole(['admin']), async (req, res) => {
-  try {
-    const services = await systemService.getServicesStatus();
-    res.json(services);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-
-
-/**
- * @swagger
  * /system/power/reboot:
  *   post:
  *     summary: Reboot system
@@ -1231,5 +1153,395 @@ router.put('/proxy', checkRole(['admin']), async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /system/keymaps:
+ *   get:
+ *     summary: List available keymaps
+ *     description: Retrieve a list of all available keyboard layouts/keymaps (admin only)
+ *     tags: [System]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Keymaps retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: object
+ *                 properties:
+ *                   name:
+ *                     type: string
+ *                     description: Keymap name
+ *                     example: "de"
+ *                   description:
+ *                     type: string
+ *                     description: Keymap description
+ *                     example: "German"
+ *             example:
+ *               - name: "us"
+ *                 description: "US English"
+ *               - name: "de"
+ *                 description: "German"
+ *               - name: "fr"
+ *                 description: "French"
+ *               - name: "es"
+ *                 description: "Spanish"
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+router.get('/keymaps', checkRole(['admin']), async (req, res) => {
+  try {
+    const keymaps = await mosService.listKeymaps();
+    res.json(keymaps);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /system/timezones:
+ *   get:
+ *     summary: List available timezones
+ *     description: Retrieve a list of all available system timezones (admin only)
+ *     tags: [System]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Timezones retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: object
+ *                 properties:
+ *                   name:
+ *                     type: string
+ *                     description: Timezone identifier
+ *                     example: "Europe/Berlin"
+ *                   description:
+ *                     type: string
+ *                     description: Timezone description
+ *                     example: "Central European Time"
+ *             example:
+ *               - name: "Europe/Berlin"
+ *                 description: "Central European Time"
+ *               - name: "America/New_York"
+ *                 description: "Eastern Standard Time"
+ *               - name: "Asia/Tokyo"
+ *                 description: "Japan Standard Time"
+ *               - name: "UTC"
+ *                 description: "Coordinated Universal Time"
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+router.get('/timezones', checkRole(['admin']), async (req, res) => {
+  try {
+    const timezones = await mosService.listTimezones();
+    res.json(timezones);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /system/governors:
+ *   get:
+ *     summary: Get available CPU governors
+ *     description: Get list of available CPU frequency governors from the system (admin only)
+ *     tags: [System]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: List of available CPU governors
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: string
+ *               example: ["ondemand", "performance", "powersave", "conservative", "userspace"]
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+router.get('/governors', checkRole(['admin']), async (req, res) => {
+  try {
+    const governors = await mosService.getAvailableGovernors();
+    res.json(governors);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /system/logs:
+ *   get:
+ *     summary: List all log files
+ *     description: Retrieve a simple array of log file paths in /var/log recursively. Excludes empty files (admin only)
+ *     tags: [System]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Log files list retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: string
+ *                 description: Relative path from /var/log
+ *             example:
+ *               - "alternatives.log"
+ *               - "apt/history.log"
+ *               - "apt/term.log"
+ *               - "auth.log"
+ *               - "dpkg.log"
+ *               - "kern.log"
+ *               - "nginx/access.log"
+ *               - "nginx/error.log"
+ *               - "syslog"
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *             example:
+ *               error: "Error listing log files: Permission denied"
+ */
+router.get('/logs', checkRole(['admin']), async (req, res) => {
+  try {
+    const logs = await systemService.listLogFiles();
+    res.json(logs);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /system/logs/content:
+ *   get:
+ *     summary: Read log file content
+ *     description: Read content of a specific log file from /var/log. Supports reading from start or end of file (admin only)
+ *     tags: [System]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Relative path to log file from /var/log
+ *         example: "syslog"
+ *       - in: query
+ *         name: lines
+ *         required: false
+ *         schema:
+ *           type: integer
+ *           minimum: 1
+ *           maximum: 1000000
+ *           default: 100
+ *         description: Number of lines to read (max 1000000)
+ *         example: 100
+ *       - in: query
+ *         name: tail
+ *         required: false
+ *         schema:
+ *           type: boolean
+ *           default: true
+ *         description: Read from end of file (true) or start (false)
+ *         example: true
+ *     responses:
+ *       200:
+ *         description: Log file content retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 path:
+ *                   type: string
+ *                   description: Relative path to log file
+ *                   example: "syslog"
+ *                 full_path:
+ *                   type: string
+ *                   description: Full path to log file
+ *                   example: "/var/log/syslog"
+ *                 size:
+ *                   type: integer
+ *                   description: File size in bytes
+ *                   example: 1048576
+ *                 size_human:
+ *                   type: string
+ *                   description: Human readable file size
+ *                   example: "1.0 MiB"
+ *                 modified:
+ *                   type: string
+ *                   format: date-time
+ *                   description: Last modification time
+ *                   example: "2025-10-06T10:30:00.000Z"
+ *                 lines_requested:
+ *                   type: integer
+ *                   description: Number of lines requested
+ *                   example: 100
+ *                 lines_returned:
+ *                   type: integer
+ *                   description: Number of lines returned
+ *                   example: 100
+ *                 content:
+ *                   type: array
+ *                   items:
+ *                     type: string
+ *                   description: Array of log lines
+ *                   example: ["Oct  6 10:30:01 server systemd[1]: Started Session 123.", "Oct  6 10:30:15 server kernel: [12345.678] USB disconnect"]
+ *             example:
+ *               path: "syslog"
+ *               full_path: "/var/log/syslog"
+ *               size: 1048576
+ *               size_human: "1.0 MiB"
+ *               modified: "2025-10-06T10:30:00.000Z"
+ *               lines_requested: 100
+ *               lines_returned: 100
+ *               content:
+ *                 - "Oct  6 10:30:01 server systemd[1]: Started Session 123."
+ *                 - "Oct  6 10:30:15 server kernel: [12345.678] USB disconnect"
+ *       400:
+ *         description: Invalid parameters
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *             examples:
+ *               missing_path:
+ *                 summary: Missing path parameter
+ *                 value:
+ *                   error: "Path parameter is required"
+ *               invalid_path:
+ *                 summary: Invalid path
+ *                 value:
+ *                   error: "Invalid log path: Path must be within /var/log"
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Log file not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *             example:
+ *               error: "Log file not found"
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *             example:
+ *               error: "Error reading log file: Permission denied"
+ */
+router.get('/logs/content', checkRole(['admin']), async (req, res) => {
+  try {
+    const { path, lines, tail } = req.query;
+
+    if (!path) {
+      return res.status(400).json({ error: 'Path parameter is required' });
+    }
+
+    const linesNum = lines ? parseInt(lines, 10) : 100;
+    const tailBool = tail === 'false' ? false : true;
+
+    const content = await systemService.readLogFile(path, linesNum, tailBool);
+    res.json(content);
+  } catch (error) {
+    if (error.message.includes('not found')) {
+      res.status(404).json({ error: error.message });
+    } else if (error.message.includes('Invalid log path')) {
+      res.status(400).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
 
 module.exports = router; 

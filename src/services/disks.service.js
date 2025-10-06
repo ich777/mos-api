@@ -368,13 +368,13 @@ class DisksService {
       try {
         const { stdout } = await execPromise(`hdparm -C ${devicePath}`);
 
-        let status = 'unknown';
-        let active = null;
+        let status = 'active';
+        let active = true;
 
         if (stdout.includes('standby')) {
           status = 'standby';
           active = false;
-        } else if (stdout.includes('active/idle')) {
+        } else if (stdout.includes('active/idle') || stdout.includes('idle')) {
           status = 'active';
           active = true;
         } else if (stdout.includes('sleeping')) {
@@ -448,13 +448,13 @@ class DisksService {
       try {
         const { stdout } = await execPromise(`hdparm -C ${devicePath}`);
 
-        let status = 'unknown';
-        let active = null;
+        let status = 'active';
+        let active = true;
 
         if (stdout.includes('standby')) {
           status = 'standby';
           active = false;
-        } else if (stdout.includes('active/idle')) {
+        } else if (stdout.includes('active/idle') || stdout.includes('idle')) {
           status = 'active';
           active = true;
         } else if (stdout.includes('sleeping')) {
