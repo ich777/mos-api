@@ -1687,6 +1687,140 @@ router.put('/mos/groups/order', async (req, res) => {
 
 /**
  * @swagger
+ * /docker/mos/unusedimages:
+ *   get:
+ *     summary: Get unused Docker images
+ *     description: Get list of Docker images that are not used by any container (admin only)
+ *     tags: [Docker]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: List of unused images
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: object
+ *                 properties:
+ *                   repository:
+ *                     type: string
+ *                     description: Image repository name
+ *                     example: "nginx"
+ *                   tag:
+ *                     type: string
+ *                     description: Image tag
+ *                     example: "1.20.2"
+ *                   id:
+ *                     type: string
+ *                     description: Image ID (short format)
+ *                     example: "a1b2c3d4e5f6"
+ *                   size:
+ *                     type: string
+ *                     description: Image size
+ *                     example: "133MB"
+ *       401:
+ *         description: Unauthorized
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+router.get('/mos/unusedimages', async (req, res) => {
+  try {
+    const unusedImages = await dockerService.getUnusedImages();
+    res.json(unusedImages);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /docker/mos/unusedimages:
+ *   delete:
+ *     summary: Delete all unused Docker images
+ *     description: Delete all unused Docker images (admin only)
+ *     tags: [Docker]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Deletion result
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   description: Whether all deletions succeeded
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   description: Summary message
+ *                   example: "Deleted 3 image(s), 0 failed"
+ *                 deleted:
+ *                   type: array
+ *                   description: Successfully deleted images
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       repository:
+ *                         type: string
+ *                       tag:
+ *                         type: string
+ *                       id:
+ *                         type: string
+ *                       size:
+ *                         type: string
+ *                 failed:
+ *                   type: array
+ *                   description: Failed deletions with error messages
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       repository:
+ *                         type: string
+ *                       tag:
+ *                         type: string
+ *                       id:
+ *                         type: string
+ *                       size:
+ *                         type: string
+ *                       error:
+ *                         type: string
+ *       401:
+ *         description: Unauthorized
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+router.delete('/mos/unusedimages', async (req, res) => {
+  try {
+    const result = await dockerService.deleteUnusedImages();
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
  * /docker/{path}:
  *   get:
  *     summary: Docker REST API Proxy (GET)

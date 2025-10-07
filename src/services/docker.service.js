@@ -1499,6 +1499,176 @@ class DockerService {
       throw new Error(`Failed to update group order: ${error.message}`);
     }
   }
+
+  /**
+   * Get unused Docker images (images not used by any container)
+   * @returns {Promise<Array>} Array of unused images with repository, tag, and id
+   */
+  async getUnusedImages() {
+    try {
+      const dockerSocketPath = '/var/run/docker.sock';
+
+      // Get all images via Docker API
+      const imagesResponse = await axios.get('http://localhost/images/json', {
+        socketPath: dockerSocketPath,
+        params: {
+          filters: JSON.stringify({ dangling: ['false'] })
+        }
+      });
+
+      const images = imagesResponse.data;
+
+      if (!images || images.length === 0) {
+        return [];
+      }
+
+      // Get all containers (running and stopped) via Docker API
+      const containersResponse = await axios.get('http://localhost/containers/json', {
+        socketPath: dockerSocketPath,
+        params: {
+          all: true
+        }
+      });
+
+      const containers = containersResponse.data;
+
+      // Build set of used image IDs
+      const usedImageIds = new Set();
+
+      containers.forEach(container => {
+        // Add full image ID (sha256:...)
+        if (container.ImageID) {
+          usedImageIds.add(container.ImageID);
+          // Also add short version
+          const shortId = container.ImageID.replace('sha256:', '').substring(0, 12);
+          usedImageIds.add(shortId);
+        }
+        // Also add the image name used by container
+        if (container.Image) {
+          usedImageIds.add(container.Image);
+        }
+      });
+
+      // Filter out images that are used by containers
+      const unusedImages = images.filter(image => {
+        // Check if full image ID is used
+        if (usedImageIds.has(image.Id)) {
+          return false;
+        }
+
+        // Check short image ID
+        const shortId = image.Id.replace('sha256:', '').substring(0, 12);
+        if (usedImageIds.has(shortId)) {
+          return false;
+        }
+
+        // Check if any of the image's RepoTags are used
+        if (image.RepoTags) {
+          for (const repoTag of image.RepoTags) {
+            if (usedImageIds.has(repoTag)) {
+              return false;
+            }
+          }
+        }
+
+        return true;
+      });
+
+      // Format response
+      const formattedImages = [];
+
+      unusedImages.forEach(image => {
+        const shortId = image.Id.replace('sha256:', '').substring(0, 12);
+        const sizeInMB = (image.Size / (1024 * 1024)).toFixed(2);
+        const size = sizeInMB >= 1024
+          ? `${(sizeInMB / 1024).toFixed(2)}GB`
+          : `${sizeInMB}MB`;
+
+        // Handle images with RepoTags
+        if (image.RepoTags && image.RepoTags.length > 0) {
+          image.RepoTags.forEach(repoTag => {
+            if (repoTag !== '<none>:<none>') {
+              const [repository, tag] = repoTag.split(':');
+              formattedImages.push({
+                repository,
+                tag,
+                id: shortId,
+                size
+              });
+            }
+          });
+        }
+      });
+
+      return formattedImages;
+
+    } catch (error) {
+      throw new Error(`Failed to get unused images: ${error.message}`);
+    }
+  }
+
+  /**
+   * Delete all unused Docker images
+   * @returns {Promise<Object>} Result with deleted and failed images
+   */
+  async deleteUnusedImages() {
+    try {
+      // Get unused images
+      const unusedImages = await this.getUnusedImages();
+
+      if (unusedImages.length === 0) {
+        return {
+          success: true,
+          message: 'No unused images to delete',
+          deleted: [],
+          failed: []
+        };
+      }
+
+      const deleted = [];
+      const failed = [];
+
+      // Delete images using Docker API via axios
+      const dockerSocketPath = '/var/run/docker.sock';
+
+      for (const image of unusedImages) {
+        try {
+          // Use Docker API to delete image
+          await axios.delete(`http://localhost/images/${image.id}`, {
+            socketPath: dockerSocketPath,
+            params: {
+              force: false // Don't force delete, only delete if truly unused
+            }
+          });
+
+          deleted.push({
+            repository: image.repository,
+            tag: image.tag,
+            id: image.id,
+            size: image.size
+          });
+        } catch (error) {
+          failed.push({
+            repository: image.repository,
+            tag: image.tag,
+            id: image.id,
+            size: image.size,
+            error: error.response?.data?.message || error.message
+          });
+        }
+      }
+
+      return {
+        success: failed.length === 0,
+        message: `Deleted ${deleted.length} image(s), ${failed.length} failed`,
+        deleted,
+        failed
+      };
+
+    } catch (error) {
+      throw new Error(`Failed to delete unused images: ${error.message}`);
+    }
+  }
 }
 
 module.exports = new DockerService();
