@@ -109,6 +109,11 @@ const fs = require('fs');
  *           nullable: true
  *           description: Container name (null for all containers)
  *           example: "nginx"
+ *         force_update:
+ *           type: boolean
+ *           default: false
+ *           description: Force update even if no new version available
+ *           example: false
  *     XmlConvertRequest:
  *       type: object
  *       required:
@@ -546,6 +551,7 @@ router.post('/mos/update_check', async (req, res) => {
  *             $ref: '#/components/schemas/UpgradeRequest'
  *           example:
  *             name: "nginx"
+ *             force_update: false
  *     responses:
  *       200:
  *         description: Container upgrade completed successfully
@@ -581,9 +587,10 @@ router.post('/mos/upgrade', async (req, res) => {
   try {
     // Check if a container name is present in the request body
     const name = req.body.name || null;
+    const forceUpdate = req.body.force_update || false;
 
     // Execute upgrade
-    const result = await dockerService.Upgrade(name);
+    const result = await dockerService.Upgrade(name, forceUpdate);
 
     res.json(result);
   } catch (error) {

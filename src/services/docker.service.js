@@ -105,18 +105,25 @@ class DockerService {
   }
 
   /**
-   * Executes the Docker upgrade script
-   * @param {string} [name] - Optional name of the container to update
+   * Upgrade Docker containers to their latest versions
+   * @param {string|null} name - Container name (null for all containers)
+   * @param {boolean} forceUpdate - Force update even if no new version available (default: false)
    * @returns {Promise<Object>} Result of the upgrade process
    */
-  async Upgrade(name = null) {
+  async Upgrade(name = null, forceUpdate = false) {
     try {
 
       // Path to update script
       const scriptPath = '/usr/local/bin/mos-update_containers';
 
-      // Command with or without parameter
-      const command = name ? `${scriptPath} ${name}` : scriptPath;
+      // Build command with parameters
+      let command = scriptPath;
+      if (name) {
+        command += ` ${name}`;
+      }
+      if (forceUpdate) {
+        command += ' force_update';
+      }
 
       // Execute command
       const { stdout, stderr } = await execPromise(command);
@@ -124,7 +131,6 @@ class DockerService {
       if (stderr) {
         throw new Error(`Error executing upgrade: ${stderr}`);
       }
-
 
       // Try to parse the output as JSON, if possible
       try {
