@@ -1608,10 +1608,11 @@ class DockerService {
   }
 
   /**
-   * Delete all unused Docker images
+   * Delete unused Docker images
+   * @param {Array<string>} imageIds - Optional array of image IDs to delete (deletes all if not provided)
    * @returns {Promise<Object>} Result with deleted and failed images
    */
-  async deleteUnusedImages() {
+  async deleteUnusedImages(imageIds = null) {
     try {
       // Get unused images
       const unusedImages = await this.getUnusedImages();
@@ -1625,13 +1626,23 @@ class DockerService {
         };
       }
 
+      // Filter images to delete if specific IDs provided
+      let imagesToDelete = unusedImages;
+      if (imageIds && Array.isArray(imageIds) && imageIds.length > 0) {
+        imagesToDelete = unusedImages.filter(img => imageIds.includes(img.id));
+
+        if (imagesToDelete.length === 0) {
+          throw new Error('None of the specified image IDs are unused images');
+        }
+      }
+
       const deleted = [];
       const failed = [];
 
       // Delete images using Docker API via axios
       const dockerSocketPath = '/var/run/docker.sock';
 
-      for (const image of unusedImages) {
+      for (const image of imagesToDelete) {
         try {
           // Use Docker API to delete image
           await axios.delete(`http://localhost/images/${image.id}`, {

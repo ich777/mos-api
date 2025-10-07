@@ -1746,11 +1746,21 @@ router.get('/mos/unusedimages', async (req, res) => {
  * @swagger
  * /docker/mos/unusedimages:
  *   delete:
- *     summary: Delete all unused Docker images
- *     description: Delete all unused Docker images (admin only)
+ *     summary: Delete unused Docker images
+ *     description: Delete unused Docker images - all or specific ones by ID (admin only)
  *     tags: [Docker]
  *     security:
  *       - bearerAuth: []
+ *     requestBody:
+ *       description: Optional array of image IDs to delete. If not provided or empty, deletes all unused images.
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: array
+ *             items:
+ *               type: string
+ *             example: ["a1b2c3d4e5f6", "b2c3d4e5f6g7"]
  *     responses:
  *       200:
  *         description: Deletion result
@@ -1797,6 +1807,12 @@ router.get('/mos/unusedimages', async (req, res) => {
  *                         type: string
  *                       error:
  *                         type: string
+ *       400:
+ *         description: Bad request
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
  *       401:
  *         description: Unauthorized
  *         content:
@@ -1812,10 +1828,20 @@ router.get('/mos/unusedimages', async (req, res) => {
  */
 router.delete('/mos/unusedimages', async (req, res) => {
   try {
-    const result = await dockerService.deleteUnusedImages();
+    // Body can be array directly or empty
+    const imageIds = Array.isArray(req.body) ? req.body : null;
+
+    // Validate array contents if provided
+    if (imageIds && imageIds.length > 0) {
+      if (!imageIds.every(id => typeof id === 'string')) {
+        return res.status(400).json({ error: 'All image IDs must be strings' });
+      }
+    }
+
+    const result = await dockerService.deleteUnusedImages(imageIds);
     res.json(result);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(400).json({ error: error.message });
   }
 });
 
