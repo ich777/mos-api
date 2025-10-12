@@ -2477,13 +2477,13 @@ class PoolsService {
   async _checkPoolBusy(poolName) {
     try {
       const poolMountPath = `/mnt/${poolName}`;
-
-      // Use findmnt to check if anything is mounted under the pool path
-      const { stdout } = await execPromise(`findmnt -R ${poolMountPath} -o TARGET,SOURCE -n 2>/dev/null || true`);
-
       const mountedPaths = [];
-      if (stdout.trim()) {
-        const lines = stdout.trim().split('\n');
+
+      // Check main pool mount path (/mnt/poolname)
+      const { stdout: mainStdout } = await execPromise(`findmnt -R ${poolMountPath} -o TARGET,SOURCE -n 2>/dev/null || true`);
+
+      if (mainStdout.trim()) {
+        const lines = mainStdout.trim().split('\n');
         for (const line of lines) {
           const parts = line.trim().split(/\s+/);
           if (parts.length >= 1) {
@@ -2525,7 +2525,7 @@ class PoolsService {
    */
   async _checkServiceDependencies(poolName) {
     try {
-      // First check if pool is busy using findmnt (more reliable)
+      // First check if pool is busy using findmnt (more reliable for /mnt paths)
       const busyCheck = await this._checkPoolBusy(poolName);
 
       if (busyCheck.isBusy) {
@@ -2548,7 +2548,47 @@ class PoolsService {
       }
 
       const poolMountPath = `/mnt/${poolName}`;
+      const mergerfsBasePath = `/var/mergerfs/${poolName}`;
       const dependencies = [];
+
+      /**
+       * Helper function to check if a service path uses this pool
+       * For /mnt paths: simple startsWith check
+       * For /var/mergerfs paths: extract disk and verify it's mounted
+       * @param {string} servicePath - The path to check
+       * @returns {Promise<boolean>} True if the path is on this pool and accessible
+       */
+      const isPathOnPool = async (servicePath) => {
+        if (!servicePath) return false;
+
+        // Check regular pool mount (/mnt/poolname)
+        if (servicePath.startsWith(poolMountPath)) {
+          return true;
+        }
+
+        // Check MergerFS disk path (/var/mergerfs/poolname/diskN/...)
+        if (servicePath.startsWith(mergerfsBasePath)) {
+          // Extract the disk path: /var/mergerfs/poolname/diskN
+          const relativePath = servicePath.substring(mergerfsBasePath.length);
+          const pathParts = relativePath.split('/').filter(p => p);
+          
+          if (pathParts.length > 0) {
+            const diskName = pathParts[0]; // e.g., 'disk1', 'disk2'
+            const diskMountPath = `${mergerfsBasePath}/${diskName}`;
+            
+            // Check if this specific disk is mounted
+            try {
+              const isMounted = await this._isMounted(diskMountPath);
+              return isMounted;
+            } catch (error) {
+              console.warn(`Could not check mount status for ${diskMountPath}:`, error.message);
+              return false;
+            }
+          }
+        }
+
+        return false;
+      };
 
       // Get all service statuses
       const serviceStatus = await this.mosService.getAllServiceStatus();
@@ -2559,7 +2599,7 @@ class PoolsService {
           const dockerSettings = await this.mosService.getDockerSettings();
 
           // Check Docker system directory
-          if (dockerSettings.directory && dockerSettings.directory.startsWith(poolMountPath)) {
+          if (await isPathOnPool(dockerSettings.directory)) {
             dependencies.push({
               service: 'Docker',
               type: 'system',
@@ -2569,7 +2609,7 @@ class PoolsService {
           }
 
           // Check Docker appdata directory
-          if (dockerSettings.appdata && dockerSettings.appdata.startsWith(poolMountPath)) {
+          if (await isPathOnPool(dockerSettings.appdata)) {
             dependencies.push({
               service: 'Docker',
               type: 'appdata',
@@ -2587,7 +2627,7 @@ class PoolsService {
         try {
           const lxcSettings = await this.mosService.getLxcSettings();
 
-          if (lxcSettings.directory && lxcSettings.directory.startsWith(poolMountPath)) {
+          if (await isPathOnPool(lxcSettings.directory)) {
             dependencies.push({
               service: 'LXC',
               type: 'system',
@@ -2606,7 +2646,7 @@ class PoolsService {
           const vmSettings = await this.mosService.getVmSettings();
 
           // Check VM libvirt directory
-          if (vmSettings.directory && vmSettings.directory.startsWith(poolMountPath)) {
+          if (await isPathOnPool(vmSettings.directory)) {
             dependencies.push({
               service: 'VM',
               type: 'libvirt',
@@ -2616,7 +2656,7 @@ class PoolsService {
           }
 
           // Check VM vdisk directory
-          if (vmSettings.vdisk_directory && vmSettings.vdisk_directory.startsWith(poolMountPath)) {
+          if (await isPathOnPool(vmSettings.vdisk_directory)) {
             dependencies.push({
               service: 'VM',
               type: 'vdisk',
