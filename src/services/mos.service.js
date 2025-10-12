@@ -11,14 +11,17 @@ class MosService {
 
   /**
    * Finds the first available non-MergerFS pool for default path suggestions
+   * Falls back to MergerFS pool if no other pool is available
    * @returns {Promise<string|null>} The pool name or null if no suitable pool found
    */
   async _getFirstNonMergerFSPool() {
     try {
       const poolsService = require('./pools.service');
       const pools = await poolsService._readPools();
+      
+      let firstMergerFSPool = null;
 
-      // Check mount status for each pool manually
+      // First pass: Check for non-MergerFS pools
       for (const pool of pools) {
         if (pool.type !== 'mergerfs') {
           const mountPoint = `/mnt/${pool.name}`;
@@ -26,6 +29,18 @@ class MosService {
           if (isMounted) {
             return pool.name;
           }
+        } else if (!firstMergerFSPool) {
+          // Remember the first MergerFS pool for fallback
+          firstMergerFSPool = pool;
+        }
+      }
+
+      // No non-MergerFS pool found, try to use MergerFS as fallback
+      if (firstMergerFSPool) {
+        // Find the first available disk in the MergerFS pool
+        const firstDisk = await this._getFirstAvailableMergerFSDisk(firstMergerFSPool.name);
+        if (firstDisk) {
+          return `${firstMergerFSPool.name}/${firstDisk}`;
         }
       }
 
@@ -37,24 +52,70 @@ class MosService {
   }
 
   /**
+   * Finds the first available disk in a MergerFS pool
+   * @param {string} poolName - The MergerFS pool name
+   * @returns {Promise<string|null>} The disk name (e.g., 'disk1', 'disk2') or null
+   */
+  async _getFirstAvailableMergerFSDisk(poolName) {
+    try {
+      const basePath = `/var/mergerfs/${poolName}`;
+      
+      // Check up to 10 disks (should be more than enough)
+      for (let i = 1; i <= 10; i++) {
+        const diskPath = `${basePath}/disk${i}`;
+        try {
+          // Check if the disk path exists and is mounted
+          const stats = await fs.stat(diskPath);
+          if (stats.isDirectory()) {
+            // Verify it's actually mounted by checking if it's accessible
+            const poolsService = require('./pools.service');
+            const isMounted = await poolsService._isMounted(diskPath);
+            if (isMounted) {
+              return `disk${i}`;
+            }
+          }
+        } catch (err) {
+          // Disk doesn't exist or isn't accessible, continue to next
+          continue;
+        }
+      }
+      
+      return null;
+    } catch (error) {
+      console.warn(`Could not determine first available disk for MergerFS pool ${poolName}:`, error.message);
+      return null;
+    }
+  }
+
+  /**
    * Generates default paths for services based on the first available non-MergerFS pool
-   * @param {string} poolName - The pool name to use for paths
+   * @param {string} poolName - The pool name to use for paths (can be 'poolname' or 'poolname/diskN' for MergerFS)
    * @returns {Object} Default paths for all services
    */
   _generateDefaultPaths(poolName) {
     if (!poolName) return {};
 
+    // Check if this is a MergerFS disk path (contains '/')
+    let basePath;
+    if (poolName.includes('/')) {
+      // MergerFS disk path: poolname/diskN -> /var/mergerfs/poolname/diskN
+      basePath = `/var/mergerfs/${poolName}`;
+    } else {
+      // Regular pool: poolname -> /mnt/poolname
+      basePath = `/mnt/${poolName}`;
+    }
+
     return {
       docker: {
-        directory: `/mnt/${poolName}/system/docker`,
-        appdata: `/mnt/${poolName}/appdata`
+        directory: `${basePath}/system/docker`,
+        appdata: `${basePath}/appdata`
       },
       lxc: {
-        directory: `/mnt/${poolName}/system/lxc`
+        directory: `${basePath}/system/lxc`
       },
       vm: {
-        directory: `/mnt/${poolName}/system/vm`,
-        vdisk_directory: `/mnt/${poolName}/vms`
+        directory: `${basePath}/system/vm`,
+        vdisk_directory: `${basePath}/vms`
       }
     };
   }
@@ -71,27 +132,49 @@ class MosService {
       // Normalize the path
       const normalizedPath = path.resolve(dirPath);
 
-      // Check if the path is under /mnt/ (Pool-Mountpoints)
-      if (!normalizedPath.startsWith('/mnt/')) {
+      // Check if the path is under /mnt/ (Pool-Mountpoints) or /var/mergerfs/ (MergerFS-Disks)
+      const isMntPath = normalizedPath.startsWith('/mnt/');
+      const isMergerfsDiskPath = normalizedPath.startsWith('/var/mergerfs/');
+      
+      if (!isMntPath && !isMergerfsDiskPath) {
         return {
           isOnPool: false,
           isValid: false,
-          error: 'Services can only be configured on Pool-Mountpoints (/mnt/)',
-          suggestion: 'Use a path like /mnt/poolname/service-directory'
+          error: 'Services can only be configured on Pool-Mountpoints (/mnt/) or MergerFS disks (/var/mergerfs/)',
+          suggestion: 'Use a path like /mnt/poolname/service-directory or /var/mergerfs/poolname/disk1/service-directory'
         };
       }
 
-      // Extract Pool names from the path (e.g. /mnt/storage-pool/docker -> storage-pool)
+      // Extract Pool name from the path
       const pathParts = normalizedPath.split('/');
-      if (pathParts.length < 3) {
-        return {
-          isOnPool: false,
-          isValid: false,
-          error: 'Invalid Pool Path'
-        };
-      }
+      let poolName;
+      let poolPath;
+      let diskPath = null;
 
-      const poolName = pathParts[2];
+      if (isMergerfsDiskPath) {
+        // /var/mergerfs/poolname/disk1/... -> poolname
+        if (pathParts.length < 5) {
+          return {
+            isOnPool: false,
+            isValid: false,
+            error: 'Invalid MergerFS disk path. Expected format: /var/mergerfs/poolname/diskN/...'
+          };
+        }
+        poolName = pathParts[3]; // /var/mergerfs/poolname/disk1
+        diskPath = pathParts[4];  // disk1, disk2, etc.
+        poolPath = `/var/mergerfs/${poolName}/${diskPath}`;
+      } else {
+        // /mnt/poolname/... -> poolname
+        if (pathParts.length < 3) {
+          return {
+            isOnPool: false,
+            isValid: false,
+            error: 'Invalid Pool Path'
+          };
+        }
+        poolName = pathParts[2];
+        poolPath = `/mnt/${poolName}`;
+      }
 
       // Lazy-load Pool-Service to avoid circular dependencies
       const poolsService = require('./pools.service');
@@ -107,7 +190,8 @@ class MosService {
         }
 
         // Check if pool is mergerfs and restrict only core service directories
-        // Allow appdata (docker) and VM storage paths on mergerfs, but not core service directories
+        // BUT: Allow core directories on individual MergerFS disks (/var/mergerfs/...)
+        // Only restrict when using the merged pool mount point (/mnt/poolname)
         const restrictedCombinations = [
           { serviceType: 'docker', fieldName: 'directory' },  // Docker core directory
           { serviceType: 'lxc', fieldName: 'directory' }      // LXC core directory
@@ -115,6 +199,7 @@ class MosService {
         ];
 
         const isRestricted = pool.type === 'mergerfs' &&
+          isMntPath && // Only restrict /mnt/ paths, not /var/mergerfs/ disk paths
           restrictedCombinations.some(combo =>
             combo.serviceType === serviceType && combo.fieldName === fieldName
           );
@@ -124,35 +209,57 @@ class MosService {
             isOnPool: true,
             isValid: false,
             poolName,
-            poolPath: `/mnt/${poolName}`,
+            poolPath,
             userPath: normalizedPath,
             poolType: pool.type,
-            error: `${serviceType.toUpperCase()} core directories cannot be placed on MergerFS pools. MergerFS pools are designed for data storage, not for system services.`,
-            suggestion: `Use a single or multi device BTRFS, XFS, or EXT4 pool for ${serviceType.toUpperCase()} core directories instead.`
+            error: `${serviceType.toUpperCase()} core directories cannot be placed on MergerFS pool mount points. MergerFS pools are designed for data storage, not for system services.`,
+            suggestion: `Use a single or multi device BTRFS, XFS, or EXT4 pool, or use an individual MergerFS disk path like /var/mergerfs/${poolName}/disk1/...`
           };
         }
 
-        if (!pool.status.mounted) {
-          return {
-            isOnPool: true,
-            isValid: false,
-            poolName,
-            poolPath: `/mnt/${poolName}`,
-            userPath: normalizedPath,
-            poolType: pool.type,
-            error: `Pool "${poolName}" is not mounted. Service directory would not be available.`,
-            suggestion: `Mount the pool "${poolName}" first or choose a different path.`
-          };
+        // For MergerFS disk paths, verify the specific disk is mounted
+        if (isMergerfsDiskPath && diskPath) {
+          const diskMountPoint = `/var/mergerfs/${poolName}/${diskPath}`;
+          const isDiskMounted = await poolsService._isMounted(diskMountPoint);
+          
+          if (!isDiskMounted) {
+            return {
+              isOnPool: true,
+              isValid: false,
+              poolName,
+              poolPath,
+              userPath: normalizedPath,
+              poolType: pool.type,
+              error: `MergerFS disk "${diskPath}" in pool "${poolName}" is not mounted. Service directory would not be available.`,
+              suggestion: `Mount the pool "${poolName}" first or choose a different disk.`
+            };
+          }
+        } else {
+          // Regular pool mount check
+          if (!pool.status.mounted) {
+            return {
+              isOnPool: true,
+              isValid: false,
+              poolName,
+              poolPath,
+              userPath: normalizedPath,
+              poolType: pool.type,
+              error: `Pool "${poolName}" is not mounted. Service directory would not be available.`,
+              suggestion: `Mount the pool "${poolName}" first or choose a different path.`
+            };
+          }
         }
 
         return {
           isOnPool: true,
           isValid: true,
           poolName,
-          poolPath: `/mnt/${poolName}`,
+          poolPath,
           userPath: normalizedPath,
           poolType: pool.type,
-          message: `Pool "${poolName}" (${pool.type}) is mounted - Path is available`
+          message: diskPath 
+            ? `Pool "${poolName}" disk "${diskPath}" (${pool.type}) is mounted - Path is available`
+            : `Pool "${poolName}" (${pool.type}) is mounted - Path is available`
         };
 
       } catch (poolError) {
@@ -161,7 +268,7 @@ class MosService {
             isOnPool: true,
             isValid: false,
             poolName,
-            poolPath: `/mnt/${poolName}`,
+            poolPath,
             userPath: normalizedPath,
             error: `Pool "${poolName}" does not exist.`,
             suggestion: 'Create the pool first or choose a different path.'
