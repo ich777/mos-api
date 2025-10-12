@@ -18,7 +18,7 @@ class MosService {
     try {
       const poolsService = require('./pools.service');
       const pools = await poolsService._readPools();
-      
+
       let firstMergerFSPool = null;
 
       // First pass: Check for non-MergerFS pools
@@ -59,7 +59,7 @@ class MosService {
   async _getFirstAvailableMergerFSDisk(poolName) {
     try {
       const basePath = `/var/mergerfs/${poolName}`;
-      
+
       // Check up to 10 disks (should be more than enough)
       for (let i = 1; i <= 10; i++) {
         const diskPath = `${basePath}/disk${i}`;
@@ -79,7 +79,7 @@ class MosService {
           continue;
         }
       }
-      
+
       return null;
     } catch (error) {
       console.warn(`Could not determine first available disk for MergerFS pool ${poolName}:`, error.message);
@@ -135,7 +135,7 @@ class MosService {
       // Check if the path is under /mnt/ (Pool-Mountpoints) or /var/mergerfs/ (MergerFS-Disks)
       const isMntPath = normalizedPath.startsWith('/mnt/');
       const isMergerfsDiskPath = normalizedPath.startsWith('/var/mergerfs/');
-      
+
       if (!isMntPath && !isMergerfsDiskPath) {
         return {
           isOnPool: false,
@@ -221,7 +221,7 @@ class MosService {
         if (isMergerfsDiskPath && diskPath) {
           const diskMountPoint = `/var/mergerfs/${poolName}/${diskPath}`;
           const isDiskMounted = await poolsService._isMounted(diskMountPoint);
-          
+
           if (!isDiskMounted) {
             return {
               isOnPool: true,
@@ -257,7 +257,7 @@ class MosService {
           poolPath,
           userPath: normalizedPath,
           poolType: pool.type,
-          message: diskPath 
+          message: diskPath
             ? `Pool "${poolName}" disk "${diskPath}" (${pool.type}) is mounted - Path is available`
             : `Pool "${poolName}" (${pool.type}) is mounted - Path is available`
         };

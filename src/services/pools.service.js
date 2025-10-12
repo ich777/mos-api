@@ -2571,11 +2571,11 @@ class PoolsService {
           // Extract the disk path: /var/mergerfs/poolname/diskN
           const relativePath = servicePath.substring(mergerfsBasePath.length);
           const pathParts = relativePath.split('/').filter(p => p);
-          
+
           if (pathParts.length > 0) {
             const diskName = pathParts[0]; // e.g., 'disk1', 'disk2'
             const diskMountPath = `${mergerfsBasePath}/${diskName}`;
-            
+
             // Check if this specific disk is mounted
             try {
               const isMounted = await this._isMounted(diskMountPath);
