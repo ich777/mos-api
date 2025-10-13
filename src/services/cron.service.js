@@ -169,29 +169,28 @@ class CronService {
       }
     }
 
-    // Validate script content if provided
-    if (jobData.script !== undefined) {
-      if (typeof jobData.script !== 'string' || jobData.script.trim() === '') {
-        throw new Error('Script must be a non-empty string');
-      }
-    }
-
-    // Validate scriptPath if provided
-    if (jobData.scriptPath !== undefined) {
-      if (typeof jobData.scriptPath !== 'string' || jobData.scriptPath.trim() === '') {
-        throw new Error('ScriptPath must be a non-empty string');
-      }
-    }
-
-    // Command is only required if neither script nor scriptPath is provided
-    if (!isUpdate || jobData.command !== undefined) {
+    // Either command, script, or scriptPath is required
+    if (!isUpdate || jobData.command !== undefined || jobData.script !== undefined || jobData.scriptPath !== undefined) {
       const hasScript = jobData.script && typeof jobData.script === 'string' && jobData.script.trim() !== '';
       const hasScriptPath = jobData.scriptPath && typeof jobData.scriptPath === 'string' && jobData.scriptPath.trim() !== '';
+      const hasCommand = jobData.command && typeof jobData.command === 'string' && jobData.command.trim() !== '';
 
-      if (!hasScript && !hasScriptPath) {
-        if (!jobData.command || typeof jobData.command !== 'string' || jobData.command.trim() === '') {
-          throw new Error('Command is required and must be a non-empty string (unless script or scriptPath is provided)');
-        }
+      // At least one of command, script, or scriptPath must be provided
+      if (!hasScript && !hasScriptPath && !hasCommand) {
+        throw new Error('Either command, script, or scriptPath must be provided');
+      }
+
+      // Validate types if provided
+      if (jobData.script !== undefined && typeof jobData.script !== 'string') {
+        throw new Error('Script must be a string');
+      }
+
+      if (jobData.scriptPath !== undefined && typeof jobData.scriptPath !== 'string') {
+        throw new Error('ScriptPath must be a string');
+      }
+
+      if (jobData.command !== undefined && typeof jobData.command !== 'string') {
+        throw new Error('Command must be a string');
       }
     }
 
