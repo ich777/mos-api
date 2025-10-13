@@ -1991,7 +1991,8 @@ class PoolsService {
         };
       }
 
-      const { stdout } = await execPromise(`df -B1 ${mountPoint} | tail -1`);
+      // Use timeout to avoid hanging on unavailable remote mounts
+      const { stdout } = await execPromise(`timeout 5 df -B1 ${mountPoint} | tail -1`);
       const parts = stdout.trim().split(/\s+/);
 
       if (parts.length >= 6) {
@@ -3074,7 +3075,8 @@ class PoolsService {
    */
   async _getDfData() {
     try {
-      const { stdout } = await execPromise('df -B1');
+      // Exclude remote filesystems (cifs/nfs) to avoid hanging on unavailable shares
+      const { stdout } = await execPromise('df -B1 -x cifs -x nfs');
       const lines = stdout.trim().split('\n').slice(1); // Skip header
       const dfData = {};
 
@@ -3082,6 +3084,7 @@ class PoolsService {
         const parts = line.trim().split(/\s+/);
         if (parts.length >= 6) {
           const [filesystem, totalSpace, usedSpace, freeSpace, , mountPoint] = parts;
+
           dfData[mountPoint] = {
             filesystem,
             totalSpace: parseInt(totalSpace),

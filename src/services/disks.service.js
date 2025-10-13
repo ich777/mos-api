@@ -66,8 +66,8 @@ class DisksService {
   }
 
   /**
-   * Erweiterte Disk-Typ-Erkennung (SAFE - weckt keine Disks auf)
-   * Verwendet nur statische /sys Informationen, keine direkten Disk-Zugriffe
+   * Extended Disk Typ recognition (don't wake up disks!)
+   * Use only static Information from /sys, no direct disk access
    */
   async _getEnhancedDiskType(device, diskInfo = null) {
     try {
@@ -500,7 +500,8 @@ class DisksService {
   async _getFilesystemInfo(device) {
     try {
       // df kann mit Devices oder Mount-Punkten arbeiten
-      const { stdout } = await execPromise(`df -B1 ${device} 2>/dev/null || echo "not_mounted"`);
+      // Use timeout to avoid hanging on unavailable mounts
+      const { stdout } = await execPromise(`timeout 5 df -B1 ${device} 2>/dev/null || echo "not_mounted"`);
 
       if (stdout.includes('not_mounted')) {
         return null;
@@ -881,6 +882,16 @@ class DisksService {
         };
       }
 
+      // Skip remote mounts to avoid timeouts
+      if (mountpoint.startsWith('/mnt/remotes')) {
+        return {
+          mounted: false,
+          totalSpace: 0,
+          usedSpace: 0,
+          freeSpace: 0
+        };
+      }
+
       // Hole Space-Informationen für gemountete Partition
       const fsInfo = await this._getFilesystemInfo(device);
 
@@ -1171,11 +1182,12 @@ class DisksService {
           if (!isPartOfMountedBtrfs) {
             // Zusätzlich prüfen ob Partitionen vorhanden sind aber nicht gemountet
             if (disk.partitions && disk.partitions.length > 0) {
-              // Hat Partitionen aber nicht als "in use" erkannt - prüfe andere Mountpoints (nicht /mnt/disks)
+              // Hat Partitionen aber nicht als "in use" erkannt - prüfe andere Mountpoints (nicht /mnt/disks, nicht /mnt/remotes)
               const hasOtherMountedPartitions = disk.partitions.some(p =>
                 p.mountpoint &&
                 p.mountpoint !== '[SWAP]' &&
-                !p.mountpoint.startsWith('/mnt/disks/')
+                !p.mountpoint.startsWith('/mnt/disks/') &&
+                !p.mountpoint.startsWith('/mnt/remotes/')
               );
 
               if (!hasOtherMountedPartitions) {

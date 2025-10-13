@@ -186,6 +186,23 @@ class RemotesService {
   }
 
   /**
+   * Check if mounted path is actually accessible (not stale)
+   * @param {string} mountPath - Path to check
+   * @returns {Promise<boolean>} True if accessible
+   * @private
+   */
+  async _isMountAccessible(mountPath) {
+    try {
+      // Use stat with timeout to check if mount is accessible
+      // If the mount is stale, this will timeout/fail
+      await execPromise(`timeout 2 stat "${mountPath}" >/dev/null 2>&1`);
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  /**
    * Load remotes from JSON file
    * @returns {Array} Array of remote objects
    * @private
@@ -232,7 +249,15 @@ class RemotesService {
       for (const remote of remotes) {
         const mountPath = this._generateMountPath(remote.server, remote.share);
         const isMounted = await this._isMounted(mountPath);
-        remote.status = isMounted ? 'mounted' : 'unmounted';
+
+        if (isMounted) {
+          // Check if mount is actually accessible
+          const isAccessible = await this._isMountAccessible(mountPath);
+          remote.status = isAccessible ? 'mounted' : 'unavailable';
+        } else {
+          remote.status = 'unmounted';
+        }
+
         remote.password = 'SECRET'; // Mask password in responses
       }
 
@@ -259,7 +284,15 @@ class RemotesService {
       // Update status and mask password
       const mountPath = this._generateMountPath(remote.server, remote.share);
       const isMounted = await this._isMounted(mountPath);
-      remote.status = isMounted ? 'mounted' : 'unmounted';
+
+      if (isMounted) {
+        // Check if mount is actually accessible
+        const isAccessible = await this._isMountAccessible(mountPath);
+        remote.status = isAccessible ? 'mounted' : 'unavailable';
+      } else {
+        remote.status = 'unmounted';
+      }
+
       remote.password = 'SECRET'; // Mask password in responses
 
       return remote;
@@ -458,6 +491,22 @@ class RemotesService {
       // Decrypt password (null-safe)
       const password = remote.password ? this._decryptPassword(remote.password) : null;
 
+      // Test connection before mounting
+      console.log(`Testing connection to ${remote.type.toUpperCase()} share: ${remote.server}/${remote.share}`);
+      const testResult = await this.connectiontest({
+        type: remote.type,
+        server: remote.server,
+        share: remote.share,
+        username: remote.username,
+        password: password,
+        domain: remote.domain
+      });
+
+      if (!testResult.success) {
+        throw new Error(`Connection test failed: ${testResult.message}`);
+      }
+      console.log(`Connection test successful, proceeding with mount`);
+
       let mountCommand;
 
       if (remote.type === 'smb') {
@@ -606,7 +655,8 @@ class RemotesService {
   async unmountAllRemotes() {
     try {
       const remotes = await this.listRemotes();
-      const mountedRemotes = remotes.filter(remote => remote.status === 'mounted');
+      // Include both 'mounted' and 'unavailable' (unavailable means mounted but server unreachable)
+      const mountedRemotes = remotes.filter(remote => remote.status === 'mounted' || remote.status === 'unavailable');
 
       let unmountedCount = 0;
       const errors = [];
@@ -665,7 +715,7 @@ class RemotesService {
         }
       } else {
         // Guest access (no credentials)
-        smbCommand = `smbclient -L //${server} -N 2>/dev/null | grep 'Disk' | awk '{print $1}'`;
+        smbCommand = `smbclient -L //${server} -U guest% -N 2>/dev/null | grep 'Disk' | awk '{print $1}'`;
       }
 
       console.log(`Listing SMB shares from ${server}`);
@@ -746,12 +796,21 @@ class RemotesService {
         const password = data.password;
         const domain = data.domain || '';
 
-        let smbCommand = `smbclient //${server}/${share} -U ${username}%${password} -c "ls" 2>/dev/null`;
-        if (domain) {
-          smbCommand = `smbclient //${server}/${share} -U ${domain}/${username}%${password} -c "ls" 2>/dev/null`;
+        let smbCommand;
+
+        // Guest access if no username/password provided (null or empty)
+        if (!username || !password) {
+          smbCommand = `smbclient //${server}/${share} -U guest% -N -c "ls" 2>/dev/null`;
+        } else {
+          // Authenticated access
+          if (domain) {
+            smbCommand = `smbclient //${server}/${share} -U ${domain}/${username}%${password} -c "ls" 2>/dev/null`;
+          } else {
+            smbCommand = `smbclient //${server}/${share} -U ${username}%${password} -c "ls" 2>/dev/null`;
+          }
         }
 
-        console.log(`Testing SMB connection to ${server}/${share}`);
+        console.log(`Testing SMB connection to ${server}/${share}${username ? ' (authenticated)' : ' (guest)'}`);
         await execPromise(smbCommand);
 
         return {
