@@ -1652,8 +1652,6 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
     try {
       const command = '/usr/local/bin/mos-os_get_releases';
 
-      console.log(`Executing get releases command: ${command}`);
-
       // Execute script
       const { stdout, stderr } = await execPromise(command);
 
@@ -1854,8 +1852,6 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
 
       const command = `/usr/local/bin/mos-os_update ${args.join(' ')}`;
 
-      console.log(`Executing OS update command: ${command}`);
-
       // Execute script
       const { stdout, stderr } = await execPromise(command);
 
@@ -1901,8 +1897,6 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
 
       const command = `/usr/local/bin/mos-os_update ${args.join(' ')}`;
 
-      console.log(`Executing OS rollback command: ${command}`);
-
       // Execute script
       const { stdout, stderr } = await execPromise(command);
 
@@ -1934,8 +1928,6 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
   async getKernelReleases() {
     try {
       const command = '/usr/local/bin/mos-kernel_get_releases';
-
-      console.log(`Executing get kernel releases command: ${command}`);
 
       // Execute script
       const { stdout, stderr } = await execPromise(command);
@@ -2002,8 +1994,6 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
 
       const command = `/usr/local/bin/mos-kernel_update ${version}`;
 
-      console.log(`Executing kernel update command: ${command}`);
-
       // Execute script
       const { stdout, stderr } = await execPromise(command);
 
@@ -2036,8 +2026,6 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
     try {
       const command = '/usr/local/bin/mos-kernel_update rollback';
 
-      console.log(`Executing kernel rollback command: ${command}`);
-
       // Execute script
       const { stdout, stderr } = await execPromise(command);
 
@@ -2055,6 +2043,177 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
       return {
         success: false,
         error: error.message,
+        timestamp: new Date().toISOString()
+      };
+    }
+  }
+
+  /**
+   * Gets available driver releases via the mos-drivers_get_releases script
+   * @param {string} kernelVersion - Optional kernel version, if not provided uses uname -r
+   * @returns {Promise<Object>} Grouped driver releases by category
+   */
+  async getDriverReleases(kernelVersion = null) {
+    try {
+      // Build command with optional kernel version
+      let command = '/usr/local/bin/mos-drivers_get_releases';
+      if (kernelVersion) {
+        command += ` "${kernelVersion}"`;
+      }
+
+      // Execute script
+      const { stdout, stderr } = await execPromise(command);
+
+      if (stderr) {
+        console.warn('Get driver releases script stderr:', stderr);
+      }
+
+      // Get kernel version for the JSON file path
+      let kernelVersionTrimmed;
+      if (kernelVersion) {
+        kernelVersionTrimmed = kernelVersion;
+      } else {
+        const { stdout: unameOutput } = await execPromise('uname -r');
+        kernelVersionTrimmed = unameOutput.trim();
+      }
+
+      // Read JSON file
+      const driversPath = `/var/mos/mos-drivers/drivers-${kernelVersionTrimmed}.json`;
+
+      try {
+        const driversData = await fs.readFile(driversPath, 'utf8');
+        const driversJson = JSON.parse(driversData);
+
+        // Extract assets from the JSON
+        // Assuming the JSON structure contains an 'assets' array
+        const assets = driversJson.assets || driversJson || [];
+
+        if (!Array.isArray(assets)) {
+          throw new Error('Invalid drivers data format - expected array or object with assets');
+        }
+
+        // Group drivers by category (first word before first dash)
+        const groupedDrivers = {};
+
+        assets.forEach(asset => {
+          // Get the asset name (could be string or object with 'name' property)
+          const assetName = typeof asset === 'string' ? asset : (asset.name || '');
+
+          if (!assetName.endsWith('.deb')) {
+            return; // Skip non-.deb files
+          }
+
+          // Remove .deb extension
+          const nameWithoutDeb = assetName.replace('.deb', '');
+
+          // Parse the package name
+          // Format: packagename_version+suffix_architecture.deb
+          // Example: dvb-digital-devices_20250910-1+mos_amd64.deb
+          const firstUnderscore = nameWithoutDeb.indexOf('_');
+
+          if (firstUnderscore === -1) {
+            return; // Skip if no underscore found
+          }
+
+          const packageName = nameWithoutDeb.substring(0, firstUnderscore);
+          const rest = nameWithoutDeb.substring(firstUnderscore + 1);
+
+          // Extract version (between first _ and +)
+          const plusIndex = rest.indexOf('+');
+          const version = plusIndex !== -1 ? rest.substring(0, plusIndex) : rest.split('_')[0];
+
+          // Get category (first word before first dash)
+          const firstDash = packageName.indexOf('-');
+          const category = firstDash !== -1 ? packageName.substring(0, firstDash) : packageName;
+
+          // Initialize category object if it doesn't exist
+          if (!groupedDrivers[category]) {
+            groupedDrivers[category] = {};
+          }
+
+          // Initialize driver array if it doesn't exist
+          if (!groupedDrivers[category][packageName]) {
+            groupedDrivers[category][packageName] = [];
+          }
+
+          // Add version to driver array
+          groupedDrivers[category][packageName].push(version);
+        });
+
+        return groupedDrivers;
+
+      } catch (fileError) {
+        throw new Error(`Failed to read or parse drivers file: ${fileError.message}`);
+      }
+
+    } catch (error) {
+      console.error('Get driver releases error:', error.message);
+      return {
+        success: false,
+        error: error.message,
+        timestamp: new Date().toISOString()
+      };
+    }
+  }
+
+  /**
+   * Downloads or upgrades drivers using the mos-driver_download script
+   * @param {Object} options - Driver options
+   * @param {string} options.drivername - Complete driver filename (e.g., dvb-digital-devices_20250910-1+mos_amd64.deb) - required if upgrade is not true
+   * @param {string} [options.kernelVersion] - Optional desired kernel version/uname
+   * @param {boolean} options.upgrade - If true, checks for driver updates
+   * @returns {Promise<Object>} Driver download/upgrade status
+   */
+  async downloadDriver(options) {
+    try {
+      const { drivername, kernelVersion, upgrade } = options;
+
+      let command;
+      let args = [];
+
+      // Validate input: either upgrade=true OR drivername must be provided
+      if (upgrade === true) {
+        args.push('upgrade');
+        command = `/usr/local/bin/mos-driver_download ${args.join(' ')}`;
+      } else {
+        // Validate required parameters for driver download
+        if (!drivername || typeof drivername !== 'string') {
+          throw new Error('Complete driver filename is required and must be a string when upgrade is not true');
+        }
+
+        args.push(`"${drivername}"`);
+
+        // Add kernel version if provided
+        if (kernelVersion && typeof kernelVersion === 'string') {
+          args.push(`"${kernelVersion}"`);
+        }
+
+        command = `/usr/local/bin/mos-driver_download ${args.join(' ')}`;
+      }
+
+      // Execute script
+      const { stdout, stderr } = await execPromise(command);
+
+      return {
+        success: true,
+        message: upgrade ? 'Driver upgrade check initiated successfully' : 'Driver download initiated successfully',
+        upgrade: upgrade || false,
+        drivername: drivername || null,
+        kernelVersion: kernelVersion || null,
+        command,
+        output: stdout,
+        error: stderr || null,
+        timestamp: new Date().toISOString()
+      };
+
+    } catch (error) {
+      console.error('Driver download error:', error.message);
+      return {
+        success: false,
+        error: error.message,
+        upgrade: options.upgrade || false,
+        drivername: options.drivername || null,
+        kernelVersion: options.kernelVersion || null,
         timestamp: new Date().toISOString()
       };
     }

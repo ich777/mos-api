@@ -1975,6 +1975,204 @@ router.get('/getkernel', async (req, res) => {
 
 /**
  * @swagger
+ * /mos/getdrivers:
+ *   get:
+ *     summary: Get available driver releases
+ *     description: Retrieve available driver releases grouped by category using mos-drivers_get_releases script (admin only)
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: kernelVersion
+ *         schema:
+ *           type: string
+ *         required: false
+ *         description: Optional kernel version/uname. If not provided, uses current system kernel (uname -r)
+ *         example: "6.6.15"
+ *     responses:
+ *       200:
+ *         description: Driver releases grouped by category
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               description: Driver releases grouped by category (e.g., dvb, coral), with driver names as keys and version arrays as values
+ *               additionalProperties:
+ *                 type: object
+ *                 additionalProperties:
+ *                   type: array
+ *                   items:
+ *                     type: string
+ *                   description: Array of available versions for this driver
+ *               example:
+ *                 dvb:
+ *                   dvb-digital-devices: ["20250910-1", "20250911-1"]
+ *                   dvb-libreelec: ["1231-1"]
+ *                 coral:
+ *                   coral: ["20240425-1"]
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error or script execution failed
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+
+// GET: Available Driver Releases
+router.get('/getdrivers', async (req, res) => {
+  try {
+    const { kernelVersion } = req.query;
+    const releases = await mosService.getDriverReleases(kernelVersion);
+    res.json(releases);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /mos/drivers:
+ *   post:
+ *     summary: Download or upgrade drivers
+ *     description: Download a specific driver or check for driver updates using mos-driver_download script (admin only)
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             oneOf:
+ *               - required:
+ *                   - drivername
+ *                 properties:
+ *                   drivername:
+ *                     type: string
+ *                     description: Complete driver filename including version and architecture (e.g., dvb-digital-devices_20250910-1+mos_amd64.deb)
+ *                     example: "dvb-digital-devices_20250910-1+mos_amd64.deb"
+ *                   kernelVersion:
+ *                     type: string
+ *                     description: Optional desired kernel version/uname for the driver
+ *                     example: "6.6.15"
+ *               - required:
+ *                   - upgrade
+ *                 properties:
+ *                   upgrade:
+ *                     type: boolean
+ *                     description: Set to true to check for driver updates
+ *                     example: true
+ *           examples:
+ *             downloadDriver:
+ *               summary: Download specific driver with kernel version
+ *               value:
+ *                 drivername: "dvb-digital-devices_20250910-1+mos_amd64.deb"
+ *                 kernelVersion: "6.6.15"
+ *             downloadDriverOnly:
+ *               summary: Download specific driver without kernel version
+ *               value:
+ *                 drivername: "dvb-digital-devices_20250910-1+mos_amd64.deb"
+ *             upgradeDrivers:
+ *               summary: Check for driver updates
+ *               value:
+ *                 upgrade: true
+ *     responses:
+ *       200:
+ *         description: Driver download/upgrade initiated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   description: Operation success status
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   description: Success message
+ *                   example: "Driver download initiated successfully"
+ *                 upgrade:
+ *                   type: boolean
+ *                   description: Whether this was an upgrade check
+ *                   example: false
+ *                 drivername:
+ *                   type: string
+ *                   nullable: true
+ *                   description: Complete driver filename
+ *                   example: "dvb-digital-devices_20250910-1+mos_amd64.deb"
+ *                 kernelVersion:
+ *                   type: string
+ *                   nullable: true
+ *                   description: Kernel version
+ *                   example: "6.6.15"
+ *                 command:
+ *                   type: string
+ *                   description: The executed command
+ *                   example: "/usr/local/bin/mos-driver_download \"dvb-digital-devices_20250910-1+mos_amd64.deb\" \"6.6.15\""
+ *                 output:
+ *                   type: string
+ *                   description: Command stdout output
+ *                 error:
+ *                   type: string
+ *                   nullable: true
+ *                   description: Command stderr output if any
+ *                 timestamp:
+ *                   type: string
+ *                   format: date-time
+ *                   description: Operation timestamp
+ *       400:
+ *         description: Invalid request parameters
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error or script execution failed
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+
+// POST: Download or Upgrade Driver
+router.post('/drivers', async (req, res) => {
+  try {
+    const result = await mosService.downloadDriver(req.body);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
  * /mos/updatekernel:
  *   post:
  *     summary: Update kernel
