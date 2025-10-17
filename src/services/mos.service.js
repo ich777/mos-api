@@ -1976,7 +1976,7 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
 
   /**
    * Executes a kernel update using the mos-kernel_update script
-   * @param {string} version - Version (recommended or version number like 6.1.0, 6.6.15)
+   * @param {string} version - Version (recommended or version number like 6.1.0, 6.17.1-mos)
    * @returns {Promise<Object>} Update status
    */
   async updateKernel(version) {
@@ -1989,7 +1989,7 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
       // Version validation - either "recommended" or version number format (with optional suffixes)
       const versionPattern = /^(recommended|\d+\.\d+\.\d+.*)$/;
       if (!versionPattern.test(version)) {
-        throw new Error('Version must be "recommended" or start with a version number (e.g., 6.1.0, 6.6.15, 6.1.0-alpha.1)');
+        throw new Error('Version must be "recommended" or start with a version number (e.g., 6.1.0, 6.17.1-mos, 6.1.0-alpha.1)');
       }
 
       const command = `/usr/local/bin/mos-kernel_update ${version}`;
@@ -2049,11 +2049,110 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
   }
 
   /**
+   * Gets installed drivers from /boot/optional/drivers/
+   * @returns {Promise<Object>} Grouped installed drivers by category
+   */
+  async getInstalledDrivers() {
+    try {
+      // Get current kernel version
+      const { stdout: unameOutput } = await execPromise('uname -r');
+      const kernelVersionTrimmed = unameOutput.trim();
+
+      const driversBasePath = '/boot/optional/drivers';
+
+      // Check if base directory exists
+      try {
+        await fs.access(driversBasePath);
+      } catch (error) {
+        // Directory doesn't exist, return empty object
+        return {};
+      }
+
+      // Read all category directories
+      const categories = await fs.readdir(driversBasePath);
+      const installedDrivers = {};
+
+      for (const category of categories) {
+        const categoryPath = `${driversBasePath}/${category}`;
+
+        // Check if it's a directory
+        try {
+          const stat = await fs.stat(categoryPath);
+          if (!stat.isDirectory()) continue;
+        } catch (error) {
+          continue;
+        }
+
+        // Check if kernel version directory exists
+        const kernelPath = `${categoryPath}/${kernelVersionTrimmed}`;
+        try {
+          await fs.access(kernelPath);
+        } catch (error) {
+          // Kernel version directory doesn't exist for this category
+          continue;
+        }
+
+        // Read .deb files in kernel version directory
+        const files = await fs.readdir(kernelPath);
+
+        for (const file of files) {
+          // Skip non-.deb files and .md5 files
+          if (!file.endsWith('.deb') || file.endsWith('.deb.md5')) {
+            continue;
+          }
+
+          // Remove .deb extension
+          const nameWithoutDeb = file.replace('.deb', '');
+
+          // Parse the package name
+          // Format: packagename_version+suffix_architecture.deb
+          const firstUnderscore = nameWithoutDeb.indexOf('_');
+
+          if (firstUnderscore === -1) {
+            continue;
+          }
+
+          const packageName = nameWithoutDeb.substring(0, firstUnderscore);
+          const rest = nameWithoutDeb.substring(firstUnderscore + 1);
+
+          // Extract version (between first _ and +)
+          const plusIndex = rest.indexOf('+');
+          const version = plusIndex !== -1 ? rest.substring(0, plusIndex) : rest.split('_')[0];
+
+          // Initialize category object if it doesn't exist
+          if (!installedDrivers[category]) {
+            installedDrivers[category] = {};
+          }
+
+          // Initialize driver array if it doesn't exist
+          if (!installedDrivers[category][packageName]) {
+            installedDrivers[category][packageName] = [];
+          }
+
+          // Add version to driver array
+          installedDrivers[category][packageName].push(version);
+        }
+      }
+
+      return installedDrivers;
+
+    } catch (error) {
+      console.error('Get installed drivers error:', error.message);
+      return {
+        success: false,
+        error: error.message,
+        timestamp: new Date().toISOString()
+      };
+    }
+  }
+
+  /**
    * Gets available driver releases via the mos-drivers_get_releases script
    * @param {string} kernelVersion - Optional kernel version, if not provided uses uname -r
+   * @param {boolean} excludeInstalled - If true, filters out installed drivers
    * @returns {Promise<Object>} Grouped driver releases by category
    */
-  async getDriverReleases(kernelVersion = null) {
+  async getDriverReleases(kernelVersion = null, excludeInstalled = false) {
     try {
       // Build command with optional kernel version
       let command = '/usr/local/bin/mos-drivers_get_releases';
@@ -2140,6 +2239,35 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
           groupedDrivers[category][packageName].push(version);
         });
 
+        // Filter out installed drivers if requested
+        if (excludeInstalled) {
+          const installedDrivers = await this.getInstalledDrivers();
+
+          // Remove installed versions from available drivers
+          for (const category in groupedDrivers) {
+            if (installedDrivers[category]) {
+              for (const packageName in groupedDrivers[category]) {
+                if (installedDrivers[category][packageName]) {
+                  // Filter out installed versions
+                  groupedDrivers[category][packageName] = groupedDrivers[category][packageName].filter(
+                    version => !installedDrivers[category][packageName].includes(version)
+                  );
+
+                  // Remove package entry if no versions left
+                  if (groupedDrivers[category][packageName].length === 0) {
+                    delete groupedDrivers[category][packageName];
+                  }
+                }
+              }
+
+              // Remove category if no packages left
+              if (Object.keys(groupedDrivers[category]).length === 0) {
+                delete groupedDrivers[category];
+              }
+            }
+          }
+        }
+
         return groupedDrivers;
 
       } catch (fileError) {
@@ -2159,29 +2287,44 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
   /**
    * Downloads or upgrades drivers using the mos-driver_download script
    * @param {Object} options - Driver options
-   * @param {string} options.drivername - Complete driver filename (e.g., dvb-digital-devices_20250910-1+mos_amd64.deb) - required if upgrade is not true
+   * @param {string} [options.packagename] - Complete driver package filename (e.g., dvb-digital-devices_20250910-1+mos_amd64.deb)
+   * @param {string} [options.drivername] - Driver name only (e.g., dvb-digital-devices) - requires driverversion
+   * @param {string} [options.driverversion] - Driver version only (e.g., 20250910-1) - requires drivername
    * @param {string} [options.kernelVersion] - Optional desired kernel version/uname
    * @param {boolean} options.upgrade - If true, checks for driver updates
    * @returns {Promise<Object>} Driver download/upgrade status
    */
   async downloadDriver(options) {
     try {
-      const { drivername, kernelVersion, upgrade } = options;
+      const { packagename, drivername, driverversion, kernelVersion, upgrade } = options;
 
       let command;
       let args = [];
+      let finalPackageName;
 
-      // Validate input: either upgrade=true OR drivername must be provided
+      // Validate input: either upgrade=true OR packagename OR (drivername + driverversion) must be provided
       if (upgrade === true) {
         args.push('upgrade');
         command = `/usr/local/bin/mos-driver_download ${args.join(' ')}`;
       } else {
-        // Validate required parameters for driver download
-        if (!drivername || typeof drivername !== 'string') {
-          throw new Error('Complete driver filename is required and must be a string when upgrade is not true');
+        // Option 1: Complete package name provided
+        if (packagename && typeof packagename === 'string') {
+          finalPackageName = packagename;
+        }
+        // Option 2: Driver name and version provided separately
+        else if (drivername && driverversion) {
+          if (typeof drivername !== 'string' || typeof driverversion !== 'string') {
+            throw new Error('Driver name and driver version must be strings');
+          }
+          // Build complete package name: drivername_driverversion+mos_amd64.deb
+          finalPackageName = `${drivername}_${driverversion}+mos_amd64.deb`;
+        }
+        // Error: Neither option provided
+        else {
+          throw new Error('Either packagename OR (drivername and driverversion) must be provided when upgrade is not true');
         }
 
-        args.push(`"${drivername}"`);
+        args.push(`"${finalPackageName}"`);
 
         // Add kernel version if provided
         if (kernelVersion && typeof kernelVersion === 'string') {
@@ -2198,7 +2341,9 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
         success: true,
         message: upgrade ? 'Driver upgrade check initiated successfully' : 'Driver download initiated successfully',
         upgrade: upgrade || false,
+        packagename: finalPackageName || null,
         drivername: drivername || null,
+        driverversion: driverversion || null,
         kernelVersion: kernelVersion || null,
         command,
         output: stdout,
@@ -2212,7 +2357,9 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
         success: false,
         error: error.message,
         upgrade: options.upgrade || false,
+        packagename: options.packagename || null,
         drivername: options.drivername || null,
+        driverversion: options.driverversion || null,
         kernelVersion: options.kernelVersion || null,
         timestamp: new Date().toISOString()
       };

@@ -148,6 +148,33 @@ class RemotesService {
   }
 
   /**
+   * Validate connection test data
+   * @param {Object} data - Connection test data to validate
+   * @throws {Error} If validation fails
+   * @private
+   */
+  _validateConnectionData(data) {
+    // Basic required fields for connection test
+    const required = ['type', 'server', 'share'];
+
+    for (const field of required) {
+      if (!data[field] || data[field].toString().trim() === '') {
+        throw new Error(`Field '${field}' is required`);
+      }
+    }
+
+    if (!['smb', 'nfs'].includes(data.type)) {
+      throw new Error("Type must be 'smb' or 'nfs'");
+    }
+
+    // Validate server format (IP or hostname)
+    const serverRegex = /^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$|^[a-zA-Z0-9.-]+$/;
+    if (!serverRegex.test(data.server)) {
+      throw new Error('Invalid server format');
+    }
+  }
+
+ /**
    * Create mount point directory
    * @param {string} mountPath - Path to create
    * @private
@@ -436,12 +463,18 @@ class RemotesService {
 
       const remote = remotes[remoteIndex];
 
-      // Check if remote is mounted
+      // Check if remote is mounted and unmount it automatically
       const mountPath = this._generateMountPath(remote.server, remote.share);
       const isMounted = await this._isMounted(mountPath);
 
       if (isMounted) {
-        throw new Error('Cannot delete mounted remote. Unmount first.');
+        // Automatically unmount before deleting
+        try {
+          await execPromise(`umount "${mountPath}"`);
+        } catch (umountError) {
+          // If unmount fails, still try to proceed with deletion
+          console.warn(`Warning: Could not unmount remote ${remote.name} before deletion`);
+        }
       }
 
       // Remove from array
@@ -451,7 +484,6 @@ class RemotesService {
       // Cleanup empty directories
       await this._cleanupMountPoint(remote.server, remote.share);
 
-      console.log(`Deleted remote: ${remote.name} (${remote.id})`);
       return remote;
     } catch (error) {
       throw new Error(`Failed to delete remote: ${error.message}`);
@@ -492,7 +524,6 @@ class RemotesService {
       const password = remote.password ? this._decryptPassword(remote.password) : null;
 
       // Test connection before mounting
-      console.log(`Testing connection to ${remote.type.toUpperCase()} share: ${remote.server}/${remote.share}`);
       const testResult = await this.connectiontest({
         type: remote.type,
         server: remote.server,
@@ -505,7 +536,6 @@ class RemotesService {
       if (!testResult.success) {
         throw new Error(`Connection test failed: ${testResult.message}`);
       }
-      console.log(`Connection test successful, proceeding with mount`);
 
       let mountCommand;
 
@@ -559,10 +589,14 @@ class RemotesService {
         throw new Error(`Unsupported remote type: ${remote.type}`);
       }
 
-      console.log(`Mounting remote: ${remote.name}`);
-      await execPromise(mountCommand);
+      // Execute mount command with secure error handling
+      try {
+        await execPromise(mountCommand);
+      } catch (mountError) {
+        // Don't expose the mount command (which may contain password) in error message
+        throw new Error(`Unable to mount ${remote.type.toUpperCase()} share //${remote.server}/${remote.share}`);
+      }
 
-      console.log(`Successfully mounted remote: ${remote.name} at ${mountPath}`);
       return {
         success: true,
         message: `Remote '${remote.name}' mounted successfully`,
@@ -631,10 +665,11 @@ class RemotesService {
         throw new Error('Remote is not mounted');
       }
 
-      console.log(`Unmounting remote: ${remote.name}`);
-      await execPromise(`umount "${mountPath}"`);
-
-      console.log(`Successfully unmounted remote: ${remote.name}`);
+      try {
+        await execPromise(`umount "${mountPath}"`);
+      } catch (umountError) {
+        throw new Error(`Unable to unmount remote '${remote.name}'`);
+      }
 
       // Cleanup empty directories
       await this._cleanupMountPoint(remote.server, remote.share);
@@ -718,8 +753,6 @@ class RemotesService {
         smbCommand = `smbclient -L //${server} -U guest% -N 2>/dev/null | grep 'Disk' | awk '{print $1}'`;
       }
 
-      console.log(`Listing SMB shares from ${server}`);
-
       try {
         const { stdout } = await execPromise(smbCommand);
 
@@ -736,12 +769,11 @@ class RemotesService {
 
         return shares;
       } catch (error) {
-        throw new Error(`Failed to list SMB shares from ${server}: ${error.message}`);
+        // Don't expose the command (which may contain password) in error message
+        throw new Error(`Failed to list SMB shares from ${server}`);
       }
     } else if (type === 'nfs') {
       // List NFS exports using showmount
-      console.log(`Listing NFS exports from ${server}`);
-
       try {
         // First check if server is reachable
         await execPromise(`ping -c 1 -W 5 ${server}`);
@@ -773,7 +805,7 @@ class RemotesService {
 
         return shares;
       } catch (error) {
-        throw new Error(`Failed to list NFS exports from ${server}: ${error.message}`);
+        throw new Error(`Failed to list NFS exports from ${server}`);
       }
     }
   }
@@ -785,8 +817,8 @@ class RemotesService {
    */
   async connectiontest(data) {
     try {
-      // Validate input data
-      this._validateRemoteData(data);
+      // Validate input data (name is not required for connection test)
+      this._validateConnectionData(data);
 
       if (data.type === 'smb') {
         // Test SMB connection using smbclient
@@ -800,37 +832,38 @@ class RemotesService {
 
         // Guest access if no username/password provided (null or empty)
         if (!username || !password) {
-          smbCommand = `smbclient //${server}/${share} -U guest% -N -c "ls" 2>/dev/null`;
+          smbCommand = `smbclient //${server}/${share} -U guest% -N -c "ls" 2>&1`;
         } else {
           // Authenticated access
           if (domain) {
-            smbCommand = `smbclient //${server}/${share} -U ${domain}/${username}%${password} -c "ls" 2>/dev/null`;
+            smbCommand = `smbclient //${server}/${share} -U ${domain}/${username}%${password} -c "ls" 2>&1`;
           } else {
-            smbCommand = `smbclient //${server}/${share} -U ${username}%${password} -c "ls" 2>/dev/null`;
+            smbCommand = `smbclient //${server}/${share} -U ${username}%${password} -c "ls" 2>&1`;
           }
         }
 
-        console.log(`Testing SMB connection to ${server}/${share}${username ? ' (authenticated)' : ' (guest)'}`);
-        await execPromise(smbCommand);
-
-        return {
-          success: true,
-          message: `Successfully connected to SMB share //${server}/${share}`,
-          type: 'smb'
-        };
+        try {
+          await execPromise(smbCommand);
+          return {
+            success: true,
+            message: `Successfully connected to SMB share //${server}/${share}`,
+            type: 'smb'
+          };
+        } catch (error) {
+          // Don't include command in error message to avoid exposing password
+          throw new Error(`Unable to connect to SMB share //${server}/${share}`);
+        }
       } else if (data.type === 'nfs') {
         // Test NFS connection using showmount to check available exports
         const server = data.server;
         const share = data.share;
-
-        console.log(`Testing NFS connection to ${server}/${share}`);
 
         try {
           // First check if server is reachable
           await execPromise(`ping -c 1 -W 5 ${server}`);
 
           // Then check if the specific share is exported
-          const { stdout } = await execPromise(`showmount -e ${server} 2>/dev/null`);
+          const { stdout } = await execPromise(`showmount -e ${server} 2>&1`);
           const exports = stdout.split('\n');
 
           // Check if our share is in the exports list
@@ -850,14 +883,16 @@ class RemotesService {
           };
         } catch (showmountError) {
           // Fallback to basic ping test if showmount fails
-          console.warn(`showmount failed, falling back to ping test: ${showmountError.message}`);
-          await execPromise(`ping -c 1 -W 5 ${server}`);
-
-          return {
-            success: true,
-            message: `NFS server ${server} is reachable (share availability not verified)`,
-            type: 'nfs'
-          };
+          try {
+            await execPromise(`ping -c 1 -W 5 ${server}`);
+            return {
+              success: true,
+              message: `NFS server ${server} is reachable (share availability not verified)`,
+              type: 'nfs'
+            };
+          } catch (pingError) {
+            throw new Error(`Unable to connect to NFS server ${server}`);
+          }
         }
       } else {
         throw new Error(`Unsupported remote type: ${data.type}`);

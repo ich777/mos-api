@@ -1931,16 +1931,16 @@ router.get('/osinfo', async (req, res) => {
  *                   tag_name:
  *                     type: string
  *                     description: Kernel version tag
- *                     example: "6.6.15"
+ *                     example: "6.17.1-mos"
  *                   html_url:
  *                     type: string
  *                     description: URL to the kernel release
- *                     example: "https://github.com/ich777/kernel-releases/releases/tag/6.6.15"
+ *                     example: "https://github.com/ich777/kernel-releases/releases/tag/6.17.1-mos"
  *               example:
- *                 - tag_name: "6.6.15"
- *                   html_url: "https://github.com/ich777/kernel-releases/releases/tag/6.6.15"
- *                 - tag_name: "6.6.14"
- *                   html_url: "https://github.com/ich777/kernel-releases/releases/tag/6.6.14"
+ *                 - tag_name: "6.17.1-mos"
+ *                   html_url: "https://github.com/ich777/kernel-releases/releases/tag/6.17.1-mos"
+ *                 - tag_name: "6.17.0-mos"
+ *                   html_url: "https://github.com/ich777/kernel-releases/releases/tag/6.17.0-mos"
  *                 - tag_name: "6.1.0"
  *                   html_url: "https://github.com/ich777/kernel-releases/releases/tag/6.1.0"
  *       401:
@@ -1989,7 +1989,14 @@ router.get('/getkernel', async (req, res) => {
  *           type: string
  *         required: false
  *         description: Optional kernel version/uname. If not provided, uses current system kernel (uname -r)
- *         example: "6.6.15"
+ *         example: "6.17.1-mos"
+ *       - in: query
+ *         name: excludeinstalled
+ *         schema:
+ *           type: boolean
+ *         required: false
+ *         description: Optional. If true, filters out already installed drivers. If not provided, returns all available drivers
+ *         example: true
  *     responses:
  *       200:
  *         description: Driver releases grouped by category
@@ -2034,9 +2041,69 @@ router.get('/getkernel', async (req, res) => {
 // GET: Available Driver Releases
 router.get('/getdrivers', async (req, res) => {
   try {
-    const { kernelVersion } = req.query;
-    const releases = await mosService.getDriverReleases(kernelVersion);
+    const { kernelVersion, excludeinstalled } = req.query;
+    const excludeInstalledBool = excludeinstalled === 'true' || excludeinstalled === true;
+    const releases = await mosService.getDriverReleases(kernelVersion, excludeInstalledBool);
     res.json(releases);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /mos/installeddrivers:
+ *   get:
+ *     summary: Get installed drivers
+ *     description: Retrieve installed drivers from /boot/optional/drivers/ for the current running kernel grouped by category (admin only)
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Installed drivers grouped by category
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               description: Installed drivers grouped by category (e.g., dvb, coral), with driver names as keys and version arrays as values
+ *               additionalProperties:
+ *                 type: object
+ *                 additionalProperties:
+ *                   type: array
+ *                   items:
+ *                     type: string
+ *                   description: Array of installed versions for this driver
+ *               example:
+ *                 dvb:
+ *                   dvb-digital-devices: ["20250910-1"]
+ *                 coral:
+ *                   coral: ["20240425-1"]
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+
+// GET: Installed Drivers
+router.get('/installeddrivers', async (req, res) => {
+  try {
+    const installedDrivers = await mosService.getInstalledDrivers();
+    res.json(installedDrivers);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -2047,7 +2114,7 @@ router.get('/getdrivers', async (req, res) => {
  * /mos/drivers:
  *   post:
  *     summary: Download or upgrade drivers
- *     description: Download a specific driver or check for driver updates using mos-driver_download script (admin only)
+ *     description: Download a specific driver (using complete packagename OR drivername+driverversion) or check for driver updates using mos-driver_download script (admin only)
  *     tags: [MOS]
  *     security:
  *       - bearerAuth: []
@@ -2059,16 +2126,32 @@ router.get('/getdrivers', async (req, res) => {
  *             type: object
  *             oneOf:
  *               - required:
- *                   - drivername
+ *                   - packagename
  *                 properties:
- *                   drivername:
+ *                   packagename:
  *                     type: string
- *                     description: Complete driver filename including version and architecture (e.g., dvb-digital-devices_20250910-1+mos_amd64.deb)
+ *                     description: Complete driver package filename (e.g., dvb-digital-devices_20250910-1+mos_amd64.deb)
  *                     example: "dvb-digital-devices_20250910-1+mos_amd64.deb"
  *                   kernelVersion:
  *                     type: string
  *                     description: Optional desired kernel version/uname for the driver
- *                     example: "6.6.15"
+ *                     example: "6.17.1-mos"
+ *               - required:
+ *                   - drivername
+ *                   - driverversion
+ *                 properties:
+ *                   drivername:
+ *                     type: string
+ *                     description: Driver name only (e.g., dvb-digital-devices)
+ *                     example: "dvb-digital-devices"
+ *                   driverversion:
+ *                     type: string
+ *                     description: Driver version only (e.g., 20250910-1)
+ *                     example: "20250910-1"
+ *                   kernelVersion:
+ *                     type: string
+ *                     description: Optional desired kernel version/uname for the driver
+ *                     example: "6.17.1-mos"
  *               - required:
  *                   - upgrade
  *                 properties:
@@ -2077,15 +2160,21 @@ router.get('/getdrivers', async (req, res) => {
  *                     description: Set to true to check for driver updates
  *                     example: true
  *           examples:
- *             downloadDriver:
- *               summary: Download specific driver with kernel version
+ *             downloadWithPackageName:
+ *               summary: Download using complete package filename
  *               value:
- *                 drivername: "dvb-digital-devices_20250910-1+mos_amd64.deb"
- *                 kernelVersion: "6.6.15"
- *             downloadDriverOnly:
- *               summary: Download specific driver without kernel version
+ *                 packagename: "dvb-digital-devices_20250910-1+mos_amd64.deb"
+ *                 kernelVersion: "6.17.1-mos"
+ *             downloadWithNameAndVersion:
+ *               summary: Download using driver name and version separately
  *               value:
- *                 drivername: "dvb-digital-devices_20250910-1+mos_amd64.deb"
+ *                 drivername: "dvb-digital-devices"
+ *                 driverversion: "20250910-1"
+ *             downloadOnlyNameAndVersion:
+ *               summary: Download using name and version without kernel version
+ *               value:
+ *                 drivername: "dvb-digital-devices"
+ *                 driverversion: "20250910-1"
  *             upgradeDrivers:
  *               summary: Check for driver updates
  *               value:
@@ -2110,20 +2199,30 @@ router.get('/getdrivers', async (req, res) => {
  *                   type: boolean
  *                   description: Whether this was an upgrade check
  *                   example: false
+ *                 packagename:
+ *                   type: string
+ *                   nullable: true
+ *                   description: Complete driver package filename (if provided or built)
+ *                   example: "dvb-digital-devices_20250910-1+mos_amd64.deb"
  *                 drivername:
  *                   type: string
  *                   nullable: true
- *                   description: Complete driver filename
- *                   example: "dvb-digital-devices_20250910-1+mos_amd64.deb"
+ *                   description: Driver name (if provided separately)
+ *                   example: "dvb-digital-devices"
+ *                 driverversion:
+ *                   type: string
+ *                   nullable: true
+ *                   description: Driver version (if provided separately)
+ *                   example: "20250910-1"
  *                 kernelVersion:
  *                   type: string
  *                   nullable: true
  *                   description: Kernel version
- *                   example: "6.6.15"
+ *                   example: "6.17.1-mos"
  *                 command:
  *                   type: string
  *                   description: The executed command
- *                   example: "/usr/local/bin/mos-driver_download \"dvb-digital-devices_20250910-1+mos_amd64.deb\" \"6.6.15\""
+ *                   example: "/usr/local/bin/mos-driver_download \"dvb-digital-devices_20250910-1+mos_amd64.deb\" \"6.17.1-mos\""
  *                 output:
  *                   type: string
  *                   description: Command stdout output
@@ -2191,7 +2290,7 @@ router.post('/drivers', async (req, res) => {
  *             properties:
  *               version:
  *                 type: string
- *                 description: Version to update to - either "recommended" or version number (e.g., 6.1.0, 6.6.15)
+ *                 description: Version to update to - either "recommended" or version number (e.g., 6.1.0, 6.17.1-mos)
  *                 example: "recommended"
  *           example:
  *             version: "recommended"
@@ -2237,7 +2336,7 @@ router.post('/drivers', async (req, res) => {
  *                   example: false
  *                 error:
  *                   type: string
- *                   example: "Version must be 'recommended' or a version number (e.g., 6.1.0, 6.6.15)"
+ *                   example: "Version must be 'recommended' or a version number (e.g., 6.1.0, 6.17.1-mos)"
  *       401:
  *         description: Not authenticated
  *         content:

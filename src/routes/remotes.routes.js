@@ -408,6 +408,7 @@ router.put('/:id', authenticateToken, checkRole(['admin']), async (req, res) => 
  * /remotes/{id}:
  *   delete:
  *     summary: Delete remote share
+ *     description: Delete a remote share. If the remote is currently mounted, it will be automatically unmounted before deletion.
  *     tags: [Remotes]
  *     security:
  *       - bearerAuth: []
@@ -420,7 +421,7 @@ router.put('/:id', authenticateToken, checkRole(['admin']), async (req, res) => 
  *         description: Remote ID
  *     responses:
  *       200:
- *         description: Remote share deleted successfully
+ *         description: Remote share deleted successfully (automatically unmounted if it was mounted)
  *         content:
  *           application/json:
  *             schema:
@@ -431,8 +432,6 @@ router.put('/:id', authenticateToken, checkRole(['admin']), async (req, res) => 
  *         description: Forbidden - Admin access required
  *       404:
  *         description: Remote not found
- *       409:
- *         description: Conflict - Cannot delete mounted remote
  *       500:
  *         description: Internal server error
  */
@@ -444,8 +443,6 @@ router.delete('/:id', authenticateToken, checkRole(['admin']), async (req, res) 
     console.error('Error deleting remote:', error);
     if (error.message.includes('not found')) {
       res.status(404).json({ error: error.message });
-    } else if (error.message.includes('Cannot delete')) {
-      res.status(409).json({ error: error.message });
     } else {
       res.status(500).json({ error: error.message });
     }
@@ -714,6 +711,7 @@ router.post('/listshares', authenticateToken, checkRole(['admin']), async (req, 
  * /remotes/connectiontest:
  *   post:
  *     summary: Test connection to remote share without saving
+ *     description: Test connection to a remote share.
  *     tags: [Remotes]
  *     security:
  *       - bearerAuth: []
@@ -722,28 +720,53 @@ router.post('/listshares', authenticateToken, checkRole(['admin']), async (req, 
  *       content:
  *         application/json:
  *           schema:
- *             $ref: '#/components/schemas/RemoteInput'
+ *             type: object
+ *             required:
+ *               - type
+ *               - server
+ *               - share
+ *             properties:
+ *               type:
+ *                 type: string
+ *                 enum: [smb, nfs]
+ *                 description: Type of remote share
+ *                 example: "smb"
+ *               server:
+ *                 type: string
+ *                 description: Server IP address or hostname
+ *                 example: "192.168.1.100"
+ *               share:
+ *                 type: string
+ *                 description: Share name
+ *                 example: "media"
+ *               username:
+ *                 type: string
+ *                 description: Username for authentication (optional for SMB guest access, not used for NFS)
+ *                 example: "testuser"
+ *               password:
+ *                 type: string
+ *                 description: Plain text password (optional for SMB guest access, not used for NFS)
+ *                 example: "testpass"
+ *               domain:
+ *                 type: string
+ *                 description: SMB domain (optional)
+ *                 example: "WORKGROUP"
  *           examples:
  *             smb_test:
  *               summary: Test SMB Connection
  *               value:
- *                 name: "Test SMB"
  *                 type: "smb"
  *                 server: "192.168.1.100"
  *                 share: "media"
  *                 username: "testuser"
  *                 password: "testpass"
  *                 domain: "WORKGROUP"
- *                 version: "3.0"
  *             nfs_test:
  *               summary: Test NFS Connection
  *               value:
- *                 name: "Test NFS"
  *                 type: "nfs"
  *                 server: "192.168.1.200"
  *                 share: "storage"
- *                 username: "nfsuser"
- *                 password: "nfspass"
  *     responses:
  *       200:
  *         description: Connection test result
