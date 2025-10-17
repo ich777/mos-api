@@ -3034,18 +3034,91 @@ class PoolsService {
   }
 
   /**
+   * Get underlying physical device from mapper device (for LUKS)
+   * @param {string} mapperDevice - Mapper device path (e.g. /dev/mapper/luks-xxx)
+   * @returns {Promise<string|null>} Physical device path or null
+   * @private
+   */
+  async _getPhysicalDeviceFromMapper(mapperDevice) {
+    try {
+      const mapperName = mapperDevice.replace('/dev/mapper/', '');
+      const { stdout } = await execPromise(`cryptsetup status ${mapperName} 2>/dev/null || echo ""`);
+
+      if (!stdout.trim()) {
+        return null;
+      }
+
+      // Parse output for device line (e.g. "device: /dev/sda1")
+      const deviceMatch = stdout.match(/device:\s+(.+)/);
+      if (deviceMatch) {
+        return deviceMatch[1].trim();
+      }
+
+      return null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  /**
    * Enrich device information with disk type details (without waking up disks)
    */
   async _enrichDeviceWithDiskTypeInfo(device) {
     try {
       // Lazy import to avoid circular dependency
+      // Note: disks.service exports an instance
       const disksService = require('./disks.service');
 
-      const devicePath = device.device || device;
-      const deviceName = devicePath.replace('/dev/', '');
+      // Extract device path, handle both string and object inputs
+      let devicePath;
+      if (typeof device === 'string') {
+        devicePath = device;
+      } else if (device && typeof device.device === 'string') {
+        devicePath = device.device;
+      } else if (device && device.id) {
+        // For BTRFS multi-device pools, device path might not be set yet, but we have UUID
+        // Try to resolve device path from UUID
+        try {
+          devicePath = await this.getRealDevicePathFromUuid(device.id);
+        } catch (error) {
+          // Could not resolve UUID, return unknown
+          return {
+            ...device,
+            diskType: {
+              type: 'unknown',
+              rotational: null,
+              removable: null,
+              usbInfo: null
+            }
+          };
+        }
+      } else {
+        // Invalid device format, return unknown
+        return {
+          ...device,
+          diskType: {
+            type: 'unknown',
+            rotational: null,
+            removable: null,
+            usbInfo: null
+          }
+        };
+      }
+
+      // Check if this is a mapper device (LUKS encrypted)
+      let physicalDevice = devicePath;
+      if (devicePath.startsWith('/dev/mapper/')) {
+        const underlying = await this._getPhysicalDeviceFromMapper(devicePath);
+        if (underlying) {
+          physicalDevice = underlying;
+        }
+      }
+
+      // Convert partition to base disk (e.g. /dev/sdj1 -> /dev/sdj)
+      const baseDisk = this._getBaseDiskFromPartition(physicalDevice);
 
       // Only static information is collected - NO hdparm or other disk access!
-      const diskTypeInfo = await disksService._getEnhancedDiskTypeForPools(devicePath);
+      const diskTypeInfo = await disksService._getEnhancedDiskTypeForPools(baseDisk);
 
       return {
         ...device,
@@ -3058,6 +3131,8 @@ class PoolsService {
       };
     } catch (error) {
       // On errors return original device information
+      const devicePathForLog = (typeof device === 'string') ? device : (device?.device || 'unknown');
+      console.warn(`Warning: Could not enrich device ${devicePathForLog} with disk type info: ${error.message}`);
       return {
         ...device,
         diskType: {
@@ -3419,6 +3494,9 @@ class PoolsService {
         // Inject power status into individual device objects
         await this._injectPowerStatusIntoDevices(pool);
 
+        // Inject disk information into individual device objects
+        await this._injectDiskInfoIntoDevices(pool);
+
         // Inject parity operation status (API-only, not persisted)
         await this._injectParityOperationStatus(pool);
       }
@@ -3473,6 +3551,9 @@ class PoolsService {
 
         // Inject power status into individual device objects
         await this._injectPowerStatusIntoDevices(pool);
+
+        // Inject disk information into individual device objects
+        await this._injectDiskInfoIntoDevices(pool);
 
         // Inject parity operation status (API-only, not persisted)
         await this._injectParityOperationStatus(pool);
@@ -4971,8 +5052,22 @@ if (snapraidDevice) {
   async _injectPowerStatusIntoDevices(pool) {
     // Inject power status into data devices
     for (const device of pool.data_devices || []) {
+      if (!device.device) {
+        device.powerStatus = 'unknown';
+        continue;
+      }
+
       try {
-        const { stdout } = await execPromise(`hdparm -C ${device.device} 2>/dev/null`);
+        // Check if this is a mapper device (LUKS encrypted)
+        let targetDevice = device.device;
+        if (device.device.startsWith('/dev/mapper/')) {
+          const underlying = await this._getPhysicalDeviceFromMapper(device.device);
+          if (underlying) {
+            targetDevice = underlying;
+          }
+        }
+
+        const { stdout } = await execPromise(`hdparm -C ${targetDevice} 2>/dev/null`);
 
         let powerStatus = 'active';
         if (stdout.includes('active/idle') || stdout.includes('idle')) {
@@ -4985,15 +5080,29 @@ if (snapraidDevice) {
 
         device.powerStatus = powerStatus;
       } catch (error) {
-        // If hdparm fails, assume it's wake for NVMe/SSD devices
-        device.powerStatus = (device.device && (device.device.includes('nvme') || device.device.includes('ssd'))) ? 'wake' : 'unknown';
+        // If hdparm fails, assume it's active for NVMe/SSD devices (they don't support standby)
+        device.powerStatus = (device.device && (device.device.includes('nvme') || device.device.includes('ssd'))) ? 'active' : 'unknown';
       }
     }
 
     // Inject power status into parity devices
     for (const device of pool.parity_devices || []) {
+      if (!device.device) {
+        device.powerStatus = 'unknown';
+        continue;
+      }
+
       try {
-        const { stdout } = await execPromise(`hdparm -C ${device.device} 2>/dev/null`);
+        // Check if this is a mapper device (LUKS encrypted)
+        let targetDevice = device.device;
+        if (device.device.startsWith('/dev/mapper/')) {
+          const underlying = await this._getPhysicalDeviceFromMapper(device.device);
+          if (underlying) {
+            targetDevice = underlying;
+          }
+        }
+
+        const { stdout } = await execPromise(`hdparm -C ${targetDevice} 2>/dev/null`);
 
         let powerStatus = 'active';
         if (stdout.includes('active/idle') || stdout.includes('idle')) {
@@ -5006,9 +5115,129 @@ if (snapraidDevice) {
 
         device.powerStatus = powerStatus;
       } catch (error) {
-        // If hdparm fails, assume it's wake for NVMe/SSD devices
-        device.powerStatus = (device.device && (device.device.includes('nvme') || device.device.includes('ssd'))) ? 'wake' : 'unknown';
+        // If hdparm fails, assume it's active for NVMe/SSD devices (they don't support standby)
+        device.powerStatus = (device.device && (device.device.includes('nvme') || device.device.includes('ssd'))) ? 'active' : 'unknown';
       }
+    }
+  }
+
+  /**
+   * Get base disk device from partition
+   * E.g. /dev/sdj1 -> /dev/sdj, /dev/nvme2n1p1 -> /dev/nvme2n1
+   * @param {string} devicePath - Device path (partition or disk)
+   * @returns {string} Base disk device path
+   * @private
+   */
+  _getBaseDiskFromPartition(devicePath) {
+    if (!devicePath) return devicePath;
+
+    // NVMe devices: /dev/nvme2n1p1 -> /dev/nvme2n1
+    if (devicePath.includes('nvme') && devicePath.match(/p\d+$/)) {
+      return devicePath.replace(/p\d+$/, '');
+    }
+
+    // MMC devices: /dev/mmcblk0p1 -> /dev/mmcblk0
+    if (devicePath.includes('mmcblk') && devicePath.match(/p\d+$/)) {
+      return devicePath.replace(/p\d+$/, '');
+    }
+
+    // Standard SATA/SAS devices: /dev/sdj1 -> /dev/sdj
+    if (devicePath.match(/\d+$/)) {
+      return devicePath.replace(/\d+$/, '');
+    }
+
+    // If no partition number, return as-is (already a base disk)
+    return devicePath;
+  }
+
+  /**
+   * Inject disk information (name, model, serial) into devices
+   * @param {Object} pool - Pool object
+   * @private
+   */
+  async _injectDiskInfoIntoDevices(pool) {
+    try {
+      // Lazy import to avoid circular dependency
+      // Note: disks.service exports an instance
+      const disksService = require('./disks.service');
+
+      // Get all disks with their information
+      // skipStandby: true ensures that standby disks are not woken up
+      // They will still be included in the result with basic info (model, serial) but without partitions
+      const allDisks = await disksService.getAllDisks({ skipStandby: true, includePerformance: false });
+
+      // Create a map for quick lookup by device path
+      const diskMap = {};
+      for (const disk of allDisks) {
+        diskMap[disk.device] = {
+          diskName: disk.name,
+          diskModel: disk.model,
+          diskSerial: disk.serial
+        };
+      }
+
+      // Inject disk info into data devices
+      for (const device of pool.data_devices || []) {
+        if (!device.device) continue;
+
+        // Check if this is a mapper device (LUKS encrypted)
+        let physicalDevice = device.device;
+        if (device.device.startsWith('/dev/mapper/')) {
+          const underlying = await this._getPhysicalDeviceFromMapper(device.device);
+          if (underlying) {
+            physicalDevice = underlying;
+          }
+        }
+
+        // Try to find disk info by converting partition to base disk
+        const baseDisk = this._getBaseDiskFromPartition(physicalDevice);
+        const diskInfo = diskMap[baseDisk];
+
+        if (diskInfo) {
+          device.diskInfo = diskInfo;
+        } else {
+          // If disk not found, try to extract name from device path
+          const deviceName = device.device ? device.device.replace('/dev/', '') : null;
+          device.diskInfo = {
+            diskName: deviceName || 'unknown',
+            diskModel: 'Unknown',
+            diskSerial: 'Unknown'
+          };
+        }
+      }
+
+      // Inject disk info into parity devices
+      for (const device of pool.parity_devices || []) {
+        if (!device.device) continue;
+
+        // Check if this is a mapper device (LUKS encrypted)
+        let physicalDevice = device.device;
+        if (device.device.startsWith('/dev/mapper/')) {
+          const underlying = await this._getPhysicalDeviceFromMapper(device.device);
+          if (underlying) {
+            physicalDevice = underlying;
+          }
+        }
+
+        // Try to find disk info by converting partition to base disk
+        const baseDisk = this._getBaseDiskFromPartition(physicalDevice);
+        const diskInfo = diskMap[baseDisk];
+
+        if (diskInfo) {
+          device.diskInfo = diskInfo;
+        } else {
+          // If disk not found, try to extract name from device path
+          const deviceName = device.device ? device.device.replace('/dev/', '') : null;
+          device.diskInfo = {
+            diskName: deviceName || 'unknown',
+            diskModel: 'Unknown',
+            diskSerial: 'Unknown'
+          };
+        }
+      }
+    } catch (error) {
+      console.warn(`Warning: Could not inject disk info into devices: ${error.message}`);
+      // Don't throw error, just log warning and continue
     }
   }
 

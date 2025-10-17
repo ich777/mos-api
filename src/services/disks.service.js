@@ -378,7 +378,7 @@ class DisksService {
           status = 'active';
           active = true;
         } else if (stdout.includes('sleeping')) {
-          status = 'sleeping';
+          status = 'standby'; // sleeping is treated as standby
           active = false;
         }
 
@@ -458,7 +458,7 @@ class DisksService {
           status = 'active';
           active = true;
         } else if (stdout.includes('sleeping')) {
-          status = 'sleeping';
+          status = 'standby'; // sleeping is treated as standby
           active = false;
         }
 
@@ -1095,19 +1095,21 @@ class DisksService {
   }
 
   /**
-   * Unassigned Disks finden - verbesserte Logik mit BTRFS Multi-Device Support
+   * Find unassigned disks - improved logic with BTRFS multi-device support
    */
   async getUnassignedDisks(options = {}) {
     try {
-      const allDisks = await this.getAllDisks(options);
+      // Ensure skipStandby is true by default to avoid waking up disks
+      const diskOptions = { skipStandby: true, ...options };
+      const allDisks = await this.getAllDisks(diskOptions);
       const unassignedDisks = [];
 
-      // Sammle alle BTRFS UUIDs die gemountet sind
+      // Collect all mounted BTRFS UUIDs
       const mountedBtrfsUuids = new Set();
       const mounts = await this._getMountInfo();
 
       for (const [mountedDevice, mountInfo] of mounts) {
-        // Sammle BTRFS UUIDs
+        // Collect BTRFS UUIDs
         if (mountInfo.fstype === 'btrfs') {
           try {
             const { stdout: blkidOut } = await execPromise(`blkid ${mountedDevice} 2>/dev/null || echo ""`);
@@ -1116,73 +1118,79 @@ class DisksService {
               mountedBtrfsUuids.add(uuidMatch[1]);
             }
           } catch (error) {
-            // Ignoriere Fehler bei einzelnen Devices
+            // Ignore errors for individual devices
           }
         }
       }
 
       for (const disk of allDisks) {
-        // Prüfe ob System-Disk
+        // Check if system disk
         const isSystem = await this._isSystemDisk(disk.device);
         if (isSystem) {
-          continue; // System-Disk überspringen
+          continue; // Skip system disk
         }
 
-        // Prüfe detailliert ob Disk in Verwendung ist (Pools, alle Mounts, etc.)
+        // Check in detail if disk is in use (pools, all mounts, etc.)
         const usageInfo = await this._isDiskInUse(disk.device);
 
         if (!usageInfo.inUse) {
-          // Zusätzliche BTRFS-Prüfung: Ist diese Disk oder eine ihrer Partitionen Teil eines gemounteten BTRFS?
+          // Additional BTRFS check: Is this disk or one of its partitions part of a mounted BTRFS?
+          // BUT: Only if the disk is not in standby (blkid would wake it up!)
           let isPartOfMountedBtrfs = false;
 
-          // 1. Prüfe die ganze Disk
-          try {
-            const devicePath = disk.device.startsWith('/dev/') ? disk.device : `/dev/${disk.device}`;
-            const { stdout: blkidOut } = await execPromise(`blkid ${devicePath} 2>/dev/null || echo ""`);
+          if (!disk.standbySkipped) {
+            // 1. Check the whole disk
+            try {
+              const devicePath = disk.device.startsWith('/dev/') ? disk.device : `/dev/${disk.device}`;
+              const { stdout: blkidOut } = await execPromise(`blkid ${devicePath} 2>/dev/null || echo ""`);
 
-            if (blkidOut.trim()) {
-              const uuidMatch = blkidOut.match(/UUID="([^"]+)"/);
-              const fsTypeMatch = blkidOut.match(/TYPE="([^"]+)"/);
+              if (blkidOut.trim()) {
+                const uuidMatch = blkidOut.match(/UUID="([^"]+)"/);
+                const fsTypeMatch = blkidOut.match(/TYPE="([^"]+)"/);
 
-              if (uuidMatch && fsTypeMatch && fsTypeMatch[1] === 'btrfs') {
-                const diskUuid = uuidMatch[1];
-                if (mountedBtrfsUuids.has(diskUuid)) {
-                  isPartOfMountedBtrfs = true;
-                }
-              }
-            }
-          } catch (error) {
-            // Ignoriere Fehler
-          }
-
-          // 2. Prüfe alle Partitionen der Disk auf BTRFS
-          if (!isPartOfMountedBtrfs && disk.partitions) {
-            for (const partition of disk.partitions) {
-              try {
-                const { stdout: partBlkidOut } = await execPromise(`blkid ${partition.device} 2>/dev/null || echo ""`);
-
-                if (partBlkidOut.trim()) {
-                  const uuidMatch = partBlkidOut.match(/UUID="([^"]+)"/);
-                  const fsTypeMatch = partBlkidOut.match(/TYPE="([^"]+)"/);
-
-                  if (uuidMatch && fsTypeMatch && fsTypeMatch[1] === 'btrfs') {
-                    const partitionUuid = uuidMatch[1];
-                    if (mountedBtrfsUuids.has(partitionUuid)) {
-                      isPartOfMountedBtrfs = true;
-                      break; // Eine Partition reicht
-                    }
+                if (uuidMatch && fsTypeMatch && fsTypeMatch[1] === 'btrfs') {
+                  const diskUuid = uuidMatch[1];
+                  if (mountedBtrfsUuids.has(diskUuid)) {
+                    isPartOfMountedBtrfs = true;
                   }
                 }
-              } catch (error) {
-                // Ignoriere Fehler bei einzelnen Partitionen
+              }
+            } catch (error) {
+              // Ignore errors
+            }
+
+            // 2. Check all partitions of the disk for BTRFS
+            if (!isPartOfMountedBtrfs && disk.partitions) {
+              for (const partition of disk.partitions) {
+                try {
+                  const { stdout: partBlkidOut } = await execPromise(`blkid ${partition.device} 2>/dev/null || echo ""`);
+
+                  if (partBlkidOut.trim()) {
+                    const uuidMatch = partBlkidOut.match(/UUID="([^"]+)"/);
+                    const fsTypeMatch = partBlkidOut.match(/TYPE="([^"]+)"/);
+
+                    if (uuidMatch && fsTypeMatch && fsTypeMatch[1] === 'btrfs') {
+                      const partitionUuid = uuidMatch[1];
+                      if (mountedBtrfsUuids.has(partitionUuid)) {
+                        isPartOfMountedBtrfs = true;
+                        break; // One partition is enough
+                      }
+                    }
+                  }
+                } catch (error) {
+                  // Ignore errors for individual partitions
+                }
               }
             }
           }
+          // If disk is in standby, we skip the BTRFS UUID checks to avoid waking it
+          // This means standby disks might be shown as unassigned even if they're part of a BTRFS array
+          // but this is better than waking them up
 
           if (!isPartOfMountedBtrfs) {
-            // Zusätzlich prüfen ob Partitionen vorhanden sind aber nicht gemountet
+            // Additionally check if partitions exist but are not mounted
             if (disk.partitions && disk.partitions.length > 0) {
-              // Hat Partitionen aber nicht als "in use" erkannt - prüfe andere Mountpoints (nicht /mnt/disks, nicht /mnt/remotes)
+              // Has partitions but not recognized as "in use" - check other mountpoints (not /mnt/disks, not /mnt/remotes)
               const hasOtherMountedPartitions = disk.partitions.some(p =>
                 p.mountpoint &&
                 p.mountpoint !== '[SWAP]' &&
@@ -1191,14 +1199,14 @@ class DisksService {
               );
 
               if (!hasOtherMountedPartitions) {
-                // Hat Partitionen aber keine sind anderweitig gemountet - als unassigned betrachten
+                // Has partitions but none are mounted elsewhere - consider as unassigned
                 unassignedDisks.push({
                   ...disk,
                   reason: 'has_partitions_but_not_mounted'
                 });
               }
             } else {
-              // Keine Partitionen und nicht in Verwendung
+              // No partitions and not in use
               unassignedDisks.push({
                 ...disk,
                 reason: 'no_partitions_or_filesystem'
