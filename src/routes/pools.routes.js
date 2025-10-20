@@ -746,24 +746,6 @@ router.post('/single', checkRole(['admin']), async (req, res) => {
  *                     type: string
  *                     description: Custom MergerFS mount options (overrides policies if set)
  *                     example: "defaults,allow_other,use_ino,cache.files=partial,dropcacheonclose=true,category.create=epmfs"
- *                   config:
- *                     type: object
- *                     description: Pool configuration options
- *                     properties:
- *                       encrypted:
- *                         type: boolean
- *                         default: false
- *                         description: |
- *                           Enable LUKS encryption for all data devices in the MergerFS pool.
- *                           Each device is individually encrypted with LUKS2.
- *                         example: true
- *                       create_keyfile:
- *                         type: boolean
- *                         default: false
- *                         description: |
- *                           Create keyfile for automatic mounting (requires encrypted=true).
- *                           Keyfile is stored at /boot/config/system/luks/{poolname}.key
- *                         example: true
  *                   snapraid:
  *                     type: object
  *                     description: Optional SnapRAID configuration
@@ -772,10 +754,28 @@ router.post('/single', checkRole(['admin']), async (req, res) => {
  *                         type: string
  *                         description: Device to use as SnapRAID parity device
  *                         example: "/dev/sdd"
+ *               config:
+ *                 type: object
+ *                 description: Pool configuration options
+ *                 properties:
+ *                   encrypted:
+ *                     type: boolean
+ *                     default: false
+ *                     description: |
+ *                       Enable LUKS encryption for all data devices in the MergerFS pool.
+ *                       Each device is individually encrypted with LUKS2.
+ *                     example: true
+ *                   create_keyfile:
+ *                     type: boolean
+ *                     default: false
+ *                     description: |
+ *                       Create keyfile for automatic mounting (requires encrypted=true).
+ *                       Keyfile is stored at /boot/config/system/luks/{poolname}.key
+ *                     example: true
  *               passphrase:
  *                 type: string
  *                 description: |
- *                   Encryption passphrase (required if options.config.encrypted=true).
+ *                   Encryption passphrase (required if config.encrypted=true).
  *                   Used to encrypt all data devices in the MergerFS pool.
  *                 example: "my_secure_password"
  *     responses:
@@ -830,6 +830,7 @@ router.post('/mergerfs', checkRole(['admin']), async (req, res) => {
       format,
       policies = {},
       options = {},
+      config = {},
       passphrase
     } = req.body;
 
@@ -843,7 +844,7 @@ router.post('/mergerfs', checkRole(['admin']), async (req, res) => {
     }
 
     // Validate encryption parameters - allow empty passphrase if keyfile creation is enabled
-    if (options.config?.encrypted && (!passphrase || passphrase.trim() === '') && !options.config?.create_keyfile) {
+    if (config.encrypted && (!passphrase || passphrase.trim() === '') && !config.create_keyfile) {
       return res.status(400).json({ error: 'Passphrase is required for encrypted pools' });
     }
 
@@ -853,8 +854,11 @@ router.post('/mergerfs', checkRole(['admin']), async (req, res) => {
       policies: policies,
       format: format
     };
+    if (config && Object.keys(config).length > 0) {
+      poolOptions.config = config;
+    }
     // Always pass passphrase (even if empty) when encryption is enabled
-    if (options.config?.encrypted) {
+    if (config.encrypted) {
       poolOptions.passphrase = passphrase || '';
     }
 
