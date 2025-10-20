@@ -2365,6 +2365,129 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
       };
     }
   }
+
+  /**
+   * Deletes a driver package from /boot/optional/drivers/
+   * @param {Object} options - Driver options
+   * @param {string} [options.packagename] - Complete driver package filename (e.g., dvb-digital-devices_20250910-1+mos_amd64.deb)
+   * @param {string} [options.drivername] - Driver name only (e.g., dvb-digital-devices) - requires driverversion
+   * @param {string} [options.driverversion] - Driver version only (e.g., 20250910-1) - requires drivername
+   * @returns {Promise<Object>} Driver deletion status
+   */
+  async deleteDriver(options) {
+    try {
+      const { packagename, drivername, driverversion } = options;
+
+      let finalPackageName;
+
+      // Option 1: Complete package name provided
+      if (packagename && typeof packagename === 'string') {
+        finalPackageName = packagename;
+      }
+      // Option 2: Driver name and version provided separately
+      else if (drivername && driverversion) {
+        if (typeof drivername !== 'string' || typeof driverversion !== 'string') {
+          throw new Error('Driver name and driver version must be strings');
+        }
+        // Build complete package name: drivername_driverversion+mos_amd64.deb
+        finalPackageName = `${drivername}_${driverversion}+mos_amd64.deb`;
+      }
+      // Error: Neither option provided
+      else {
+        throw new Error('Either packagename OR (drivername and driverversion) must be provided');
+      }
+
+      // Parse package name to get category
+      const nameWithoutDeb = finalPackageName.replace('.deb', '');
+      const firstUnderscore = nameWithoutDeb.indexOf('_');
+
+      if (firstUnderscore === -1) {
+        throw new Error('Invalid package name format');
+      }
+
+      const fullDriverName = nameWithoutDeb.substring(0, firstUnderscore);
+
+      // Get category (first word before first dash)
+      const firstDash = fullDriverName.indexOf('-');
+      const category = firstDash !== -1 ? fullDriverName.substring(0, firstDash) : fullDriverName;
+
+      // Get current kernel version
+      const { stdout: unameOutput } = await execPromise('uname -r');
+      const kernelVersion = unameOutput.trim();
+
+      // Build full path to driver package
+      const driverPath = `/boot/optional/drivers/${category}/${kernelVersion}/${finalPackageName}`;
+      const md5Path = `${driverPath}.md5`;
+
+      // Check if driver package exists
+      try {
+        await fs.access(driverPath);
+      } catch (error) {
+        throw new Error(`Driver package not found: ${driverPath}`);
+      }
+
+      // Delete the .deb file
+      await fs.unlink(driverPath);
+      console.log(`Deleted driver package: ${driverPath}`);
+
+      // Delete the .md5 file if it exists
+      try {
+        await fs.access(md5Path);
+        await fs.unlink(md5Path);
+        console.log(`Deleted MD5 file: ${md5Path}`);
+      } catch (error) {
+        // MD5 file doesn't exist, that's okay
+        console.log(`No MD5 file found for: ${finalPackageName}`);
+      }
+
+      // Check if kernel version directory is empty
+      const kernelDirPath = `/boot/optional/drivers/${category}/${kernelVersion}`;
+      try {
+        const filesInKernelDir = await fs.readdir(kernelDirPath);
+        if (filesInKernelDir.length === 0) {
+          await fs.rmdir(kernelDirPath);
+          console.log(`Deleted empty kernel directory: ${kernelDirPath}`);
+
+          // Check if category directory is empty
+          const categoryDirPath = `/boot/optional/drivers/${category}`;
+          try {
+            const filesInCategoryDir = await fs.readdir(categoryDirPath);
+            if (filesInCategoryDir.length === 0) {
+              await fs.rmdir(categoryDirPath);
+              console.log(`Deleted empty category directory: ${categoryDirPath}`);
+            }
+          } catch (error) {
+            console.log(`Category directory not empty or could not be deleted: ${categoryDirPath}`);
+          }
+        }
+      } catch (error) {
+        console.log(`Kernel directory not empty or could not be deleted: ${kernelDirPath}`);
+      }
+
+      return {
+        success: true,
+        message: 'Driver deleted successfully',
+        packagename: finalPackageName,
+        drivername: drivername || null,
+        driverversion: driverversion || null,
+        category,
+        kernelVersion,
+        path: driverPath,
+        timestamp: new Date().toISOString()
+      };
+
+    } catch (error) {
+      console.error('Driver deletion error:', error.message);
+      return {
+        success: false,
+        error: error.message,
+        packagename: options.packagename || null,
+        drivername: options.drivername || null,
+        driverversion: options.driverversion || null,
+        timestamp: new Date().toISOString()
+      };
+    }
+  }
 }
 
 module.exports = new MosService();

@@ -2272,6 +2272,143 @@ router.post('/drivers', async (req, res) => {
 
 /**
  * @swagger
+ * /mos/drivers:
+ *   delete:
+ *     summary: Delete a driver
+ *     description: Delete a specific driver package from /boot/optional/drivers/ (admin only)
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             oneOf:
+ *               - required:
+ *                   - packagename
+ *                 properties:
+ *                   packagename:
+ *                     type: string
+ *                     description: Complete driver package filename (e.g., dvb-digital-devices_20250910-1+mos_amd64.deb)
+ *                     example: "dvb-digital-devices_20250910-1+mos_amd64.deb"
+ *               - required:
+ *                   - drivername
+ *                   - driverversion
+ *                 properties:
+ *                   drivername:
+ *                     type: string
+ *                     description: Driver name only (e.g., dvb-digital-devices)
+ *                     example: "dvb-digital-devices"
+ *                   driverversion:
+ *                     type: string
+ *                     description: Driver version only (e.g., 20250910-1)
+ *                     example: "20250910-1"
+ *           examples:
+ *             deleteWithPackageName:
+ *               summary: Delete using complete package filename
+ *               value:
+ *                 packagename: "dvb-digital-devices_20250910-1+mos_amd64.deb"
+ *             deleteWithNameAndVersion:
+ *               summary: Delete using driver name and version separately
+ *               value:
+ *                 drivername: "dvb-digital-devices"
+ *                 driverversion: "20250910-1"
+ *     responses:
+ *       200:
+ *         description: Driver deleted successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   description: Operation success status
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   description: Success message
+ *                   example: "Driver deleted successfully"
+ *                 packagename:
+ *                   type: string
+ *                   description: Complete driver package filename
+ *                   example: "dvb-digital-devices_20250910-1+mos_amd64.deb"
+ *                 drivername:
+ *                   type: string
+ *                   nullable: true
+ *                   description: Driver name (if provided separately)
+ *                   example: "dvb-digital-devices"
+ *                 driverversion:
+ *                   type: string
+ *                   nullable: true
+ *                   description: Driver version (if provided separately)
+ *                   example: "20250910-1"
+ *                 category:
+ *                   type: string
+ *                   description: Driver category
+ *                   example: "dvb"
+ *                 kernelVersion:
+ *                   type: string
+ *                   description: Kernel version
+ *                   example: "6.17.1-mos"
+ *                 path:
+ *                   type: string
+ *                   description: Path to the deleted driver
+ *                   example: "/boot/optional/drivers/dvb/6.17.1-mos/dvb-digital-devices_20250910-1+mos_amd64.deb"
+ *                 timestamp:
+ *                   type: string
+ *                   format: date-time
+ *                   description: Operation timestamp
+ *       400:
+ *         description: Invalid request parameters
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Driver package not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error or deletion failed
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+
+// DELETE: Delete Driver
+router.delete('/drivers', async (req, res) => {
+  try {
+    const result = await mosService.deleteDriver(req.body);
+    if (result.success) {
+      res.json(result);
+    } else {
+      res.status(400).json(result);
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
  * /mos/updatekernel:
  *   post:
  *     summary: Update kernel
