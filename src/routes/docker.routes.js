@@ -2014,20 +2014,21 @@ router.delete('/mos/unusedimages', async (req, res) => {
 
 // Proxy für Docker REST API
 router.use('/*', checkRole('admin'), async (req, res) => {
+  // Define variables outside try block so they're available in catch
+  const isStreamingEndpoint = req.originalUrl.includes('/logs') ||
+                             req.originalUrl.includes('/attach') ||
+                             req.originalUrl.includes('/exec');
+
+  const isContainerStateChange = req.method === 'POST' &&
+                                (req.originalUrl.includes('/start') ||
+                                 req.originalUrl.includes('/stop') ||
+                                 req.originalUrl.includes('/restart'));
+
+  // Extract Container ID for State Check
+  const containerIdMatch = req.originalUrl.match(/\/containers\/([^\/]+)\//);
+  const containerId = containerIdMatch ? containerIdMatch[1] : null;
+
   try {
-    const isStreamingEndpoint = req.originalUrl.includes('/logs') ||
-                               req.originalUrl.includes('/attach') ||
-                               req.originalUrl.includes('/exec');
-
-    const isContainerStateChange = req.method === 'POST' &&
-                                  (req.originalUrl.includes('/start') ||
-                                   req.originalUrl.includes('/stop') ||
-                                   req.originalUrl.includes('/restart'));
-
-    // Extract Container ID for State Check
-    const containerIdMatch = req.originalUrl.match(/\/containers\/([^\/]+)\//);
-    const containerId = containerIdMatch ? containerIdMatch[1] : null;
-
     const axiosConfig = {
       method: req.method,
       url: `http://localhost${req.originalUrl.replace('/api/v1/docker', '')}`,
@@ -2044,6 +2045,29 @@ router.use('/*', checkRole('admin'), async (req, res) => {
     }
 
     const response = await axios(axiosConfig);
+
+    // Handle error responses from Docker API
+    if (!isStreamingEndpoint && response.status >= 400) {
+      let errorMessage = 'Docker API error';
+
+      // Extract detailed error message
+      if (response.data) {
+        if (typeof response.data === 'string') {
+          errorMessage = response.data;
+        } else if (response.data.message) {
+          errorMessage = response.data.message;
+        } else if (typeof response.data === 'object') {
+          errorMessage = JSON.stringify(response.data);
+        }
+      }
+
+      // Convert 500 to 400 for container state changes (start/stop/restart)
+      // This allows frontend to properly handle errors like port conflicts
+      const statusCode = (response.status === 500 && isContainerStateChange) ? 400 : response.status;
+
+      return res.status(statusCode).json({ error: errorMessage });
+    }
+
     res.status(response.status);
 
     if (isStreamingEndpoint) {
@@ -2133,7 +2157,32 @@ router.use('/*', checkRole('admin'), async (req, res) => {
       res.json(responseData);
     }
   } catch (error) {
-    res.status(error.response?.status || 500).json({ error: error.message });
+    // Handle unexpected errors (network errors, timeouts, etc.)
+    let errorMessage = error.message;
+    let statusCode = 500;
+
+    // Check if this is an axios error with response
+    if (error.response) {
+      statusCode = error.response.status || 500;
+
+      if (error.response.data) {
+        if (typeof error.response.data === 'string') {
+          errorMessage = error.response.data;
+        } else if (error.response.data.message) {
+          errorMessage = error.response.data.message;
+        } else if (typeof error.response.data === 'object') {
+          errorMessage = JSON.stringify(error.response.data);
+        }
+      }
+    }
+
+    // Convert 500 errors to 400 for container start/stop/restart operations
+    // This allows frontend to properly display error messages (e.g., port conflicts)
+    if (statusCode === 500 && isContainerStateChange) {
+      statusCode = 400;
+    }
+
+    res.status(statusCode).json({ error: errorMessage });
   }
 });
 

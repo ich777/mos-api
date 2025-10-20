@@ -1165,10 +1165,16 @@ class DockerService {
           });
           results.successCount++;
         } catch (error) {
+          // Extract detailed error message from stderr if available
+          let errorMessage = error.message;
+          if (error.stderr) {
+            errorMessage = error.stderr.trim() || error.message;
+          }
+
           results.results.push({
             container: containerName,
             status: 'error',
-            message: error.message
+            message: errorMessage
           });
           results.failureCount++;
         }
