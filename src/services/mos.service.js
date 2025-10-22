@@ -1335,22 +1335,22 @@ class MosService {
   }
 
   /**
-   * Restarts services
+   * Update services
    * @param {string} service - Service name ('api' or 'nginx')
-   * @returns {Promise<Object>} Restart status
+   * @returns {Promise<Object>} Update status
    */
-  async restartService(service) {
+  async updateService(service) {
     try {
       const allowedServices = ['api', 'nginx'];
       if (!allowedServices.includes(service)) {
         throw new Error(`Service '${service}' not allowed. Allowed: ${allowedServices.join(', ')}`);
       }
 
-      // Create a detached child process that executes the restart immediately
+      // Create a detached child process that executes the update immediately
       const { spawn } = require('child_process');
 
-      // Execute the restart directly in a detached process
-      const child = spawn('/etc/init.d/' + service, ['restart'], {
+      // Execute the update directly in a detached process
+      const child = spawn('/etc/init.d/' + service, ['update'], {
         detached: true,
         stdio: 'ignore'
       });
@@ -1360,30 +1360,30 @@ class MosService {
 
       return {
         success: true,
-        message: `${service} restart initiated`,
+        message: `${service} update initiated`,
         service,
         timestamp: new Date().toISOString()
       };
 
     } catch (error) {
-      throw new Error(`Error initiating service restart: ${error.message}`);
+      throw new Error(`Error initiating service updating: ${error.message}`);
     }
   }
 
   /**
-   * Restarts the API immediately
-   * @returns {Promise<Object>} Restart status
+   * Updates the API immediately
+   * @returns {Promise<Object>} Update status
    */
-  async restartApi() {
-    return await this.restartService('api');
+  async updateApi() {
+    return await this.updateService('api');
   }
 
   /**
-   * Restarts nginx immediately
-   * @returns {Promise<Object>} Restart status
+   * Updates nginx immediately
+   * @returns {Promise<Object>} Update status
    */
-  async restartNginx() {
-    return await this.restartService('nginx');
+  async updateNginx() {
+    return await this.updateService('nginx');
   }
 
   /**
@@ -2484,6 +2484,58 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
         packagename: options.packagename || null,
         drivername: options.drivername || null,
         driverversion: options.driverversion || null,
+        timestamp: new Date().toISOString()
+      };
+    }
+  }
+
+  /**
+   * Executes MOS installation to disk using the mos-install script
+   * @param {string} disk - Disk device (e.g., /dev/sda)
+   * @param {string} filesystem - Filesystem type (vfat, ext4, btrfs, xfs)
+   * @returns {Promise<Object>} Installation status
+   */
+  async installToDisk(disk, filesystem) {
+    try {
+      // Parameter validation
+      if (!disk || typeof disk !== 'string') {
+        throw new Error('disk parameter is required and must be a string');
+      }
+
+      if (!filesystem || typeof filesystem !== 'string') {
+        throw new Error('filesystem parameter is required and must be a string');
+      }
+
+      // Filesystem validation
+      const validFilesystems = ['vfat', 'ext4', 'btrfs', 'xfs'];
+      if (!validFilesystems.includes(filesystem)) {
+        throw new Error(`filesystem must be one of: ${validFilesystems.join(', ')}`);
+      }
+
+      // Build command: bash /usr/local/bin/mos-install disk filesystem quiet
+      const command = `bash /usr/local/bin/mos-install ${disk} ${filesystem} quiet`;
+
+      // Execute script
+      const { stdout, stderr } = await execPromise(command);
+
+      return {
+        success: true,
+        message: 'MOS installation to disk initiated successfully',
+        disk,
+        filesystem,
+        command,
+        output: stdout,
+        error: stderr || null,
+        timestamp: new Date().toISOString()
+      };
+
+    } catch (error) {
+      console.error('MOS installation to disk error:', error.message);
+      return {
+        success: false,
+        error: error.message,
+        disk: disk || null,
+        filesystem: filesystem || null,
         timestamp: new Date().toISOString()
       };
     }

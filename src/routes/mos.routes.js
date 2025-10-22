@@ -1061,8 +1061,8 @@ router.post('/settings/system', async (req, res) => {
  * @swagger
  * /mos/update_api:
  *   post:
- *     summary: Update/Restart API service
- *     description: Restart API service immediately - useful after API updates (admin only)
+ *     summary: Update the API service
+ *     description: Update the API service immediately - useful after API updates (admin only)
  *     tags: [MOS]
  *     security:
  *       - bearerAuth: []
@@ -1070,7 +1070,7 @@ router.post('/settings/system', async (req, res) => {
  *       required: false
  *     responses:
  *       200:
- *         description: API restart initiated successfully
+ *         description: API update initiated successfully
  *         content:
  *           application/json:
  *             schema:
@@ -1081,7 +1081,7 @@ router.post('/settings/system', async (req, res) => {
  *                   example: true
  *                 message:
  *                   type: string
- *                   example: "API update/restart initiated"
+ *                   example: "API update initiated"
  *                 service:
  *                   type: string
  *                   example: "api"
@@ -1108,23 +1108,23 @@ router.post('/settings/system', async (req, res) => {
  *               $ref: '#/components/schemas/Error'
  */
 
-// POST: Update/Restart API service
+// POST: Update the API service
 router.post('/update_api', async (req, res) => {
   try {
     // Send response immediately
     res.json({
       success: true,
-      message: "API update/restart initiated",
+      message: "API update initiated",
       service: "api",
       timestamp: new Date().toISOString()
     });
 
-    // Restart API service immediately (runs in detached process)
+    // Update the API service immediately (runs in detached process)
     setImmediate(async () => {
       try {
-        await mosService.restartApi();
+        await mosService.updateApi();
       } catch (error) {
-        console.error('API restart error:', error.message);
+        console.error('API update error:', error.message);
       }
     });
 
@@ -1139,8 +1139,8 @@ router.post('/update_api', async (req, res) => {
  * @swagger
  * /mos/update_ui:
  *   post:
- *     summary: Update/Restart UI service (nginx)
- *     description: Restart nginx service to apply UI updates immediately (admin only)
+ *     summary: Update the UI service (nginx)
+ *     description: Update the UI service (nginx) immediately (admin only)
  *     tags: [MOS]
  *     security:
  *       - bearerAuth: []
@@ -1148,7 +1148,7 @@ router.post('/update_api', async (req, res) => {
  *       required: false
  *     responses:
  *       200:
- *         description: UI update/restart initiated successfully
+ *         description: UI update initiated successfully
  *         content:
  *           application/json:
  *             schema:
@@ -1159,7 +1159,7 @@ router.post('/update_api', async (req, res) => {
  *                   example: true
  *                 message:
  *                   type: string
- *                   example: "UI update/restart initiated"
+ *                   example: "UI update initiated"
  *                 service:
  *                   type: string
  *                   example: "nginx"
@@ -1186,23 +1186,23 @@ router.post('/update_api', async (req, res) => {
  *               $ref: '#/components/schemas/Error'
  */
 
-// POST: Update/Restart UI service (nginx)
+// POST: Update the UI service (nginx)
 router.post('/update_ui', async (req, res) => {
   try {
     // Send response immediately
     res.json({
       success: true,
-      message: "UI update/restart initiated",
+      message: "UI update initiated",
       service: "nginx",
       timestamp: new Date().toISOString()
     });
 
-    // Restart nginx service immediately (runs in detached process)
+    // Update the UI service (nginx) immediately (runs in detached process)
     setImmediate(async () => {
       try {
-        await mosService.restartNginx();
+        await mosService.updateNginx();
       } catch (error) {
-        console.error('nginx restart error:', error.message);
+        console.error('nginx update error:', error.message);
       }
     });
 
@@ -2595,6 +2595,138 @@ router.post('/updatekernel', async (req, res) => {
 router.post('/rollbackkernel', async (req, res) => {
   try {
     const result = await mosService.rollbackKernel();
+
+    if (result.success) {
+      res.json(result);
+    } else {
+      res.status(400).json(result);
+    }
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+/**
+ * @swagger
+ * /mos/installtodisk:
+ *   post:
+ *     summary: Install MOS to disk
+ *     description: Install MOS to a specified disk with the specified filesystem using mos-install script (admin only)
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - disk
+ *               - filesystem
+ *             properties:
+ *               disk:
+ *                 type: string
+ *                 description: Disk device path (e.g., /dev/sda, /dev/nvme0n1)
+ *                 example: "/dev/sda"
+ *               filesystem:
+ *                 type: string
+ *                 enum: [vfat, ext4, btrfs, xfs]
+ *                 description: Filesystem type for the installation
+ *                 example: "ext4"
+ *           example:
+ *             disk: "/dev/sda"
+ *             filesystem: "ext4"
+ *     responses:
+ *       200:
+ *         description: MOS installation to disk initiated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "MOS installation to disk initiated successfully"
+ *                 disk:
+ *                   type: string
+ *                   example: "/dev/sda"
+ *                 filesystem:
+ *                   type: string
+ *                   example: "ext4"
+ *                 command:
+ *                   type: string
+ *                   example: "bash /usr/local/bin/mos-install /dev/sda ext4 quiet"
+ *                 output:
+ *                   type: string
+ *                   example: "Installation process started..."
+ *                 error:
+ *                   type: string
+ *                   nullable: true
+ *                   example: null
+ *                 timestamp:
+ *                   type: string
+ *                   example: "2024-01-15T10:30:00.000Z"
+ *       400:
+ *         description: Invalid request parameters
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: false
+ *                 error:
+ *                   type: string
+ *                   example: "filesystem must be one of: vfat, ext4, btrfs, xfs"
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+
+// POST: Install MOS to disk
+router.post('/installtodisk', async (req, res) => {
+  try {
+    const { disk, filesystem } = req.body;
+
+    if (!disk) {
+      return res.status(400).json({
+        success: false,
+        error: 'disk parameter is required'
+      });
+    }
+
+    if (!filesystem) {
+      return res.status(400).json({
+        success: false,
+        error: 'filesystem parameter is required'
+      });
+    }
+
+    const result = await mosService.installToDisk(disk, filesystem);
 
     if (result.success) {
       res.json(result);
