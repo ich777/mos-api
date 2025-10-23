@@ -409,94 +409,127 @@ class SharesService {
   /**
    * Create a new SMB share with optional disk slot specification for MergerFS pools
    * @param {string} shareName - Name of the share
-   * @param {string} poolName - Name of the pool
-   * @param {string} subPath - Sub-path within the pool (optional)
+   * @param {string|null} poolName - Name of the pool (or null for absolute paths)
+   * @param {string} subPath - Sub-path within the pool OR absolute path if poolName is null
    * @param {Object} options - Share configuration options
    * @param {string} options.permissions - Directory permissions in octal format (default: '0775')
    * @returns {Promise<Object>} Created share configuration
    */
   async createSmbShare(shareName, poolName, subPath = '', options = {}) {
     try {
-      // Validate pool
-      const pool = await this._validatePool(poolName);
-
-      // Get pool information for extended functionality
+      let sharePath;
       let poolConfig = null;
       let diskResults = null;
       let pathRuleCreated = false;
+      let isAbsolutePath = false;
 
-      try {
-        poolConfig = await this._getPoolByName(poolName);
-      } catch (error) {
-        // Pool configuration not found - use fallback
-        console.warn(`Could not load pool configuration for '${poolName}': ${error.message}`);
-      }
+      // Check if poolName is null or empty -> absolute path mode
+      if (!poolName || poolName === null || poolName === '') {
+        isAbsolutePath = true;
 
-      // Extended functionality for MergerFS pools
-      if (poolConfig && poolConfig.type === 'mergerfs' && options.targetDevices && Array.isArray(options.targetDevices)) {
-        // Validate that the specified disk slots exist
-        await this._validateDiskSlots(poolName, options.targetDevices);
-
-        // Create directories on the specified disk slots
-        if (options.createDirectories !== false) {
-          diskResults = await this._createDiskDirectories(poolName, subPath, options.targetDevices, {
-            createDirectories: true,
-            setOwnership: true
-          });
-
-          // Check if all directories were successfully created
-          const failedCreations = Object.keys(diskResults).filter(slot => !diskResults[slot].success);
-          if (failedCreations.length > 0) {
-            const failureDetails = failedCreations.map(slot =>
-              `Slot ${slot}: ${diskResults[slot].error}`
-            ).join('; ');
-            throw new Error(`Failed to create directories on some disk slots: ${failureDetails}`);
-          }
+        // In absolute path mode, subPath must be an absolute path
+        if (!subPath || !path.isAbsolute(subPath)) {
+          throw new Error('When no pool is specified, an absolute path must be provided');
         }
 
-        // Create or update path_rule for this share
-        if (options.managePathRules !== false) {
-          const rulePath = subPath.startsWith('/') ? subPath : `/${subPath}`;
-          try {
-            const pathRuleResult = await this.addOrUpdatePathRule(poolName, rulePath, options.targetDevices);
-            pathRuleCreated = true;
-          } catch (pathRuleError) {
-            console.warn(`Could not create path rule: ${pathRuleError.message}`);
-          }
-        }
-      }
+        sharePath = subPath;
 
-      // Create full share path (default behavior)
-      const sharePath = path.join(pool.mountPath, subPath).replace(/\/+/g, '/');
-
-      // Check if the share path already exists or should be created (default behavior)
-      if (options.createDirectory !== false && (!poolConfig || poolConfig.type !== 'mergerfs' || !options.targetDevices)) {
-        try {
-          await fs.mkdir(sharePath, { recursive: true });
-
-          // Set ownership to 500:500 (user:group)
-          try {
-            await execAsync(`chown 500:500 "${sharePath}"`);
-          } catch (chownError) {
-            // Do nothing
-          }
-
-          // Set permissions (default: 0775 = rwxrwxr-x)
-          const permissions = options.permissions || '0775';
-          try {
-            await execAsync(`chmod ${permissions} "${sharePath}"`);
-          } catch (chmodError) {
-            // Do nothing
-          }
-        } catch (error) {
-          throw new Error(`Could not create share directory ${sharePath}: ${error.message}`);
-        }
-      } else if (options.createDirectory === false) {
-        // Check if path exists
+        // Verify that the directory exists
         try {
           await fs.access(sharePath);
+          const stats = await fs.stat(sharePath);
+          if (!stats.isDirectory()) {
+            throw new Error(`Path '${sharePath}' exists but is not a directory`);
+          }
         } catch (error) {
-          throw new Error(`Share path ${sharePath} does not exist`);
+          if (error.code === 'ENOENT') {
+            throw new Error(`Absolute path '${sharePath}' does not exist. Directory must exist when using absolute paths.`);
+          }
+          throw error;
+        }
+
+        // No pool validation, no directory creation, no permission changes in absolute path mode
+        console.log(`Using absolute path mode for share '${shareName}': ${sharePath}`);
+
+      } else {
+        // Pool-based mode (existing logic)
+        // Validate pool
+        const pool = await this._validatePool(poolName);
+
+        // Get pool information for extended functionality
+        try {
+          poolConfig = await this._getPoolByName(poolName);
+        } catch (error) {
+          // Pool configuration not found - use fallback
+          console.warn(`Could not load pool configuration for '${poolName}': ${error.message}`);
+        }
+
+        // Extended functionality for MergerFS pools
+        if (poolConfig && poolConfig.type === 'mergerfs' && options.targetDevices && Array.isArray(options.targetDevices)) {
+          // Validate that the specified disk slots exist
+          await this._validateDiskSlots(poolName, options.targetDevices);
+
+          // Create directories on the specified disk slots
+          if (options.createDirectories !== false) {
+            diskResults = await this._createDiskDirectories(poolName, subPath, options.targetDevices, {
+              createDirectories: true,
+              setOwnership: true
+            });
+
+            // Check if all directories were successfully created
+            const failedCreations = Object.keys(diskResults).filter(slot => !diskResults[slot].success);
+            if (failedCreations.length > 0) {
+              const failureDetails = failedCreations.map(slot =>
+                `Slot ${slot}: ${diskResults[slot].error}`
+              ).join('; ');
+              throw new Error(`Failed to create directories on some disk slots: ${failureDetails}`);
+            }
+          }
+
+          // Create or update path_rule for this share
+          if (options.managePathRules !== false) {
+            const rulePath = subPath.startsWith('/') ? subPath : `/${subPath}`;
+            try {
+              const pathRuleResult = await this.addOrUpdatePathRule(poolName, rulePath, options.targetDevices);
+              pathRuleCreated = true;
+            } catch (pathRuleError) {
+              console.warn(`Could not create path rule: ${pathRuleError.message}`);
+            }
+          }
+        }
+
+        // Create full share path (default behavior)
+        sharePath = path.join(pool.mountPath, subPath).replace(/\/+/g, '/');
+
+        // Check if the share path already exists or should be created (default behavior)
+        if (options.createDirectory !== false && (!poolConfig || poolConfig.type !== 'mergerfs' || !options.targetDevices)) {
+          try {
+            await fs.mkdir(sharePath, { recursive: true });
+
+            // Set ownership to 500:500 (user:group)
+            try {
+              await execAsync(`chown 500:500 "${sharePath}"`);
+            } catch (chownError) {
+              // Do nothing
+            }
+
+            // Set permissions (default: 0775 = rwxrwxr-x)
+            const permissions = options.permissions || '0775';
+            try {
+              await execAsync(`chmod ${permissions} "${sharePath}"`);
+            } catch (chmodError) {
+              // Do nothing
+            }
+          } catch (error) {
+            throw new Error(`Could not create share directory ${sharePath}: ${error.message}`);
+          }
+        } else if (options.createDirectory === false) {
+          // Check if path exists
+          try {
+            await fs.access(sharePath);
+          } catch (error) {
+            throw new Error(`Share path ${sharePath} does not exist`);
+          }
         }
       }
 
@@ -540,7 +573,8 @@ class SharesService {
         data: {
           shareName,
           sharePath,
-          poolName,
+          poolName: poolName || null,
+          isAbsolutePath,
           config: smbConfig
         },
         smbRestarted: smbRestartSuccess,
@@ -573,94 +607,127 @@ class SharesService {
   /**
    * Create a new NFS share with optional disk slot specification for MergerFS pools
    * @param {string} shareName - Name of the share
-   * @param {string} poolName - Name of the pool
-   * @param {string} subPath - Sub-path within the pool (optional)
+   * @param {string|null} poolName - Name of the pool (or null for absolute paths)
+   * @param {string} subPath - Sub-path within the pool OR absolute path if poolName is null
    * @param {Object} options - Share configuration options
    * @param {string} options.permissions - Directory permissions in octal format (default: '0775')
    * @returns {Promise<Object>} Created share configuration
    */
   async createNfsShare(shareName, poolName, subPath = '', options = {}) {
     try {
-      // Validate pool
-      const pool = await this._validatePool(poolName);
-
-      // Get pool information for extended functionality
+      let sharePath;
       let poolConfig = null;
       let diskResults = null;
       let pathRuleCreated = false;
+      let isAbsolutePath = false;
 
-      try {
-        poolConfig = await this._getPoolByName(poolName);
-      } catch (error) {
-        // Pool configuration not found - use fallback
-        console.warn(`Could not load pool configuration for '${poolName}': ${error.message}`);
-      }
+      // Check if poolName is null or empty -> absolute path mode
+      if (!poolName || poolName === null || poolName === '') {
+        isAbsolutePath = true;
 
-      // Extended functionality for MergerFS pools
-      if (poolConfig && poolConfig.type === 'mergerfs' && options.targetDevices && Array.isArray(options.targetDevices)) {
-        // Validate that the specified disk slots exist
-        await this._validateDiskSlots(poolName, options.targetDevices);
-
-        // Create directories on the specified disk slots
-        if (options.createDirectories !== false) {
-          diskResults = await this._createDiskDirectories(poolName, subPath, options.targetDevices, {
-            createDirectories: true,
-            setOwnership: true
-          });
-
-          // Check if all directories were successfully created
-          const failedCreations = Object.keys(diskResults).filter(slot => !diskResults[slot].success);
-          if (failedCreations.length > 0) {
-            const failureDetails = failedCreations.map(slot =>
-              `Slot ${slot}: ${diskResults[slot].error}`
-            ).join('; ');
-            throw new Error(`Failed to create directories on some disk slots: ${failureDetails}`);
-          }
+        // In absolute path mode, subPath must be an absolute path
+        if (!subPath || !path.isAbsolute(subPath)) {
+          throw new Error('When no pool is specified, an absolute path must be provided');
         }
 
-        // Create or update path_rule for this share
-        if (options.managePathRules !== false) {
-          const rulePath = subPath.startsWith('/') ? subPath : `/${subPath}`;
-          try {
-            const pathRuleResult = await this.addOrUpdatePathRule(poolName, rulePath, options.targetDevices);
-            pathRuleCreated = true;
-          } catch (pathRuleError) {
-            console.warn(`Could not create path rule: ${pathRuleError.message}`);
-          }
-        }
-      }
+        sharePath = subPath;
 
-      // Create full share path (default behavior)
-      const sharePath = path.join(pool.mountPath, subPath).replace(/\/+/g, '/');
-
-      // Check if the share path already exists or should be created (default behavior)
-      if (options.createDirectory !== false && (!poolConfig || poolConfig.type !== 'mergerfs' || !options.targetDevices)) {
-        try {
-          await fs.mkdir(sharePath, { recursive: true });
-
-          // Set ownership to 500:500 (user:group)
-          try {
-            await execAsync(`chown 500:500 "${sharePath}"`);
-          } catch (chownError) {
-            // Do nothing
-          }
-
-          // Set permissions (default: 0775 = rwxrwxr-x)
-          const permissions = options.permissions || '0775';
-          try {
-            await execAsync(`chmod ${permissions} "${sharePath}"`);
-          } catch (chmodError) {
-            // Do nothing
-          }
-        } catch (error) {
-          throw new Error(`Could not create share directory ${sharePath}: ${error.message}`);
-        }
-      } else if (options.createDirectory === false) {
-        // Check if path exists
+        // Verify that the directory exists
         try {
           await fs.access(sharePath);
+          const stats = await fs.stat(sharePath);
+          if (!stats.isDirectory()) {
+            throw new Error(`Path '${sharePath}' exists but is not a directory`);
+          }
         } catch (error) {
-          throw new Error(`Share path ${sharePath} does not exist`);
+          if (error.code === 'ENOENT') {
+            throw new Error(`Absolute path '${sharePath}' does not exist. Directory must exist when using absolute paths.`);
+          }
+          throw error;
+        }
+
+        // No pool validation, no directory creation, no permission changes in absolute path mode
+        console.log(`Using absolute path mode for share '${shareName}': ${sharePath}`);
+
+      } else {
+        // Pool-based mode (existing logic)
+        // Validate pool
+        const pool = await this._validatePool(poolName);
+
+        // Get pool information for extended functionality
+        try {
+          poolConfig = await this._getPoolByName(poolName);
+        } catch (error) {
+          // Pool configuration not found - use fallback
+          console.warn(`Could not load pool configuration for '${poolName}': ${error.message}`);
+        }
+
+        // Extended functionality for MergerFS pools
+        if (poolConfig && poolConfig.type === 'mergerfs' && options.targetDevices && Array.isArray(options.targetDevices)) {
+          // Validate that the specified disk slots exist
+          await this._validateDiskSlots(poolName, options.targetDevices);
+
+          // Create directories on the specified disk slots
+          if (options.createDirectories !== false) {
+            diskResults = await this._createDiskDirectories(poolName, subPath, options.targetDevices, {
+              createDirectories: true,
+              setOwnership: true
+            });
+
+            // Check if all directories were successfully created
+            const failedCreations = Object.keys(diskResults).filter(slot => !diskResults[slot].success);
+            if (failedCreations.length > 0) {
+              const failureDetails = failedCreations.map(slot =>
+                `Slot ${slot}: ${diskResults[slot].error}`
+              ).join('; ');
+              throw new Error(`Failed to create directories on some disk slots: ${failureDetails}`);
+            }
+          }
+
+          // Create or update path_rule for this share
+          if (options.managePathRules !== false) {
+            const rulePath = subPath.startsWith('/') ? subPath : `/${subPath}`;
+            try {
+              const pathRuleResult = await this.addOrUpdatePathRule(poolName, rulePath, options.targetDevices);
+              pathRuleCreated = true;
+            } catch (pathRuleError) {
+              console.warn(`Could not create path rule: ${pathRuleError.message}`);
+            }
+          }
+        }
+
+        // Create full share path (default behavior)
+        sharePath = path.join(pool.mountPath, subPath).replace(/\/+/g, '/');
+
+        // Check if the share path already exists or should be created (default behavior)
+        if (options.createDirectory !== false && (!poolConfig || poolConfig.type !== 'mergerfs' || !options.targetDevices)) {
+          try {
+            await fs.mkdir(sharePath, { recursive: true });
+
+            // Set ownership to 500:500 (user:group)
+            try {
+              await execAsync(`chown 500:500 "${sharePath}"`);
+            } catch (chownError) {
+              // Do nothing
+            }
+
+            // Set permissions (default: 0775 = rwxrwxr-x)
+            const permissions = options.permissions || '0775';
+            try {
+              await execAsync(`chmod ${permissions} "${sharePath}"`);
+            } catch (chmodError) {
+              // Do nothing
+            }
+          } catch (error) {
+            throw new Error(`Could not create share directory ${sharePath}: ${error.message}`);
+          }
+        } else if (options.createDirectory === false) {
+          // Check if path exists
+          try {
+            await fs.access(sharePath);
+          } catch (error) {
+            throw new Error(`Share path ${sharePath} does not exist`);
+          }
         }
       }
 
@@ -704,7 +771,8 @@ class SharesService {
         data: {
           shareName,
           sharePath,
-          poolName,
+          poolName: poolName || null,
+          isAbsolutePath,
           config: nfsConfig
         },
         nfsRestarted: nfsRestartSuccess,

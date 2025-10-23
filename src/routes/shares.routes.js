@@ -77,7 +77,6 @@ const sharesService = require('../services/shares.service');
  *       type: object
  *       required:
  *         - shareName
- *         - poolName
  *       properties:
  *         shareName:
  *           type: string
@@ -86,11 +85,14 @@ const sharesService = require('../services/shares.service');
  *           example: "media"
  *         poolName:
  *           type: string
- *           description: Pool name to use for the share
+ *           nullable: true
+ *           description: Pool name to use for the share. If null or empty, subPath must be an absolute path to an existing directory.
  *           example: "storage-pool"
  *         subPath:
  *           type: string
- *           description: Subdirectory path within the pool
+ *           description: |
+ *             If poolName is provided: Subdirectory path within the pool (relative path).
+ *             If poolName is null/empty: Absolute path to an existing directory (e.g., "/data/myshare"). The directory must exist and permissions will NOT be modified.
  *           default: ""
  *           example: "movies"
  *         automount:
@@ -256,7 +258,6 @@ const sharesService = require('../services/shares.service');
  *       type: object
  *       required:
  *         - shareName
- *         - poolName
  *       properties:
  *         shareName:
  *           type: string
@@ -265,11 +266,14 @@ const sharesService = require('../services/shares.service');
  *           example: "media"
  *         poolName:
  *           type: string
- *           description: Pool name to use for the share
+ *           nullable: true
+ *           description: Pool name to use for the share. If null or empty, subPath must be an absolute path to an existing directory.
  *           example: "storage-pool"
  *         subPath:
  *           type: string
- *           description: Subdirectory path within the pool
+ *           description: |
+ *             If poolName is provided: Subdirectory path within the pool (relative path).
+ *             If poolName is null/empty: Absolute path to an existing directory (e.g., "/data/myshare"). The directory must exist and permissions will NOT be modified.
  *           default: ""
  *           example: "movies"
  *         source:
@@ -843,10 +847,12 @@ router.get('/pools', checkRole(['admin']), async (req, res) => {
  *     description: |
  *       Create a new SMB/CIFS network share (admin only).
  *
+ *       **Pool-based shares**: Provide poolName and a relative subPath. The directory will be created if it doesn't exist, and ownership/permissions will be set.
+ *
+ *       **Absolute path shares**: Set poolName to null and provide an absolute path in subPath. The directory must already exist, and ownership/permissions will NOT be modified.
+ *
  *       **For MergerFS pools**: You can specify targetDevices to control which disk slots store the data.
  *       Use GET /pools to get available disk slots from pool.data_devices[].slot.
- *
- *       **For other pool types**: The share will be created normally on the pool mount point.
  *     tags: [Shares]
  *     security:
  *       - bearerAuth: []
@@ -870,6 +876,19 @@ router.get('/pools', checkRole(['admin']), async (req, res) => {
  *                 write_list: ["user1"]
  *                 valid_users: ["user1", "user2"]
  *                 comment: "Document storage"
+ *             absolute_path_share:
+ *               summary: SMB share with absolute path (no pool)
+ *               value:
+ *                 shareName: "external_data"
+ *                 poolName: null
+ *                 subPath: "/data/external/shared"
+ *                 enabled: true
+ *                 read_only: false
+ *                 guest_ok: false
+ *                 browseable: true
+ *                 write_list: ["user1"]
+ *                 valid_users: ["user1", "user2"]
+ *                 comment: "External data share (existing directory, permissions preserved)"
  *             mergerfs_share_with_slots:
  *               summary: MergerFS share with specific disk slots
  *               value:
@@ -1011,10 +1030,10 @@ router.post('/smb', checkRole(['admin']), async (req, res) => {
     } = req.body;
 
     // Validation of required fields
-    if (!shareName || !poolName) {
+    if (!shareName) {
       return res.status(400).json({
         success: false,
-        error: 'shareName and poolName are required'
+        error: 'shareName is required'
       });
     }
 
@@ -1024,6 +1043,16 @@ router.post('/smb', checkRole(['admin']), async (req, res) => {
         success: false,
         error: 'Share name can only contain letters, numbers, underscores and hyphens'
       });
+    }
+
+    // If no poolName is provided, subPath must be an absolute path
+    if (!poolName || poolName === null || poolName === '') {
+      if (!subPath || !subPath.startsWith('/')) {
+        return res.status(400).json({
+          success: false,
+          error: 'When no poolName is provided, subPath must be an absolute path (starting with /)'
+        });
+      }
     }
 
     // Validation of targetDevices (if given)
@@ -1093,10 +1122,12 @@ router.post('/smb', checkRole(['admin']), async (req, res) => {
  *     description: |
  *       Create a new NFS network share (admin only).
  *
+ *       **Pool-based shares**: Provide poolName and a relative subPath. The directory will be created if it doesn't exist, and ownership/permissions will be set.
+ *
+ *       **Absolute path shares**: Set poolName to null and provide an absolute path in subPath. The directory must already exist, and ownership/permissions will NOT be modified.
+ *
  *       **For MergerFS pools**: You can specify targetDevices to control which disk slots store the data.
  *       Use GET /pools to get available disk slots from pool.data_devices[].slot.
- *
- *       **For other pool types**: The share will be created normally on the pool mount point.
  *     tags: [Shares]
  *     security:
  *       - bearerAuth: []
@@ -1113,6 +1144,20 @@ router.post('/smb', checkRole(['admin']), async (req, res) => {
  *                 shareName: "documents"
  *                 poolName: "storage-pool"
  *                 subPath: "docs"
+ *                 source: "10.0.0.0/24"
+ *                 enabled: true
+ *                 read_only: false
+ *                 anonuid: null
+ *                 anonpid: null
+ *                 write_operations: "sync"
+ *                 mapping: "root_squash"
+ *                 secure: "true"
+ *             absolute_path_share:
+ *               summary: NFS share with absolute path (no pool)
+ *               value:
+ *                 shareName: "external_data"
+ *                 poolName: null
+ *                 subPath: "/data/external/shared"
  *                 source: "10.0.0.0/24"
  *                 enabled: true
  *                 read_only: false
@@ -1185,10 +1230,10 @@ router.post('/nfs', checkRole(['admin']), async (req, res) => {
     } = req.body;
 
     // Validation of required fields
-    if (!shareName || !poolName) {
+    if (!shareName) {
       return res.status(400).json({
         success: false,
-        error: 'shareName and poolName are required'
+        error: 'shareName is required'
       });
     }
 
@@ -1198,6 +1243,16 @@ router.post('/nfs', checkRole(['admin']), async (req, res) => {
         success: false,
         error: 'Share name can only contain letters, numbers, underscores and hyphens'
       });
+    }
+
+    // If no poolName is provided, subPath must be an absolute path
+    if (!poolName || poolName === null || poolName === '') {
+      if (!subPath || !subPath.startsWith('/')) {
+        return res.status(400).json({
+          success: false,
+          error: 'When no poolName is provided, subPath must be an absolute path (starting with /)'
+        });
+      }
     }
 
     // Validation of targetDevices (if given)
