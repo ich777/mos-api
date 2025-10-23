@@ -1,6 +1,6 @@
 const fs = require('fs').promises;
 const path = require('path');
-const { exec } = require('child_process');
+const { exec, spawn } = require('child_process');
 const util = require('util');
 const execPromise = util.promisify(exec);
 const os = require('os');
@@ -26,6 +26,49 @@ class PoolsService {
       gid: 500
     };
 
+  }
+
+  /**
+   * Helper function to execute cryptsetup command with passphrase via stdin
+   * This ensures passphrases with spaces and special characters work correctly
+   * @param {string[]} args - Command arguments for cryptsetup
+   * @param {string} passphrase - Passphrase to pass via stdin
+   * @returns {Promise<{stdout: string, stderr: string}>}
+   * @private
+   */
+  _execCryptsetupWithPassphrase(args, passphrase) {
+    return new Promise((resolve, reject) => {
+      const proc = spawn('cryptsetup', args, {
+        stdio: ['pipe', 'pipe', 'pipe']
+      });
+
+      let stdout = '';
+      let stderr = '';
+
+      proc.stdout.on('data', (data) => {
+        stdout += data.toString();
+      });
+
+      proc.stderr.on('data', (data) => {
+        stderr += data.toString();
+      });
+
+      proc.on('error', (error) => {
+        reject(new Error(`Failed to spawn cryptsetup: ${error.message}`));
+      });
+
+      proc.on('close', (code) => {
+        if (code === 0) {
+          resolve({ stdout, stderr });
+        } else {
+          reject(new Error(`cryptsetup exited with code ${code}: ${stderr || stdout}`));
+        }
+      });
+
+      // Write passphrase to stdin and close it
+      proc.stdin.write(passphrase);
+      proc.stdin.end();
+    });
   }
 
   /**
@@ -5312,13 +5355,17 @@ if (snapraidDevice) {
     const luksKeyDir = '/boot/config/system/luks';
     const keyfilePath = path.join(luksKeyDir, `${poolName}.key`);
 
+    // Remove trailing newlines and whitespace from passphrase
+    // This ensures consistency regardless of input method (file, API, user input)
+    const cleanPassphrase = passphrase.replace(/[\r\n]+$/, '');
+
     // Create luks directory
     await fs.mkdir(luksKeyDir, { recursive: true });
 
     // Create keyfile if requested
     if (createKeyfile) {
       // Store passphrase directly in keyfile (not hashed) - store unescaped
-      await fs.writeFile(keyfilePath, passphrase, { mode: 0o600 });
+      await fs.writeFile(keyfilePath, cleanPassphrase, { mode: 0o600 });
       console.log(`Created keyfile for pool '${poolName}' at ${keyfilePath}`);
     }
 
@@ -5342,9 +5389,11 @@ if (snapraidDevice) {
         // Use keyfile for LUKS format
         await execPromise(`cryptsetup luksFormat ${device} --type luks2 --key-file ${keyfilePath}`);
       } else {
-        // Use passphrase directly for LUKS format - escape shell characters
-        const escapedPassphrase = passphrase.replace(/'/g, "'\"'\"'");
-        await execPromise(`echo '${escapedPassphrase}' | cryptsetup luksFormat ${device} --type luks2 -`);
+        // Use passphrase directly for LUKS format via stdin (supports spaces and special characters)
+        await this._execCryptsetupWithPassphrase(
+          ['luksFormat', device, '--type', 'luks2'],
+          cleanPassphrase
+        );
       }
     }
 
@@ -5369,13 +5418,16 @@ if (snapraidDevice) {
     const mappedDevices = [];
     let useKeyfile = false;
 
+    // Remove trailing newlines from passphrase if provided
+    const cleanPassphrase = passphrase ? passphrase.replace(/[\r\n]+$/, '') : null;
+
     // Check if keyfile exists
     try {
       await fs.access(keyfilePath);
       useKeyfile = true;
       console.log(`Using keyfile for LUKS devices: ${keyfilePath}`);
     } catch (error) {
-      if (!passphrase) {
+      if (!cleanPassphrase) {
         throw new Error(`No keyfile found at ${keyfilePath} and no passphrase provided`);
       }
       console.log(`No keyfile found, using passphrase for LUKS devices`);
@@ -5426,8 +5478,11 @@ if (snapraidDevice) {
         if (useKeyfile) {
           await execPromise(`cryptsetup luksOpen ${device} ${luksName} --key-file ${keyfilePath}`);
         } else {
-          const escapedPassphrase = passphrase.replace(/'/g, "'\"'\"'");
-          await execPromise(`echo '${escapedPassphrase}' | cryptsetup luksOpen ${device} ${luksName} -`);
+          // Use passphrase via stdin (supports spaces and special characters)
+          await this._execCryptsetupWithPassphrase(
+            ['luksOpen', device, luksName],
+            cleanPassphrase
+          );
         }
 
         // Get UUID of the mapped device partition for proper mounting
@@ -5491,13 +5546,16 @@ if (snapraidDevice) {
     const mappedDevices = [];
     let useKeyfile = false;
 
+    // Remove trailing newlines from passphrase if provided
+    const cleanPassphrase = passphrase ? passphrase.replace(/[\r\n]+$/, '') : null;
+
     // Check if keyfile exists
     try {
       await fs.access(keyfilePath);
       useKeyfile = true;
       console.log(`Using keyfile for LUKS devices: ${keyfilePath}`);
     } catch (error) {
-      if (!passphrase) {
+      if (!cleanPassphrase) {
         throw new Error(`No keyfile found at ${keyfilePath} and no passphrase provided`);
       }
       console.log(`No keyfile found, using passphrase for LUKS devices`);
@@ -5544,8 +5602,11 @@ if (snapraidDevice) {
         if (useKeyfile) {
           await execPromise(`cryptsetup luksOpen ${device} ${luksName} --key-file ${keyfilePath}`);
         } else {
-          const escapedPassphrase = passphrase.replace(/'/g, "'\"'\"'");
-          await execPromise(`echo '${escapedPassphrase}' | cryptsetup luksOpen ${device} ${luksName} -`);
+          // Use passphrase via stdin (supports spaces and special characters)
+          await this._execCryptsetupWithPassphrase(
+            ['luksOpen', device, luksName],
+            cleanPassphrase
+          );
         }
 
         // Get UUID of the mapped device partition for proper mounting
