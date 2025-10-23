@@ -1544,4 +1544,421 @@ router.get('/logs/content', checkRole(['admin']), async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /system/devices/pci:
+ *   get:
+ *     summary: Get PCI devices information
+ *     description: |
+ *       Retrieve detailed information about all PCI devices by parsing lspci output.
+ *
+ *       **Data Structure:**
+ *       - Basic device info comes from `lspci -vmm -nn` (structured, reliable)
+ *       - Detailed hierarchical data comes from `lspci -vvv -nn` (parsed by indentation)
+ *
+ *       **Details Object:**
+ *       The `details` object contains a hierarchical structure where:
+ *       - Keys from lspci output become object properties
+ *       - Values are either strings, objects with nested properties, or arrays (for duplicate keys)
+ *       - Lines without keys are stored in `_raw` arrays
+ *       - Structure follows the indentation hierarchy of lspci output
+ *
+ *       This format is fully generic and automatically adapts to any changes in lspci output.
+ *
+ *       (Admin only)
+ *     tags: [System]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: PCI devices information retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: object
+ *                 properties:
+ *                   slot:
+ *                     type: string
+ *                     description: PCI slot identifier (bus:device.function)
+ *                     example: "01:00.0"
+ *                   class:
+ *                     type: string
+ *                     description: Device class name
+ *                     example: "VGA compatible controller"
+ *                   class_id:
+ *                     type: string
+ *                     description: Device class ID (hexadecimal)
+ *                     example: "0300"
+ *                   vendor:
+ *                     type: string
+ *                     description: Vendor name
+ *                     example: "NVIDIA Corporation"
+ *                   vendor_id:
+ *                     type: string
+ *                     description: Vendor ID (hexadecimal)
+ *                     example: "10de"
+ *                   name:
+ *                     type: string
+ *                     description: Device name
+ *                     example: "TU117GLM [Quadro T400 Mobile]"
+ *                   device_id:
+ *                     type: string
+ *                     description: Device ID (hexadecimal)
+ *                     example: "1fb2"
+ *                   revision:
+ *                     type: string
+ *                     description: Device revision (hexadecimal)
+ *                     example: "a1"
+ *                   subsystem_vendor:
+ *                     type: string
+ *                     description: Subsystem vendor name
+ *                     example: "NVIDIA Corporation"
+ *                   subsystem_vendor_id:
+ *                     type: string
+ *                     description: Subsystem vendor ID
+ *                     example: "10de"
+ *                   subsystem:
+ *                     type: string
+ *                     description: Subsystem device name
+ *                     example: "TU117GLM [Quadro T400 Mobile]"
+ *                   subsystem_device_id:
+ *                     type: string
+ *                     description: Subsystem device ID
+ *                     example: "1489"
+ *                   subsystem_id:
+ *                     type: string
+ *                     description: Combined subsystem ID (vendor:device)
+ *                     example: "10de:1489"
+ *                   prog_if:
+ *                     type: string
+ *                     description: Programming interface
+ *                     example: "00"
+ *                   details:
+ *                     type: object
+ *                     description: |
+ *                       Dynamically parsed details from lspci -vv output.
+ *                       Keys are extracted from the output (e.g., "Subsystem", "Flags", "I/O ports at", "Memory at", "Capabilities", "Kernel driver in use").
+ *                       Values can be strings or arrays (if the same key appears multiple times).
+ *                     additionalProperties: true
+ *                     example:
+ *                       Subsystem: "Marvell Technology Group Ltd. 88SE9215 PCIe 2.0 x1 4-port SATA 6 Gb/s Controller"
+ *                       Flags: "bus master, fast devsel, latency 0, IRQ 37"
+ *                       I/O ports at:
+ *                         - "c050 [size=8]"
+ *                         - "c040 [size=4]"
+ *                         - "c030 [size=8]"
+ *                         - "c020 [size=4]"
+ *                         - "c000 [size=32]"
+ *                       Memory at:
+ *                         - "f7a10000 (32-bit, non-prefetchable) [size=2K]"
+ *                       Expansion ROM at: "f7a00000 [disabled] [size=64K]"
+ *                       Capabilities:
+ *                         - "[40] Power Management version 3"
+ *                         - "[50] MSI: Enable+ Count=1/1 Maskable- 64bit-"
+ *                         - "[70] Express Legacy Endpoint, MSI 00"
+ *                         - "[e0] SATA HBA v0.0"
+ *                         - "[100] Advanced Error Reporting"
+ *                       Kernel driver in use: "ahci"
+ *             example:
+ *               - slot: "06:00.0"
+ *                 class: "SATA controller"
+ *                 class_id: "0106"
+ *                 vendor: "Marvell Technology Group Ltd."
+ *                 vendor_id: "1b4b"
+ *                 name: "88SE9215 PCIe 2.0 x1 4-port SATA 6 Gb/s Controller"
+ *                 device_id: "9215"
+ *                 revision: "11"
+ *                 subsystem_vendor: "Marvell Technology Group Ltd."
+ *                 subsystem_vendor_id: "1b4b"
+ *                 subsystem: "88SE9215 PCIe 2.0 x1 4-port SATA 6 Gb/s Controller"
+ *                 subsystem_device_id: "9215"
+ *                 subsystem_id: "1b4b:9215"
+ *                 prog_if: "01"
+ *                 details:
+ *                   Subsystem: "Marvell Technology Group Ltd. 88SE9215 PCIe 2.0 x1 4-port SATA 6 Gb/s Controller"
+ *                   Flags: "bus master, fast devsel, latency 0, IRQ 37"
+ *                   I/O ports at:
+ *                     - "c050 [size=8]"
+ *                     - "c040 [size=4]"
+ *                     - "c030 [size=8]"
+ *                     - "c020 [size=4]"
+ *                     - "c000 [size=32]"
+ *                   Memory at:
+ *                     - "f7a10000 (32-bit, non-prefetchable) [size=2K]"
+ *                   Expansion ROM at: "f7a00000 [disabled] [size=64K]"
+ *                   Capabilities:
+ *                     - "[40] Power Management version 3"
+ *                     - "[50] MSI: Enable+ Count=1/1 Maskable- 64bit-"
+ *                     - "[70] Express Legacy Endpoint, MSI 00"
+ *                     - "[e0] SATA HBA v0.0"
+ *                     - "[100] Advanced Error Reporting"
+ *                   Kernel driver in use: "ahci"
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *             example:
+ *               error: "Error getting PCI devices: lspci command not found"
+ */
+router.get('/devices/pci', checkRole(['admin']), async (req, res) => {
+  try {
+    const devices = await systemService.getPciDevices();
+    res.json(devices);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /system/devices/usb:
+ *   get:
+ *     summary: Get USB devices information
+ *     description: |
+ *       Retrieve detailed information about all USB devices by parsing lsusb output.
+ *
+ *       **Data Structure:**
+ *       - Basic device info comes from `lsusb` (bus, device, vendor_id, product_id, description)
+ *       - Detailed hierarchical data comes from `lsusb -v` (parsed by indentation)
+ *
+ *       **Details Object:**
+ *       The `details` object contains a hierarchical structure where:
+ *       - Keys from lsusb output become object properties
+ *       - Values are either strings, objects with nested properties, or arrays (for duplicate keys)
+ *       - Structure follows the indentation hierarchy of lsusb output
+ *       - Elements with children have a `value` property containing the header line
+ *
+ *       This format is fully generic and automatically adapts to any changes in lsusb output.
+ *
+ *       (Admin only)
+ *     tags: [System]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: USB devices information retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: object
+ *                 properties:
+ *                   bus:
+ *                     type: string
+ *                     description: USB bus number
+ *                     example: "002"
+ *                   device:
+ *                     type: string
+ *                     description: Device number on bus
+ *                     example: "001"
+ *                   vendor_id:
+ *                     type: string
+ *                     description: USB vendor ID (hexadecimal)
+ *                     example: "1d6b"
+ *                   product_id:
+ *                     type: string
+ *                     description: USB product ID (hexadecimal)
+ *                     example: "0002"
+ *                   description:
+ *                     type: string
+ *                     description: Device description
+ *                     example: "Linux Foundation 2.0 root hub"
+ *                   details:
+ *                     type: object
+ *                     description: |
+ *                       Hierarchical structure parsed from lsusb -v output.
+ *                       Keys are dynamically determined from lsusb output.
+ *                       Common keys include: Device Descriptor, Configuration Descriptor, Interface Descriptor, Endpoint Descriptor, Hub Descriptor, Device Status.
+ *
+ *                       Objects may contain:
+ *                       - Simple string values
+ *                       - Nested objects (for items with sub-details)
+ *                       - Arrays (for duplicate keys like multiple Descriptors)
+ *                       - value property (when an item has both a value and children)
+ *                     additionalProperties: true
+ *             example:
+ *               - bus: "002"
+ *                 device: "001"
+ *                 vendor_id: "1d6b"
+ *                 product_id: "0002"
+ *                 description: "Linux Foundation 2.0 root hub"
+ *                 details:
+ *                   Device Descriptor:
+ *                     bLength: "18"
+ *                     bDescriptorType: "1"
+ *                     bcdUSB: "2.00"
+ *                     bDeviceClass: "9 Hub"
+ *                     bMaxPacketSize0: "64"
+ *                     idVendor: "0x1d6b Linux Foundation"
+ *                     idProduct: "0x0002 2.0 root hub"
+ *                     iManufacturer: "3 Linux 6.17.4-mos xhci-hcd"
+ *                     bNumConfigurations: "1"
+ *                   Configuration Descriptor:
+ *                     value: ""
+ *                     bLength: "9"
+ *                     bDescriptorType: "2"
+ *                     wTotalLength: "0x0019"
+ *                     bNumInterfaces: "1"
+ *                     bmAttributes: "0xe0\nSelf Powered\nRemote Wakeup"
+ *                     Interface Descriptor:
+ *                       value: ""
+ *                       bLength: "9"
+ *                       bInterfaceNumber: "0"
+ *                       bInterfaceClass: "9 Hub"
+ *                   Hub Descriptor:
+ *                     bLength: "11"
+ *                     bDescriptorType: "41"
+ *                     nNbrPorts: "14"
+ *                     wHubCharacteristic: "0x000a\nNo power switching (usb 1.0)\nPer-port overcurrent protection"
+ *                   Device Status: "0x0001\nSelf Powered"
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *             example:
+ *               error: "Error getting USB devices: lsusb command not found"
+ */
+router.get('/devices/usb', checkRole(['admin']), async (req, res) => {
+  try {
+    const devices = await systemService.getUsbDevices();
+    res.json(devices);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /system/gpus:
+ *   get:
+ *     summary: Get GPU information
+ *     description: Returns information about all GPUs in the system grouped by vendor (Intel, AMD, NVIDIA)
+ *     tags: [System]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: GPU information by vendor
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 Intel:
+ *                   type: array
+ *                   nullable: true
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       vendor:
+ *                         type: string
+ *                         example: "Intel"
+ *                       name:
+ *                         type: string
+ *                         example: "Intel Corporation Xeon E3-1200 v3/4th Gen Core Processor Integrated Graphics Controller(rev 06)"
+ *                       vendor_id:
+ *                         type: string
+ *                         example: "8086"
+ *                       device_id:
+ *                         type: string
+ *                         example: "0412"
+ *                       pci:
+ *                         type: string
+ *                         example: "00:02.0"
+ *                       card:
+ *                         type: string
+ *                         example: "/dev/dri/card0"
+ *                       render:
+ *                         type: string
+ *                         example: "/dev/dri/renderD128"
+ *                 AMD:
+ *                   type: array
+ *                   nullable: true
+ *                   items:
+ *                     type: object
+ *                 NVIDIA:
+ *                   type: array
+ *                   nullable: true
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       vendor:
+ *                         type: string
+ *                         example: "NVIDIA"
+ *                       name:
+ *                         type: string
+ *                         example: "NVIDIA Corporation TU117GLM [Quadro T400 Mobile](rev a1)"
+ *                       vendor_id:
+ *                         type: string
+ *                         example: "10de"
+ *                       device_id:
+ *                         type: string
+ *                         example: "1fb2"
+ *                       pci:
+ *                         type: string
+ *                         example: "01:00.0"
+ *                       uuid:
+ *                         type: string
+ *                         example: "GPU-09e16239-57bc-2ca8-39ca-c72ed08bac48"
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *             example:
+ *               error: "Error getting GPUs: mos-get_gpus command not found"
+ */
+router.get('/gpus', checkRole(['admin']), async (req, res) => {
+  try {
+    const gpus = await systemService.getGpus();
+    res.json(gpus);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 module.exports = router; 

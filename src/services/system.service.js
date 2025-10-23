@@ -1078,6 +1078,319 @@ class SystemService {
       throw new Error(`Error reading log file: ${error.message}`);
     }
   }
+
+  /**
+   * Parse lspci -vmm output for basic device information
+   * @param {string} slot - PCI slot to parse
+   * @returns {Object} Basic device information
+   * @private
+   */
+  _parseLspciVmm(vmmOutput, slot) {
+    const lines = vmmOutput.split('\n');
+    const device = { slot: slot };
+
+    let currentSlot = null;
+    for (const line of lines) {
+      if (line.startsWith('Slot:')) {
+        currentSlot = line.split('\t')[1]?.trim();
+        if (currentSlot === slot) {
+          continue;
+        } else {
+          currentSlot = null;
+        }
+      }
+
+      if (currentSlot !== slot) continue;
+
+      const [key, ...valueParts] = line.split('\t');
+      const value = valueParts.join('\t').trim();
+
+      if (key === 'Class:') {
+        // "VGA compatible controller [0300]"
+        const match = value.match(/^(.+?)\s*\[([0-9a-f]{4})\]$/i);
+        if (match) {
+          device.class = match[1].trim();
+          device.class_id = match[2];
+        } else {
+          device.class = value;
+        }
+      } else if (key === 'Vendor:') {
+        // "NVIDIA Corporation [10de]"
+        const match = value.match(/^(.+?)\s*\[([0-9a-f]{4})\]$/i);
+        if (match) {
+          device.vendor = match[1].trim();
+          device.vendor_id = match[2];
+        } else {
+          device.vendor = value;
+        }
+      } else if (key === 'Device:') {
+        // "TU117GLM [Quadro T400 Mobile] [1fb2]"
+        const match = value.match(/^(.+?)\s*\[([0-9a-f]{4})\]$/i);
+        if (match) {
+          device.name = match[1].trim();
+          device.device_id = match[2];
+        } else {
+          device.name = value;
+        }
+      } else if (key === 'SVendor:') {
+        const match = value.match(/^(.+?)\s*\[([0-9a-f]{4})\]$/i);
+        if (match) {
+          device.subsystem_vendor = match[1].trim();
+          device.subsystem_vendor_id = match[2];
+        }
+      } else if (key === 'SDevice:') {
+        const match = value.match(/^(.+?)\s*\[([0-9a-f]{4})\]$/i);
+        if (match) {
+          device.subsystem = match[1].trim();
+          device.subsystem_device_id = match[2];
+        }
+      } else if (key === 'Rev:') {
+        device.revision = value;
+      } else if (key === 'ProgIf:') {
+        device.prog_if = value;
+      }
+    }
+
+    // Build subsystem_id from parts
+    if (device.subsystem_vendor_id && device.subsystem_device_id) {
+      device.subsystem_id = `${device.subsystem_vendor_id}:${device.subsystem_device_id}`;
+    }
+
+    return device;
+  }
+
+  /**
+   * Measure indentation level of a line
+   * @param {string} line - Line to measure
+   * @returns {number} Indentation level (number of leading spaces/tabs)
+   * @private
+   */
+  _getIndentLevel(line) {
+    if (!line) return 0;
+
+    let indent = 0;
+    for (let i = 0; i < line.length; i++) {
+      if (line[i] === ' ') {
+        indent++;
+      } else if (line[i] === '\t') {
+        // Treat tab as 2 spaces (or adjust as needed)
+        indent += 2;
+      } else {
+        break;
+      }
+    }
+
+    return indent;
+  }
+
+  /**
+   * Parse hierarchical data - simple approach: just collect sections and their content
+   * @param {Array} lines - Lines to parse
+   * @returns {Object} Parsed data with sections as keys and content as strings
+   * @private
+   */
+  _parseHierarchicalDetails(lines) {
+    if (lines.length === 0) return {};
+
+    const result = {};
+    let currentSection = null;
+    let currentLines = [];
+
+    for (let i = 1; i < lines.length; i++) { // Skip first line (slot info)
+      const line = lines[i];
+      if (!line.trim()) continue;
+
+      const indent = this._getIndentLevel(line);
+      const trimmedLine = line.trim();
+
+      // Check if this is a new section (0-1 indent level and ends with ":")
+      if (indent <= 1 && trimmedLine.endsWith(':')) {
+        // Save previous section
+        if (currentSection) {
+          result[currentSection] = currentLines.join('\n');
+        }
+
+        // Start new section
+        currentSection = trimmedLine.slice(0, -1); // Remove trailing ":"
+        currentLines = [];
+      } else if (currentSection) {
+        // Add line to current section (preserve original formatting)
+        currentLines.push(line);
+      }
+    }
+
+    // Save last section
+    if (currentSection) {
+      result[currentSection] = currentLines.join('\n');
+    }
+
+    return result;
+  }
+
+  /**
+   * Parse lspci -vv output for a device block - generic parsing
+   * @param {Array} lines - Lines of the device block
+   * @returns {Object} Parsed device details
+   * @private
+   */
+  _parseLspciVv(lines) {
+    const details = {};
+
+    for (let i = 1; i < lines.length; i++) { // Skip first line
+      const line = lines[i];
+      if (!line.trim()) continue;
+
+      const trimmed = line.trim();
+      const colonIndex = trimmed.indexOf(':');
+
+      if (colonIndex > 0) {
+        const key = trimmed.substring(0, colonIndex).trim();
+        const value = trimmed.substring(colonIndex + 1).trim();
+
+        // If key already exists, convert to array
+        if (details.hasOwnProperty(key)) {
+          if (!Array.isArray(details[key])) {
+            details[key] = [details[key]];
+          }
+          details[key].push(value);
+        } else {
+          details[key] = value;
+        }
+      }
+    }
+
+    return details;
+  }
+
+  /**
+   * Get PCI devices information using lspci -vmm and -vv
+   * Combines structured machine-readable format with parsed detailed output
+   * @returns {Promise<Array>} Array of PCI devices with detailed information
+   */
+  async getPciDevices() {
+    try {
+      // Get structured basic info and detailed info in parallel
+      const [vmmResult, vvResult] = await Promise.all([
+        execAsync('lspci -vmm -nn'),
+        execAsync('lspci -vv -nn')
+      ]);
+
+      const vmmOutput = vmmResult.stdout;
+      const vvOutput = vvResult.stdout;
+
+      // Split vv output into device blocks (separated by empty lines)
+      const deviceBlocks = vvOutput.split('\n\n').filter(block => block.trim());
+
+      const devices = [];
+
+      for (const block of deviceBlocks) {
+        const lines = block.split('\n');
+        if (lines.length === 0) continue;
+
+        // Extract slot from first line
+        const firstLine = lines[0];
+        const slotMatch = firstLine.match(/^([0-9a-f:.]+)\s+/);
+        if (!slotMatch) continue;
+
+        const slot = slotMatch[1];
+
+        // Parse basic info from vmm format
+        const device = this._parseLspciVmm(vmmOutput, slot);
+
+        // Parse detailed info from vv format
+        const details = this._parseLspciVv(lines);
+        device.details = details;
+
+        devices.push(device);
+      }
+
+      return devices;
+    } catch (error) {
+      throw new Error(`Error getting PCI devices: ${error.message}`);
+    }
+  }
+
+  /**
+   * Get USB devices information using lsusb
+   * @returns {Promise<Array>} Array of USB devices with detailed information
+   */
+  async getUsbDevices() {
+    try {
+      // Get basic list and detailed info in parallel
+      const [listResult, detailResult] = await Promise.all([
+        execAsync('lsusb'),
+        execAsync('lsusb -v')
+      ]);
+
+      const listOutput = listResult.stdout;
+      const detailOutput = detailResult.stdout;
+
+      // Parse basic list first
+      const basicDevices = [];
+      const listLines = listOutput.split('\n').filter(line => line.trim());
+
+      for (const line of listLines) {
+        // Format: "Bus 002 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub"
+        const match = line.match(/Bus\s+(\d+)\s+Device\s+(\d+):\s+ID\s+([0-9a-f]{4}):([0-9a-f]{4})\s+(.+)/i);
+        if (match) {
+          basicDevices.push({
+            bus: match[1],
+            device: match[2],
+            vendor_id: match[3],
+            product_id: match[4],
+            description: match[5].trim()
+          });
+        }
+      }
+
+      // Parse detailed output - split by device blocks
+      const deviceBlocks = detailOutput.split(/\n\nBus\s+/);
+
+      const devices = [];
+
+      for (const basicDevice of basicDevices) {
+        const device = { ...basicDevice };
+
+        // Find matching detailed block
+        const blockPrefix = `${basicDevice.bus} Device ${basicDevice.device}:`;
+        let matchingBlock = null;
+
+        for (let i = 0; i < deviceBlocks.length; i++) {
+          const block = i === 0 ? deviceBlocks[i] : 'Bus ' + deviceBlocks[i];
+          if (block.startsWith('Bus ' + blockPrefix)) {
+            matchingBlock = block;
+            break;
+          }
+        }
+
+        if (matchingBlock) {
+          // Parse hierarchical details
+          const lines = matchingBlock.split('\n');
+          const details = this._parseHierarchicalDetails(lines);
+          device.details = details;
+        }
+
+        devices.push(device);
+      }
+
+      return devices;
+    } catch (error) {
+      throw new Error(`Error getting USB devices: ${error.message}`);
+    }
+  }
+
+  /**
+   * Get GPU information using mos-get_gpus
+   * @returns {Promise<Object>} GPU information grouped by vendor
+   */
+  async getGpus() {
+    try {
+      const { stdout } = await execAsync('/usr/local/bin/mos-get_gpus');
+      return JSON.parse(stdout);
+    } catch (error) {
+      throw new Error(`Error getting GPUs: ${error.message}`);
+    }
+  }
 }
 
 module.exports = new SystemService();
