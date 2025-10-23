@@ -28,13 +28,22 @@ class CronService {
 
   /**
    * Reads all cron jobs from the JSON file
-   * @returns {Promise<Array>} Array of cron jobs
+   * @returns {Promise<Array>} Array of cron jobs with status
    */
   async getCronJobs() {
     try {
       await this._ensureDirectoryExists();
       const data = await fs.readFile(this.cronFile, 'utf8');
-      return JSON.parse(data);
+      const jobs = JSON.parse(data);
+
+      // Always add status
+      const jobsWithStatus = await Promise.all(
+        jobs.map(async (job) => ({
+          ...job,
+          status: await this._getJobStatus(job)
+        }))
+      );
+      return jobsWithStatus;
     } catch (error) {
       if (error.code === 'ENOENT') {
         // File does not exist - return empty array
@@ -413,14 +422,19 @@ class CronService {
   /**
    * Gets a specific Cron-Job by ID or name
    * @param {string} identifier - ID or name of the Cron-Job
-   * @returns {Promise<Object>} Cron-Job
+   * @returns {Promise<Object>} Cron-Job with status
    */
   async getCronJob(identifier) {
     const job = await this.findCronJob(identifier);
     if (!job) {
       throw new Error(`Cron-Job with ID/Name "${identifier}" not found`);
     }
-    return job;
+
+    // Always add status
+    return {
+      ...job,
+      status: await this._getJobStatus(job)
+    };
   }
 
   /**
@@ -522,25 +536,52 @@ class CronService {
 
   /**
    * Gets the content of a Cron-Script
-   * @param {string} scriptName - Name of the script (with or without .sh)
+   * @param {string} scriptName - Name of the script (with or without .sh) or job name
    * @returns {Promise<Object>} Script information and content
    */
   async getCronScript(scriptName) {
     try {
       const scriptsDir = '/boot/optional/scripts/cron';
+      let scriptPath = null;
 
       // Add .sh if not present
-      if (!scriptName.endsWith('.sh')) {
-        scriptName = scriptName + '.sh';
-      }
+      let scriptFileName = scriptName.endsWith('.sh') ? scriptName : scriptName + '.sh';
+      let directPath = path.join(scriptsDir, scriptFileName);
 
-      const scriptPath = path.join(scriptsDir, scriptName);
-
+      // First try: direct script file access
       try {
-        await fs.access(scriptPath);
+        await fs.access(directPath);
+        scriptPath = directPath;
       } catch (error) {
+        // If direct access fails, try to find by job name
         if (error.code === 'ENOENT') {
-          throw new Error(`Script '${scriptName}' not found`);
+          const jobs = await this.getCronJobs();
+          const job = jobs.find(j => j.name === scriptName || j.id === scriptName);
+
+          if (job) {
+            // Try to get scriptPath from job
+            if (job.scriptPath) {
+              scriptPath = job.scriptPath;
+            } else if (job.command) {
+              // Extract from command
+              const extractedPath = this._extractScriptPathFromCommand(job.command);
+              if (extractedPath) {
+                scriptPath = extractedPath;
+              }
+            }
+          }
+
+          // If still no path found, throw error
+          if (!scriptPath) {
+            throw new Error(`Script '${scriptName}' not found`);
+          }
+
+          // Verify the extracted path exists
+          try {
+            await fs.access(scriptPath);
+          } catch (err) {
+            throw new Error(`Script '${scriptName}' not found (resolved path: ${scriptPath} does not exist)`);
+          }
         } else {
           throw error;
         }
@@ -550,7 +591,7 @@ class CronService {
       const content = await fs.readFile(scriptPath, 'utf8');
 
       return {
-        name: scriptName,
+        name: path.basename(scriptPath),
         path: scriptPath,
         size: stats.size,
         created: stats.birthtime,
@@ -564,26 +605,53 @@ class CronService {
 
   /**
    * Updates the content of a Cron-Script
-   * @param {string} scriptName - Name of the script (with or without .sh)
+   * @param {string} scriptName - Name of the script (with or without .sh) or job name
    * @param {string} newContent - New script content
    * @returns {Promise<Object>} Updated script
    */
   async updateCronScript(scriptName, newContent) {
     try {
       const scriptsDir = '/boot/optional/scripts/cron';
+      let scriptPath = null;
 
       // Add .sh if not present
-      if (!scriptName.endsWith('.sh')) {
-        scriptName = scriptName + '.sh';
-      }
+      let scriptFileName = scriptName.endsWith('.sh') ? scriptName : scriptName + '.sh';
+      let directPath = path.join(scriptsDir, scriptFileName);
 
-      const scriptPath = path.join(scriptsDir, scriptName);
-
+      // First try: direct script file access
       try {
-        await fs.access(scriptPath);
+        await fs.access(directPath);
+        scriptPath = directPath;
       } catch (error) {
+        // If direct access fails, try to find by job name
         if (error.code === 'ENOENT') {
-          throw new Error(`Script '${scriptName}' not found`);
+          const jobs = await this.getCronJobs();
+          const job = jobs.find(j => j.name === scriptName || j.id === scriptName);
+
+          if (job) {
+            // Try to get scriptPath from job
+            if (job.scriptPath) {
+              scriptPath = job.scriptPath;
+            } else if (job.command) {
+              // Extract from command
+              const extractedPath = this._extractScriptPathFromCommand(job.command);
+              if (extractedPath) {
+                scriptPath = extractedPath;
+              }
+            }
+          }
+
+          // If still no path found, throw error
+          if (!scriptPath) {
+            throw new Error(`Script '${scriptName}' not found`);
+          }
+
+          // Verify the extracted path exists
+          try {
+            await fs.access(scriptPath);
+          } catch (err) {
+            throw new Error(`Script '${scriptName}' not found (resolved path: ${scriptPath} does not exist)`);
+          }
         } else {
           throw error;
         }
@@ -599,7 +667,7 @@ class CronService {
       const content = await fs.readFile(scriptPath, 'utf8');
 
       return {
-        name: scriptName,
+        name: path.basename(scriptPath),
         path: scriptPath,
         size: stats.size,
         created: stats.birthtime,
@@ -612,27 +680,256 @@ class CronService {
   }
 
   /**
+   * Extracts a script path from a command string
+   * @param {string} command - Command string
+   * @returns {string|null} Extracted script path or null
+   * @private
+   */
+  _extractScriptPathFromCommand(command) {
+    if (!command) {
+      return null;
+    }
+
+    // Remove output redirections (> /dev/null 2>&1, etc.)
+    let cmd = command.split('>')[0].trim();
+
+    // Remove shell prefix (bash, sh, zsh, etc.)
+    cmd = cmd.replace(/^(bash|sh|zsh|ksh|dash)\s+/, '').trim();
+
+    // Check if the remaining part looks like a file path
+    // Should start with / or ./ or ../ and end with common script extensions or no extension
+    if (cmd.match(/^(\/|\.\/|\.\.\/)[^\s]+/) || cmd.match(/^\/[^\s]+\.sh$/)) {
+      // Extract just the path (first word, no arguments)
+      const pathMatch = cmd.match(/^([^\s]+)/);
+      if (pathMatch) {
+        return pathMatch[1];
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Extracts the search pattern from a cron job for process detection
+   * @param {Object} job - Cron job object
+   * @returns {string} Search pattern for pgrep/pkill
+   * @private
+   */
+  _getProcessSearchPattern(job) {
+    let searchPattern = '';
+
+    // First try to use stored scriptPath
+    if (job.scriptPath) {
+      searchPattern = job.scriptPath;
+    }
+    // Otherwise extract from command
+    else if (job.command) {
+      const extractedPath = this._extractScriptPathFromCommand(job.command);
+      if (extractedPath) {
+        searchPattern = extractedPath;
+      } else {
+        // Fallback: extract the main command (without redirections)
+        let cmd = job.command.split('>')[0].trim();
+        // Strip bash/sh/zsh/etc. from the beginning to get the actual script/command
+        cmd = cmd.replace(/^(bash|sh|zsh|ksh|dash)\s+/, '');
+        searchPattern = cmd;
+      }
+    }
+
+    return searchPattern;
+  }
+
+  /**
+   * Checks if a cron job is currently running
+   * @param {Object} job - Cron job object
+   * @returns {Promise<boolean>} True if the job is running
+   * @private
+   */
+  async _isJobRunning(job) {
+    try {
+      const searchPattern = this._getProcessSearchPattern(job);
+
+      if (!searchPattern) {
+        return false;
+      }
+
+      // Use pgrep to check if the process is running
+      // -f searches the full command line
+      // Exit code: 0 if processes found, 1 if none found
+      try {
+        const { stdout } = await execPromise(`pgrep -f "${searchPattern}"`);
+
+        // If pgrep finds processes, stdout will contain PIDs (one per line)
+        const pids = stdout.trim().split('\n').filter(pid => pid.length > 0);
+
+        // Get our own PID and parent PIDs to exclude them
+        const currentPid = process.pid;
+
+        // Filter out:
+        // 1. The current Node.js process (API server)
+        // 2. Any empty PIDs
+        const validPids = pids.filter(pid => {
+          const pidNum = parseInt(pid, 10);
+          return !isNaN(pidNum) && pidNum !== currentPid;
+        });
+
+        // If we still have PIDs left after filtering, the job is running
+        return validPids.length > 0;
+      } catch (error) {
+        // pgrep returns exit code 1 when no processes are found
+        // This is expected and means the job is not running
+        if (error.code === 1) {
+          return false;
+        }
+        throw error;
+      }
+    } catch (error) {
+      console.warn(`Warning: Could not check if job is running: ${error.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Gets the running status for a cron job
+   * @param {Object} job - Cron job object
+   * @returns {Promise<string>} Status: 'running' or 'stopped'
+   * @private
+   */
+  async _getJobStatus(job) {
+    const isRunning = await this._isJobRunning(job);
+    return isRunning ? 'running' : 'stopped';
+  }
+
+  /**
+   * Starts a cron job manually (runs it in the background)
+   * @param {string} identifier - ID or name of the Cron-Job
+   * @returns {Promise<Object>} Started job with PID
+   */
+  async startCronJob(identifier) {
+    try {
+      const job = await this.findCronJob(identifier);
+      if (!job) {
+        throw new Error(`Cron-Job with ID/Name "${identifier}" not found`);
+      }
+
+      // Check if the job is already running
+      if (await this._isJobRunning(job)) {
+        throw new Error(`Cron-Job "${job.name}" is already running`);
+      }
+
+      // Extract the actual command without output redirection for manual execution
+      let commandToRun = job.command;
+
+      // Run the command in the background with nohup
+      // We use nohup to keep the process running even if the API terminates
+      const { stdout } = await execPromise(`nohup ${commandToRun} &`);
+
+      // Get the status after starting
+      const status = await this._getJobStatus(job);
+
+      return {
+        ...job,
+        status,
+        message: `Cron-Job "${job.name}" started successfully`
+      };
+    } catch (error) {
+      throw new Error(`Error starting Cron-Job: ${error.message}`);
+    }
+  }
+
+  /**
+   * Stops a running cron job
+   * @param {string} identifier - ID or name of the Cron-Job
+   * @returns {Promise<Object>} Stopped job
+   */
+  async stopCronJob(identifier) {
+    try {
+      const job = await this.findCronJob(identifier);
+      if (!job) {
+        throw new Error(`Cron-Job with ID/Name "${identifier}" not found`);
+      }
+
+      // Check if the job is running
+      if (!await this._isJobRunning(job)) {
+        throw new Error(`Cron-Job "${job.name}" is not currently running`);
+      }
+
+      // Find and kill the process
+      const searchPattern = this._getProcessSearchPattern(job);
+
+      if (!searchPattern) {
+        throw new Error('Cannot determine process to stop');
+      }
+
+      // Use pkill to terminate the process
+      // -f searches the full command line
+      await execPromise(`pkill -f "${searchPattern}"`);
+
+      // Give it a moment to terminate
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      // Get the status after stopping
+      const status = await this._getJobStatus(job);
+
+      return {
+        ...job,
+        status,
+        message: `Cron-Job "${job.name}" stopped successfully`
+      };
+    } catch (error) {
+      throw new Error(`Error stopping Cron-Job: ${error.message}`);
+    }
+  }
+
+  /**
    * Deletes a Cron-Script
-   * @param {string} scriptName - Name of the script (with or without .sh)
+   * @param {string} scriptName - Name of the script (with or without .sh) or job name
    * @param {boolean} deleteDependentJobs - Whether dependent Cron-Jobs should also be deleted (default: false)
    * @returns {Promise<Object>} Deleted script and deleted jobs
    */
   async deleteCronScript(scriptName, deleteDependentJobs = false) {
     try {
       const scriptsDir = '/boot/optional/scripts/cron';
+      let scriptPath = null;
 
       // Add .sh if not present
-      if (!scriptName.endsWith('.sh')) {
-        scriptName = scriptName + '.sh';
-      }
+      let scriptFileName = scriptName.endsWith('.sh') ? scriptName : scriptName + '.sh';
+      let directPath = path.join(scriptsDir, scriptFileName);
 
-      const scriptPath = path.join(scriptsDir, scriptName);
-
+      // First try: direct script file access
       try {
-        await fs.access(scriptPath);
+        await fs.access(directPath);
+        scriptPath = directPath;
       } catch (error) {
+        // If direct access fails, try to find by job name
         if (error.code === 'ENOENT') {
-          throw new Error(`Script '${scriptName}' not found`);
+          const jobs = await this.getCronJobs();
+          const job = jobs.find(j => j.name === scriptName || j.id === scriptName);
+
+          if (job) {
+            // Try to get scriptPath from job
+            if (job.scriptPath) {
+              scriptPath = job.scriptPath;
+            } else if (job.command) {
+              // Extract from command
+              const extractedPath = this._extractScriptPathFromCommand(job.command);
+              if (extractedPath) {
+                scriptPath = extractedPath;
+              }
+            }
+          }
+
+          // If still no path found, throw error
+          if (!scriptPath) {
+            throw new Error(`Script '${scriptName}' not found`);
+          }
+
+          // Verify the extracted path exists
+          try {
+            await fs.access(scriptPath);
+          } catch (err) {
+            throw new Error(`Script '${scriptName}' not found (resolved path: ${scriptPath} does not exist)`);
+          }
         } else {
           throw error;
         }
@@ -640,7 +937,14 @@ class CronService {
 
       // Check if the script is used by a cron job
       const cronJobs = await this.getCronJobs();
-      const usedBy = cronJobs.filter(job => job.scriptPath === scriptPath);
+      const usedBy = cronJobs.filter(job => {
+        // Check both stored scriptPath and extracted path from command
+        if (job.scriptPath === scriptPath) {
+          return true;
+        }
+        const extractedPath = this._extractScriptPathFromCommand(job.command);
+        return extractedPath === scriptPath;
+      });
 
       let deletedJobs = [];
 
@@ -657,7 +961,7 @@ class CronService {
           }
         } else {
           const jobNames = usedBy.map(job => job.name).join(', ');
-          throw new Error(`Cannot delete script '${scriptName}' - it is used by cron job(s): ${jobNames}. Use deleteDependentJobs=true to also delete dependent jobs.`);
+          throw new Error(`Cannot delete script '${path.basename(scriptPath)}' - it is used by cron job(s): ${jobNames}. Use deleteDependentJobs=true to also delete dependent jobs.`);
         }
       }
 
@@ -668,7 +972,7 @@ class CronService {
       await fs.unlink(scriptPath);
 
       return {
-        name: scriptName,
+        name: path.basename(scriptPath),
         path: scriptPath,
         size: stats.size,
         created: stats.birthtime,

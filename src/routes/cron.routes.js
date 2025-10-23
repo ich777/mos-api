@@ -49,6 +49,11 @@ const { checkRole } = require('../middleware/auth.middleware');
  *           nullable: true
  *           description: Path to the generated script file
  *           example: "/boot/optional/scripts/cron/backup_database.sh"
+ *         status:
+ *           type: string
+ *           enum: [running, stopped]
+ *           description: Current runtime status (dynamically checked using pgrep)
+ *           example: "stopped"
  *         created:
  *           type: string
  *           format: date-time
@@ -186,6 +191,7 @@ const { checkRole } = require('../middleware/auth.middleware');
  *                   schedule: "0 2 * * *"
  *                   command: "/usr/local/bin/backup-db.sh"
  *                   enabled: true
+ *                   status: "stopped"
  *                   created: "2024-01-20T10:30:00.000Z"
  *                   lastRun: "2024-01-21T02:00:00.000Z"
  *                   nextRun: "2024-01-22T02:00:00.000Z"
@@ -655,6 +661,7 @@ router.delete('/scripts/:scriptName', checkRole(['admin']), async (req, res) => 
  *                 schedule: "0 2 * * *"
  *                 command: "/usr/local/bin/backup-db.sh"
  *                 enabled: true
+ *                 status: "stopped"
  *                 created: "2024-01-20T10:30:00.000Z"
  *                 lastRun: "2024-01-21T02:00:00.000Z"
  *                 nextRun: "2024-01-22T02:00:00.000Z"
@@ -802,6 +809,7 @@ router.post('/', checkRole(['admin']), async (req, res) => {
  *                 schedule: "0 3 * * *"
  *                 command: "/usr/local/bin/backup-db-v2.sh"
  *                 enabled: true
+ *                 status: "stopped"
  *                 created: "2024-01-20T10:30:00.000Z"
  *                 lastRun: "2024-01-21T02:00:00.000Z"
  *                 nextRun: "2024-01-22T03:00:00.000Z"
@@ -950,6 +958,7 @@ router.put('/:identifier', checkRole(['admin']), async (req, res) => {
  *                 schedule: "0 2 * * *"
  *                 command: "/usr/local/bin/backup-db.sh"
  *                 enabled: true
+ *                 status: "stopped"
  *                 created: "2024-01-20T10:30:00.000Z"
  *                 lastRun: "2024-01-21T02:00:00.000Z"
  *                 nextRun: "2024-01-22T02:00:00.000Z"
@@ -1027,6 +1036,7 @@ router.delete('/:identifier', checkRole(['admin']), async (req, res) => {
  *                 schedule: "0 2 * * *"
  *                 command: "/usr/local/bin/backup-db.sh"
  *                 enabled: true
+ *                 status: "stopped"
  *                 created: "2024-01-20T10:30:00.000Z"
  *                 lastRun: "2024-01-21T02:00:00.000Z"
  *                 nextRun: "2024-01-22T02:00:00.000Z"
@@ -1116,6 +1126,7 @@ router.post('/:identifier/enable', checkRole(['admin']), async (req, res) => {
  *                 schedule: "0 2 * * *"
  *                 command: "/usr/local/bin/backup-db.sh"
  *                 enabled: false
+ *                 status: "stopped"
  *                 created: "2024-01-20T10:30:00.000Z"
  *                 lastRun: "2024-01-21T02:00:00.000Z"
  *                 nextRun: "2024-01-22T02:00:00.000Z"
@@ -1161,6 +1172,188 @@ router.post('/:identifier/disable', checkRole(['admin']), async (req, res) => {
   } catch (error) {
     if (error.message.includes('not found')) {
       res.status(404).json({
+        success: false,
+        error: error.message
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  }
+});
+
+/**
+ * @swagger
+ * /cron/{identifier}/start:
+ *   post:
+ *     summary: Start cron job manually
+ *     description: Start a cron job manually in the background (admin only, checks if already running)
+ *     tags: [Cron]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: identifier
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Cron job ID or name to start
+ *         example: "backup-database"
+ *     responses:
+ *       200:
+ *         description: Cron job started successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 cronJob:
+ *                   $ref: '#/components/schemas/CronJob'
+ *                 message:
+ *                   type: string
+ *                   example: "Cron-Job 'backup-database' started successfully"
+ *             example:
+ *               success: true
+ *               cronJob:
+ *                 id: "job-123"
+ *                 name: "backup-database"
+ *                 schedule: "0 2 * * *"
+ *                 command: "/usr/local/bin/backup-db.sh"
+ *                 enabled: true
+ *                 status: "running"
+ *               message: "Cron-Job 'backup-database' started successfully"
+ *       400:
+ *         description: Job is already running
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *             example:
+ *               success: false
+ *               error: "Cron-Job 'backup-database' is already running"
+ *       401:
+ *         description: Not authenticated
+ *       403:
+ *         description: Admin permission required
+ *       404:
+ *         description: Cron job not found
+ *       500:
+ *         description: Server error
+ */
+
+// Start cron job manually (admin only)
+router.post('/:identifier/start', checkRole(['admin']), async (req, res) => {
+  try {
+    const result = await cronService.startCronJob(req.params.identifier);
+    res.json({
+      success: true,
+      cronJob: result,
+      message: result.message
+    });
+  } catch (error) {
+    if (error.message.includes('not found')) {
+      res.status(404).json({
+        success: false,
+        error: error.message
+      });
+    } else if (error.message.includes('already running')) {
+      res.status(400).json({
+        success: false,
+        error: error.message
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  }
+});
+
+/**
+ * @swagger
+ * /cron/{identifier}/stop:
+ *   post:
+ *     summary: Stop running cron job
+ *     description: Stop a currently running cron job (admin only)
+ *     tags: [Cron]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: identifier
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Cron job ID or name to stop
+ *         example: "backup-database"
+ *     responses:
+ *       200:
+ *         description: Cron job stopped successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 cronJob:
+ *                   $ref: '#/components/schemas/CronJob'
+ *                 message:
+ *                   type: string
+ *                   example: "Cron-Job 'backup-database' stopped successfully"
+ *             example:
+ *               success: true
+ *               cronJob:
+ *                 id: "job-123"
+ *                 name: "backup-database"
+ *                 schedule: "0 2 * * *"
+ *                 command: "/usr/local/bin/backup-db.sh"
+ *                 enabled: true
+ *                 status: "stopped"
+ *               message: "Cron-Job 'backup-database' stopped successfully"
+ *       400:
+ *         description: Job is not running
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *             example:
+ *               success: false
+ *               error: "Cron-Job 'backup-database' is not currently running"
+ *       401:
+ *         description: Not authenticated
+ *       403:
+ *         description: Admin permission required
+ *       404:
+ *         description: Cron job not found
+ *       500:
+ *         description: Server error
+ */
+
+// Stop cron job (admin only)
+router.post('/:identifier/stop', checkRole(['admin']), async (req, res) => {
+  try {
+    const result = await cronService.stopCronJob(req.params.identifier);
+    res.json({
+      success: true,
+      cronJob: result,
+      message: result.message
+    });
+  } catch (error) {
+    if (error.message.includes('not found')) {
+      res.status(404).json({
+        success: false,
+        error: error.message
+      });
+    } else if (error.message.includes('not currently running')) {
+      res.status(400).json({
         success: false,
         error: error.message
       });
