@@ -503,12 +503,14 @@ const sharesService = require('../services/shares.service');
  *       properties:
  *         deleteDirectory:
  *           type: boolean
- *           description: Also delete the share directory
+ *           description: |
+ *             Also delete the share directory (only for pool-based shares).
+ *             For absolute path shares (without pool), the directory will NEVER be deleted, even if this is set to true.
  *           default: false
  *           example: false
  *         removePathRule:
  *           type: boolean
- *           description: Also remove the corresponding path rule from pool configuration
+ *           description: Also remove the corresponding path rule from pool configuration (only applies to pool-based shares)
  *           default: true
  *           example: true
  */
@@ -1569,6 +1571,10 @@ router.put('/smb/:shareId', checkRole(['admin']), async (req, res) => {
  *     description: |
  *       Delete an existing SMB share and optionally its directory (admin only).
  *
+ *       **Pool-based shares**: Directory can be deleted if deleteDirectory is true.
+ *
+ *       **Absolute path shares**: Directory will NEVER be deleted, even if deleteDirectory is true (to protect external directories).
+ *
  *       **Note**: Associated path rules in the pool configuration are automatically removed when removePathRule is true (default).
  *     tags: [Shares]
  *     security:
@@ -2167,6 +2173,10 @@ router.put('/nfs/:shareId', checkRole(['admin']), async (req, res) => {
  *     summary: Delete a NFS share
  *     description: |
  *       Delete an existing NFS share and optionally its directory (admin only).
+ *
+ *       **Pool-based shares**: Directory can be deleted if deleteDirectory is true.
+ *
+ *       **Absolute path shares**: Directory will NEVER be deleted, even if deleteDirectory is true (to protect external directories).
  *
  *       **Note**: Associated path rules in the pool configuration are automatically removed when removePathRule is true (default).
  *     tags: [Shares]

@@ -949,15 +949,19 @@ class SharesService {
         daemonReloadMessage = daemonReloadSuccess ? ' and NFS restarted' : ' (NFS restart failed)';
       }
 
-      // Delete directory if desired
+      // Delete directory if desired (but not for absolute paths without pool)
       let directoryDeleted = false;
-      if (deleteDirectory && sharePath) {
+      if (deleteDirectory && sharePath && poolName) {
+        // Only delete directory if it's pool-based
+        // Absolute path shares (poolName === null) should never have their directories deleted
         try {
           await fs.rmdir(sharePath);
           directoryDeleted = true;
         } catch (error) {
           console.warn(`Could not delete share directory ${sharePath}: ${error.message}`);
         }
+      } else if (deleteDirectory && !poolName) {
+        console.log(`Skipping directory deletion for absolute path share: ${sharePath}`);
       }
 
       return {
