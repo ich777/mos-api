@@ -4544,6 +4544,11 @@ class PoolsService {
         }
       };
 
+      // Store original physical devices array for encrypted pools (needed for size checks, etc.)
+      if (encryptionEnabled) {
+        pool.devices = preparedDevices;
+      }
+
 // Add snapraid info if applicable
 if (snapraidDevice) {
     // Create snapraid config directory if it doesn't exist
@@ -4664,6 +4669,9 @@ if (snapraidDevice) {
         throw new Error('Only MergerFS pools support parity devices');
       }
 
+      // Ensure device paths are injected from UUIDs
+      await this._ensureDevicePaths(pool);
+
       // Handle LUKS encryption for new parity devices if pool is encrypted
       let actualParityDevices = parityDevices;
       let parityLuksDevices = null;
@@ -4716,10 +4724,11 @@ if (snapraidDevice) {
 
         // Check all data devices and make sure parity device is at least as large as the largest
         let largestDataDevice = 0;
-        for (const dataDevice of pool.data_devices) {
+        for (let i = 0; i < pool.data_devices.length; i++) {
+          const dataDevice = pool.data_devices[i];
           // For encrypted pools, get size from original devices
           const deviceToMeasure = pool.config?.encrypted && pool.devices ?
-            pool.devices[pool.data_devices.indexOf(dataDevice)] :
+            pool.devices[i] :
             dataDevice.device;
           const deviceSize = await this.getDeviceSize(deviceToMeasure);
           if (deviceSize > largestDataDevice) {
