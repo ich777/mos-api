@@ -1278,6 +1278,15 @@ class PoolsService {
       throw new Error(`Pool ${pool.name} must be mounted to add devices`);
     }
 
+    // For encrypted pools, inject device paths to compare with pool.devices array
+    // For non-encrypted pools, inject real device paths for comparison
+    if (pool.config?.encrypted && pool.devices) {
+      // For encrypted pools, don't inject paths - compare with pool.devices instead
+    } else {
+      // For non-encrypted pools, inject real device paths
+      await this._injectRealDevicePaths(pool);
+    }
+
     // Handle LUKS encryption for new devices if pool is encrypted
     let actualDevicesToAdd = newDevices;
     let luksDevices = null;
@@ -1309,7 +1318,17 @@ class PoolsService {
       }
 
       // Check if device is already part of this pool
-      const isInPool = pool.data_devices.some(d => d.device === device);
+      let isInPool = false;
+      if (pool.config?.encrypted && pool.devices) {
+        // For encrypted pools, check against physical devices in pool.devices
+        // Since 'device' here is the original physical device from newDevices
+        const deviceIndex = newDevices.indexOf(device);
+        const originalDevice = deviceIndex >= 0 ? newDevices[deviceIndex] : device;
+        isInPool = pool.devices.includes(originalDevice);
+      } else {
+        // For non-encrypted pools, compare with injected device paths
+        isInPool = pool.data_devices.some(d => d.device === device);
+      }
       if (isInPool) {
         throw new Error(`Device ${device} is already part of pool ${pool.name}`);
       }
@@ -1407,6 +1426,15 @@ class PoolsService {
     // Determine filesystem from existing devices
     const existingFilesystem = pool.data_devices.length > 0 ? pool.data_devices[0].filesystem : 'xfs';
 
+    // For encrypted pools, inject device paths to compare with pool.devices array
+    // For non-encrypted pools, inject real device paths for comparison
+    if (pool.config?.encrypted && pool.devices) {
+      // For encrypted pools, don't inject paths - compare with pool.devices instead
+    } else {
+      // For non-encrypted pools, inject real device paths
+      await this._injectRealDevicePaths(pool);
+    }
+
     // Handle LUKS encryption for new devices if pool is encrypted
     let actualDevicesToAdd = newDevices;
     let luksDevices = null;
@@ -1442,8 +1470,18 @@ class PoolsService {
       }
 
       // Check if device is already part of this pool
-      const isInPool = pool.data_devices.some(d => d.device === deviceToCheck) ||
-                      pool.parity_devices.some(d => d.device === deviceToCheck);
+      let isInPool = false;
+      if (pool.config?.encrypted && pool.devices) {
+        // For encrypted pools, check against physical devices in pool.devices
+        // deviceToCheck is the mapped LUKS device, so compare originalDevice instead
+        isInPool = pool.devices.includes(originalDevice);
+        // Also check parity devices if they exist
+        // Note: parity devices are stored separately in encrypted pools
+      } else {
+        // For non-encrypted pools, compare with injected device paths
+        isInPool = pool.data_devices.some(d => d.device === deviceToCheck) ||
+                  pool.parity_devices.some(d => d.device === deviceToCheck);
+      }
       if (isInPool) {
         throw new Error(`Device ${deviceToCheck} is already part of pool ${pool.name}`);
       }
@@ -3731,16 +3769,84 @@ class PoolsService {
         throw new Error('Only MergerFS pools support parity devices');
       }
 
-      // Ensure device paths are injected from UUIDs
-      await this._ensureDevicePaths(pool);
+      // Inject real device paths (e.g. /dev/sdj1 instead of /dev/disk/by-uuid/...)
+      await this._injectRealDevicePaths(pool);
 
-      // Remove specified parity devices
-      const originalParityCount = pool.parity_devices.length;
+      // Identify parity devices to remove and their mount points
+      const parityDevicesToRemove = [];
+      const snapraidPoolPath = path.join(this.snapraidBasePath, pool.name);
+
+      for (const parityDevice of pool.parity_devices) {
+        if (parityDevices.includes(parityDevice.device)) {
+          const parityMountPoint = path.join(snapraidPoolPath, `parity${parityDevice.slot}`);
+          parityDevicesToRemove.push({
+            device: parityDevice,
+            mountPoint: parityMountPoint
+          });
+        }
+      }
+
+      const removedCount = parityDevicesToRemove.length;
+
+      if (removedCount === 0) {
+        throw new Error(`None of the specified parity devices are part of pool ${pool.name}`);
+      }
+
+      // Unmount parity devices if they are mounted
+      const { unmount = true } = options;
+      if (unmount) {
+        for (const { device, mountPoint } of parityDevicesToRemove) {
+          if (await this._isMounted(mountPoint)) {
+            try {
+              await this.unmountDevice(mountPoint, { removeDirectory: true });
+              console.log(`Unmounted parity device ${device.device} from ${mountPoint}`);
+            } catch (error) {
+              console.warn(`Warning: Could not unmount parity device ${device.device}: ${error.message}`);
+            }
+          }
+        }
+      }
+
+      // Close LUKS devices for removed parity devices if pool is encrypted
+      if (pool.config?.encrypted) {
+        console.log(`Closing LUKS devices for removed parity devices from pool '${pool.name}'`);
+
+        // Find original physical devices and their slots
+        const physicalDevicesToClose = [];
+        const paritySlots = [];
+
+        for (const { device } of parityDevicesToRemove) {
+          // Find the UUID in parity_devices to locate the physical device
+          const parityDeviceUuid = device.id;
+
+          // For parity devices, we need to resolve from UUID to physical device
+          // Since parity devices might not have pool.devices array (it's only for data devices)
+          // We need to resolve the UUID to the physical device path
+          try {
+            const physicalDevice = await this.getRealDevicePathFromUuid(parityDeviceUuid);
+            if (physicalDevice) {
+              physicalDevicesToClose.push(physicalDevice);
+              paritySlots.push(parseInt(device.slot));
+            }
+          } catch (error) {
+            console.warn(`Warning: Could not resolve physical device for parity UUID ${parityDeviceUuid}: ${error.message}`);
+          }
+        }
+
+        // Close LUKS devices using slot-based naming
+        if (physicalDevicesToClose.length > 0) {
+          try {
+            await this._closeLuksDevicesWithSlots(physicalDevicesToClose, pool.name, paritySlots, true);
+          } catch (error) {
+            console.warn(`Warning: Could not close LUKS parity devices: ${error.message}`);
+          }
+        }
+      }
+
+      // Remove specified parity devices from pool configuration
       pool.parity_devices = pool.parity_devices.filter(
         device => !parityDevices.includes(device.device)
       );
-
-      const removedCount = originalParityCount - pool.parity_devices.length;
 
       // If no parity devices left, clean up SnapRAID config and sync settings
       if (pool.parity_devices.length === 0) {
@@ -3790,8 +3896,8 @@ class PoolsService {
 
       const pool = pools[poolIndex];
 
-      // Ensure device paths are injected from UUIDs
-      await this._ensureDevicePaths(pool);
+      // Inject real device paths (e.g. /dev/sdj1 instead of /dev/disk/by-uuid/...)
+      await this._injectRealDevicePaths(pool);
 
       // Handle different pool types
       if (pool.type === 'mergerfs') {
@@ -4018,8 +4124,8 @@ class PoolsService {
         throw new Error(`Pool with ID "${poolId}" not found`);
       }
 
-      // Ensure device paths are injected from UUIDs
-      await this._ensureDevicePaths(pool);
+      // Inject real device paths (e.g. /dev/sdj1 instead of /dev/disk/by-uuid/...)
+      await this._injectRealDevicePaths(pool);
 
       // Check if old device exists in pool
       const oldDeviceExists = pool.data_devices.some(d => d.device === oldDevice);
@@ -4678,8 +4784,8 @@ if (snapraidDevice) {
         throw new Error('Only MergerFS pools support parity devices');
       }
 
-      // Ensure device paths are injected from UUIDs
-      await this._ensureDevicePaths(pool);
+      // Inject real device paths (e.g. /dev/sdj1 instead of /dev/disk/by-uuid/...)
+      await this._injectRealDevicePaths(pool);
 
       // Handle LUKS encryption for new parity devices if pool is encrypted
       let actualParityDevices = parityDevices;
@@ -4688,15 +4794,12 @@ if (snapraidDevice) {
       if (pool.config?.encrypted) {
         console.log(`Setting up LUKS encryption for new parity devices in MergerFS pool '${pool.name}'`);
 
-        // Validate encryption parameters
-        if (!options.passphrase) {
-          throw new Error('Passphrase is required for adding parity devices to encrypted pools');
-        }
-
         // Setup LUKS encryption on new parity devices
+        // Note: passphrase can be null if a keyfile exists
         await this._setupPoolEncryption(parityDevices, pool.name, options.passphrase, false);
 
         // Open LUKS devices with proper slot numbering
+        // _openLuksDevicesWithSlots will use keyfile if available, otherwise passphrase
         const startSlot = pool.parity_devices.length + 1;
         const paritySlots = parityDevices.map((_, i) => startSlot + i);
         parityLuksDevices = await this._openLuksDevicesWithSlots(parityDevices, pool.name, paritySlots, options.passphrase, true);
@@ -4851,8 +4954,8 @@ if (snapraidDevice) {
 
       const pool = pools[poolIndex];
 
-      // Ensure device paths are injected from UUIDs
-      await this._ensureDevicePaths(pool);
+      // Inject real device paths (e.g. /dev/sdj1 instead of /dev/disk/by-uuid/...)
+      await this._injectRealDevicePaths(pool);
 
       // Find the old parity device
       const oldParityIndex = pool.parity_devices.findIndex(device => device.device === oldDevice);
@@ -5376,15 +5479,18 @@ if (snapraidDevice) {
     const luksKeyDir = '/boot/config/system/luks';
     const keyfilePath = path.join(luksKeyDir, `${poolName}.key`);
 
-    // Remove trailing newlines and whitespace from passphrase
+    // Remove trailing newlines and whitespace from passphrase if provided
     // This ensures consistency regardless of input method (file, API, user input)
-    const cleanPassphrase = passphrase.replace(/[\r\n]+$/, '');
+    const cleanPassphrase = passphrase ? passphrase.replace(/[\r\n]+$/, '') : null;
 
     // Create luks directory
     await fs.mkdir(luksKeyDir, { recursive: true });
 
     // Create keyfile if requested
     if (createKeyfile) {
+      if (!cleanPassphrase) {
+        throw new Error('Passphrase is required to create keyfile');
+      }
       // Store passphrase directly in keyfile (not hashed) - store unescaped
       await fs.writeFile(keyfilePath, cleanPassphrase, { mode: 0o600 });
       console.log(`Created keyfile for pool '${poolName}' at ${keyfilePath}`);
@@ -5399,6 +5505,11 @@ if (snapraidDevice) {
       } catch (error) {
         useKeyfile = false;
       }
+    }
+
+    // Validate we have either keyfile or passphrase
+    if (!useKeyfile && !cleanPassphrase) {
+      throw new Error(`No keyfile found at ${keyfilePath} and no passphrase provided for encryption`);
     }
 
     // Encrypt all devices
