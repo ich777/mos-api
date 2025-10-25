@@ -3731,6 +3731,9 @@ class PoolsService {
         throw new Error('Only MergerFS pools support parity devices');
       }
 
+      // Ensure device paths are injected from UUIDs
+      await this._ensureDevicePaths(pool);
+
       // Remove specified parity devices
       const originalParityCount = pool.parity_devices.length;
       pool.parity_devices = pool.parity_devices.filter(
@@ -3786,6 +3789,9 @@ class PoolsService {
       }
 
       const pool = pools[poolIndex];
+
+      // Ensure device paths are injected from UUIDs
+      await this._ensureDevicePaths(pool);
 
       // Handle different pool types
       if (pool.type === 'mergerfs') {
@@ -4011,6 +4017,9 @@ class PoolsService {
       if (!pool) {
         throw new Error(`Pool with ID "${poolId}" not found`);
       }
+
+      // Ensure device paths are injected from UUIDs
+      await this._ensureDevicePaths(pool);
 
       // Check if old device exists in pool
       const oldDeviceExists = pool.data_devices.some(d => d.device === oldDevice);
@@ -4841,6 +4850,9 @@ if (snapraidDevice) {
       }
 
       const pool = pools[poolIndex];
+
+      // Ensure device paths are injected from UUIDs
+      await this._ensureDevicePaths(pool);
 
       // Find the old parity device
       const oldParityIndex = pool.parity_devices.findIndex(device => device.device === oldDevice);
