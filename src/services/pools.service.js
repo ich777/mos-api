@@ -4424,8 +4424,11 @@ class PoolsService {
       let actualSnapraidDevice = null;
       let snapraidLuksDevice = null;
       let preparedSnapraidDevice = null;
-      if (options.snapraid && options.snapraid.device) {
-        snapraidDevice = options.snapraid.device;
+      if (options.snapraid &&
+          options.snapraid.device &&
+          typeof options.snapraid.device === 'string' &&
+          options.snapraid.device.trim() !== '') {
+        snapraidDevice = options.snapraid.device.trim();
 
         // Check if snapraid device is also in the data devices list
         if (devices.includes(snapraidDevice)) {
