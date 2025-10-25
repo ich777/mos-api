@@ -4788,20 +4788,51 @@ if (snapraidDevice) {
       await this._injectRealDevicePaths(pool);
 
       // Handle LUKS encryption for new parity devices if pool is encrypted
-      let actualParityDevices = parityDevices;
+      let actualParityDevices = [...parityDevices];
       let parityLuksDevices = null;
+      const startSlot = pool.parity_devices.length + 1;
+      const paritySlots = parityDevices.map((_, i) => startSlot + i);
 
+      // Check if pool is encrypted and handle LUKS accordingly
       if (pool.config?.encrypted) {
-        console.log(`Setting up LUKS encryption for new parity devices in MergerFS pool '${pool.name}'`);
+        console.log(`Handling LUKS encryption for new parity devices in encrypted pool '${pool.name}'`);
 
-        // Setup LUKS encryption on new parity devices
-        // Note: passphrase can be null if a keyfile exists
-        await this._setupPoolEncryption(parityDevices, pool.name, options.passphrase, false);
+        // Check each device to see if it's already LUKS encrypted
+        for (let i = 0; i < parityDevices.length; i++) {
+          const device = parityDevices[i];
+          const deviceInfo = await this.checkDeviceFilesystem(device);
 
-        // Open LUKS devices with proper slot numbering
-        // _openLuksDevicesWithSlots will use keyfile if available, otherwise passphrase
-        const startSlot = pool.parity_devices.length + 1;
-        const paritySlots = parityDevices.map((_, i) => startSlot + i);
+          if (deviceInfo.isFormatted && deviceInfo.filesystem === 'crypto_LUKS') {
+            // Device is already LUKS encrypted
+            console.log(`Device ${device} is already LUKS encrypted`);
+
+            if (options.format === true) {
+              // User wants to reformat - close any existing mapper and reformat
+              console.log(`Reformatting LUKS device ${device}`);
+              const luksName = `parity_${pool.name}_${paritySlots[i]}`;
+              try {
+                await execPromise(`cryptsetup luksClose ${luksName}`);
+              } catch (error) {
+                // Ignore if not open
+              }
+
+              // Reformat with LUKS
+              await this._setupPoolEncryption([device], pool.name, options.passphrase, false);
+            } else {
+              // Try to open existing LUKS device
+              console.log(`Opening existing LUKS parity device ${device}`);
+            }
+          } else if (options.format === true || !deviceInfo.isFormatted) {
+            // Device is not LUKS yet, needs encryption
+            console.log(`Encrypting new parity device ${device} with LUKS`);
+            await this._setupPoolEncryption([device], pool.name, options.passphrase, false);
+          } else {
+            throw new Error(`Device ${device} is not LUKS encrypted but pool is encrypted. Use format: true to encrypt the device.`);
+          }
+        }
+
+        // Open all LUKS devices with proper slot numbering
+        console.log(`Opening LUKS parity devices with slots: ${paritySlots.join(', ')}`);
         parityLuksDevices = await this._openLuksDevicesWithSlots(parityDevices, pool.name, paritySlots, options.passphrase, true);
         actualParityDevices = parityLuksDevices.map(d => d.mappedDevice);
 
@@ -4853,16 +4884,17 @@ if (snapraidDevice) {
         }
 
         // Check device format status
+        // For encrypted pools, deviceToCheck is the LUKS mapper - check filesystem inside
         const deviceInfo = await this.checkDeviceFilesystem(deviceToCheck);
         const expectedFilesystem = pool.data_devices.length > 0 ? pool.data_devices[0].filesystem : 'xfs';
 
-        if (!deviceInfo.isFormatted) {
+        if (options.format === true) {
+          // Explicit format requested - format the device (LUKS mapper or physical device)
+          console.log(`Formatting parity device ${deviceToCheck} with ${expectedFilesystem}`);
+          const formatResult = await this.formatDevice(deviceToCheck, expectedFilesystem);
+        } else if (!deviceInfo.isFormatted) {
           // Device is not formatted - require explicit format option
           throw new Error(`Device ${deviceToCheck} is not formatted. Use format: true to format the device with ${expectedFilesystem}.`);
-        } else if (options.format === true) {
-          // Explicit format requested - reformat the device
-          const formatResult = await this.formatDevice(deviceToCheck, expectedFilesystem);
-          // For encrypted devices, the actualParityDevices array is already updated
         } else if (deviceInfo.filesystem !== expectedFilesystem) {
           throw new Error(`Device ${deviceToCheck} has filesystem ${deviceInfo.filesystem}, expected ${expectedFilesystem}. Use format: true to reformat.`);
         }
@@ -4930,6 +4962,15 @@ if (snapraidDevice) {
         pool
       };
     } catch (error) {
+      // Cleanup: Close LUKS devices if they were opened
+      if (pool.config?.encrypted && parityLuksDevices && parityLuksDevices.length > 0) {
+        console.log(`Error occurred, cleaning up LUKS parity devices for pool '${pool.name}'`);
+        try {
+          await this._closeLuksDevicesWithSlots(parityDevices, pool.name, paritySlots, true);
+        } catch (cleanupError) {
+          console.warn(`Warning: Could not cleanup LUKS parity devices: ${cleanupError.message}`);
+        }
+      }
       throw new Error(`Error adding parity devices: ${error.message}`);
     }
   }
