@@ -323,15 +323,60 @@ class MosService {
   }
 
   /**
+   * Returns the default docker settings structure with all expected fields
+   * @returns {Promise<Object>} Default docker settings
+   */
+  async _getDefaultDockerSettings() {
+    const defaultPoolName = await this._getFirstNonMergerFSPool();
+    const defaultPaths = defaultPoolName ? this._generateDefaultPaths(defaultPoolName) : null;
+
+    return {
+      enabled: false,
+      directory: defaultPaths ? defaultPaths.docker.directory : null,
+      appdata: defaultPaths ? defaultPaths.docker.appdata : null,
+      docker_net: {
+        mode: 'macvlan',
+        config: []
+      },
+      filesystem: 'overlay2',
+      start_wait: 0,
+      docker_options: '',
+      update_check: {
+        enabled: false,
+        update_check_schedule: '0 1 * * *',
+        auto_update: {
+          enabled: false,
+          auto_update_schedule: '0 2 * * SAT'
+        }
+      }
+    };
+  }
+
+  /**
    * Reads the Docker settings from the docker.json file.
+   * Ensures all expected fields are present by merging with defaults.
    * @returns {Promise<Object>} The Docker settings as an object
    */
   async getDockerSettings() {
     try {
-      const data = await fs.readFile(this.settingsPath, 'utf8');
-      const settings = JSON.parse(data);
+      const defaults = await this._getDefaultDockerSettings();
 
-      // Set default paths if values are null
+      let loadedSettings = {};
+      try {
+        const data = await fs.readFile(this.settingsPath, 'utf8');
+        loadedSettings = JSON.parse(data);
+      } catch (error) {
+        if (error.code === 'ENOENT') {
+          console.warn('docker.json not found, returning defaults');
+          return defaults;
+        }
+        throw error;
+      }
+
+      // Merge loaded settings with defaults (loaded settings take precedence)
+      const settings = this._deepMerge(defaults, loadedSettings);
+
+      // Set default paths if values are still null
       if (settings.directory === null || settings.appdata === null) {
         const defaultPoolName = await this._getFirstNonMergerFSPool();
         if (defaultPoolName) {
@@ -362,11 +407,15 @@ class MosService {
    */
   async updateDockerSettings(updates) {
     try {
-      // Read current settings
-      let current = {};
+      // Read current settings with defaults
+      const defaults = await this._getDefaultDockerSettings();
+      let current = { ...defaults };
+
       try {
         const data = await fs.readFile(this.settingsPath, 'utf8');
-        current = JSON.parse(data);
+        const loadedSettings = JSON.parse(data);
+        // Merge loaded settings with defaults
+        current = this._deepMerge(defaults, loadedSettings);
       } catch (error) {
         if (error.code !== 'ENOENT') throw error;
       }
@@ -523,15 +572,46 @@ class MosService {
   }
 
   /**
+   * Returns the default LXC settings structure with all expected fields
+   * @returns {Promise<Object>} Default LXC settings
+   */
+  async _getDefaultLxcSettings() {
+    const defaultPoolName = await this._getFirstNonMergerFSPool();
+    const defaultPaths = defaultPoolName ? this._generateDefaultPaths(defaultPoolName) : null;
+
+    return {
+      enabled: false,
+      bridge: false,
+      directory: defaultPaths ? defaultPaths.lxc.directory : null,
+      start_wait: 0
+    };
+  }
+
+  /**
    * Reads the LXC settings from the lxc.json file.
+   * Ensures all expected fields are present by merging with defaults.
    * @returns {Promise<Object>} The LXC settings as an object
    */
   async getLxcSettings() {
     try {
-      const data = await fs.readFile('/boot/config/lxc.json', 'utf8');
-      const settings = JSON.parse(data);
+      const defaults = await this._getDefaultLxcSettings();
 
-      // Set default path if directory is null
+      let loadedSettings = {};
+      try {
+        const data = await fs.readFile('/boot/config/lxc.json', 'utf8');
+        loadedSettings = JSON.parse(data);
+      } catch (error) {
+        if (error.code === 'ENOENT') {
+          console.warn('lxc.json not found, returning defaults');
+          return defaults;
+        }
+        throw error;
+      }
+
+      // Merge loaded settings with defaults (loaded settings take precedence)
+      const settings = this._deepMerge(defaults, loadedSettings);
+
+      // Set default path if directory is still null
       if (settings.directory === null) {
         const defaultPoolName = await this._getFirstNonMergerFSPool();
         if (defaultPoolName) {
@@ -557,11 +637,15 @@ class MosService {
    */
   async updateLxcSettings(updates) {
     try {
-      // Read current settings
-      let current = {};
+      // Read current settings with defaults
+      const defaults = await this._getDefaultLxcSettings();
+      let current = { ...defaults };
+
       try {
         const data = await fs.readFile('/boot/config/lxc.json', 'utf8');
-        current = JSON.parse(data);
+        const loadedSettings = JSON.parse(data);
+        // Merge loaded settings with defaults
+        current = this._deepMerge(defaults, loadedSettings);
       } catch (error) {
         if (error.code !== 'ENOENT') throw error;
       }
@@ -626,15 +710,46 @@ class MosService {
   }
 
   /**
+   * Returns the default VM settings structure with all expected fields
+   * @returns {Promise<Object>} Default VM settings
+   */
+  async _getDefaultVmSettings() {
+    const defaultPoolName = await this._getFirstNonMergerFSPool();
+    const defaultPaths = defaultPoolName ? this._generateDefaultPaths(defaultPoolName) : null;
+
+    return {
+      enabled: false,
+      directory: defaultPaths ? defaultPaths.vm.directory : null,
+      vdisk_directory: defaultPaths ? defaultPaths.vm.vdisk_directory : null,
+      start_wait: 0
+    };
+  }
+
+  /**
    * Reads the VM settings from the vm.json file.
+   * Ensures all expected fields are present by merging with defaults.
    * @returns {Promise<Object>} The VM settings as an object
    */
   async getVmSettings() {
     try {
-      const data = await fs.readFile('/boot/config/vm.json', 'utf8');
-      const settings = JSON.parse(data);
+      const defaults = await this._getDefaultVmSettings();
 
-      // Set default paths if values are null
+      let loadedSettings = {};
+      try {
+        const data = await fs.readFile('/boot/config/vm.json', 'utf8');
+        loadedSettings = JSON.parse(data);
+      } catch (error) {
+        if (error.code === 'ENOENT') {
+          console.warn('vm.json not found, returning defaults');
+          return defaults;
+        }
+        throw error;
+      }
+
+      // Merge loaded settings with defaults (loaded settings take precedence)
+      const settings = this._deepMerge(defaults, loadedSettings);
+
+      // Set default paths if values are still null
       if (settings.directory === null || settings.vdisk_directory === null) {
         const defaultPoolName = await this._getFirstNonMergerFSPool();
         if (defaultPoolName) {
@@ -665,11 +780,15 @@ class MosService {
    */
   async updateVmSettings(updates) {
     try {
-      // Read current settings
-      let current = {};
+      // Read current settings with defaults
+      const defaults = await this._getDefaultVmSettings();
+      let current = { ...defaults };
+
       try {
         const data = await fs.readFile('/boot/config/vm.json', 'utf8');
-        current = JSON.parse(data);
+        const loadedSettings = JSON.parse(data);
+        // Merge loaded settings with defaults
+        current = this._deepMerge(defaults, loadedSettings);
       } catch (error) {
         if (error.code !== 'ENOENT') throw error;
       }
@@ -737,14 +856,90 @@ class MosService {
   }
 
   /**
+   * Returns the default network settings structure with all expected fields
+   * @returns {Object} Default network settings
+   */
+  _getDefaultNetworkSettings() {
+    return {
+      interfaces: [
+        {
+          name: 'eth0',
+          type: 'ethernet',
+          mode: null,
+          interfaces: [],
+          ipv4: [{ dhcp: true }],
+          ipv6: []
+        }
+      ],
+      services: {
+        ssh: { enabled: true },
+        samba: { enabled: false },
+        nmbd: { enabled: false },
+        nfs: { enabled: false },
+        remote_mounting: { enabled: false },
+        nut: { enabled: false },
+        iscsi_target: { enabled: false },
+        iscsi_initiator: { enabled: false },
+        tailscale: {
+          enabled: false,
+          update_check: false,
+          tailscaled_params: ''
+        },
+        netbird: {
+          enabled: false,
+          update_check: false,
+          netbird_service_params: ''
+        }
+      }
+    };
+  }
+
+  /**
+   * Deep merges two objects, with source values taking precedence
+   * @param {Object} target - Target object (defaults)
+   * @param {Object} source - Source object (loaded settings)
+   * @returns {Object} Merged object
+   */
+  _deepMerge(target, source) {
+    const result = { ...target };
+
+    for (const key in source) {
+      if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])) {
+        // Recursive merge for nested objects
+        result[key] = this._deepMerge(result[key] || {}, source[key]);
+      } else {
+        // Direct assignment for primitives and arrays
+        result[key] = source[key];
+      }
+    }
+
+    return result;
+  }
+
+  /**
    * Reads the Network-Settings from the network.json file.
+   * Ensures all expected fields are present by merging with defaults.
    * @returns {Promise<Object>} The Network-Settings as an object
    */
   async getNetworkSettings() {
     try {
-      const data = await fs.readFile('/boot/config/network.json', 'utf8');
-      const settings = JSON.parse(data);
+      const defaults = this._getDefaultNetworkSettings();
 
+      let loadedSettings = {};
+      try {
+        const data = await fs.readFile('/boot/config/network.json', 'utf8');
+        loadedSettings = JSON.parse(data);
+      } catch (error) {
+        if (error.code === 'ENOENT') {
+          // If file doesn't exist, return defaults
+          console.warn('network.json not found, returning defaults');
+          return defaults;
+        }
+        throw error;
+      }
+
+      // Merge loaded settings with defaults (loaded settings take precedence)
+      const settings = this._deepMerge(defaults, loadedSettings);
 
       return settings;
     } catch (error) {
@@ -762,11 +957,15 @@ class MosService {
    */
   async updateNetworkSettings(updates) {
     try {
-      // Read current settings
-      let current = {};
+      // Read current settings with defaults
+      const defaults = this._getDefaultNetworkSettings();
+      let current = { ...defaults };
+
       try {
         const data = await fs.readFile('/boot/config/network.json', 'utf8');
-        current = JSON.parse(data);
+        const loadedSettings = JSON.parse(data);
+        // Merge loaded settings with defaults
+        current = this._deepMerge(defaults, loadedSettings);
       } catch (error) {
         if (error.code !== 'ENOENT') throw error;
       }
@@ -1069,40 +1268,59 @@ class MosService {
   }
 
   /**
+   * Returns the default system settings structure with all expected fields
+   * @returns {Object} Default system settings
+   */
+  _getDefaultSystemSettings() {
+    return {
+      hostname: 'MOS',
+      global_spindown: 0,
+      keymap: 'us',
+      timezone: 'America/New_York',
+      display_timeout: 30,
+      display_powersave: true,
+      display_powerdown: 60,
+      persist_history: false,
+      ntp: {
+        enabled: true,
+        server: 'pool.ntp.org'
+      },
+      notification_sound: {
+        startup: true,
+        reboot: true,
+        shutdown: true
+      },
+      cpufreq: {
+        governor: 'ondemand',
+        max_speed: 0,
+        min_speed: 0
+      }
+    };
+  }
+
+  /**
    * Reads the system settings from the system.json file.
+   * Ensures all expected fields are present by merging with defaults.
    * @returns {Promise<Object>} The system settings as an object
    */
   async getSystemSettings() {
     try {
-      const data = await fs.readFile('/boot/config/system.json', 'utf8');
-      const settings = JSON.parse(data);
+      const defaults = this._getDefaultSystemSettings();
 
-      // Ensure notification_sound defaults are present
-      if (!settings.notification_sound) {
-        settings.notification_sound = {
-          startup: true,
-          reboot: true,
-          shutdown: true
-        };
-      }
-
-      // Ensure cpufreq defaults are present
-      if (!settings.cpufreq) {
-        settings.cpufreq = {
-          governor: 'ondemand',
-          max_speed: 0,
-          min_speed: 0
-        };
-      }
-
-      // Write back the updated settings with defaults if any were added
-      if (!settings.notification_sound || !settings.cpufreq) {
-        try {
-          await fs.writeFile('/boot/config/system.json', JSON.stringify(settings, null, 2), 'utf8');
-        } catch (writeError) {
-          console.warn('Warning: Could not write defaults to system.json:', writeError.message);
+      let loadedSettings = {};
+      try {
+        const data = await fs.readFile('/boot/config/system.json', 'utf8');
+        loadedSettings = JSON.parse(data);
+      } catch (error) {
+        if (error.code === 'ENOENT') {
+          console.warn('system.json not found, returning defaults');
+          return defaults;
         }
+        throw error;
       }
+
+      // Merge loaded settings with defaults (loaded settings take precedence)
+      const settings = this._deepMerge(defaults, loadedSettings);
 
       return settings;
     } catch (error) {
@@ -1120,16 +1338,20 @@ class MosService {
    */
   async updateSystemSettings(updates) {
     try {
-      // Read current settings
-      let current = {};
+      // Read current settings with defaults
+      const defaults = this._getDefaultSystemSettings();
+      let current = { ...defaults };
+
       try {
         const data = await fs.readFile('/boot/config/system.json', 'utf8');
-        current = JSON.parse(data);
+        const loadedSettings = JSON.parse(data);
+        // Merge loaded settings with defaults
+        current = this._deepMerge(defaults, loadedSettings);
       } catch (error) {
         if (error.code !== 'ENOENT') throw error;
       }
       // Only allowed fields are updated
-      const allowed = ['hostname', 'global_spindown', 'keymap', 'timezone', 'ntp', 'notification_sound', 'cpufreq'];
+      const allowed = ['hostname', 'global_spindown', 'keymap', 'timezone', 'display_timeout', 'display_powersave', 'display_powerdown', 'persist_history', 'ntp', 'notification_sound', 'cpufreq'];
       let ntpChanged = false;
       let keymapChanged = false;
       let timezoneChanged = false;
@@ -1757,6 +1979,27 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
         console.warn('Warning: Could not get running kernel version:', kernelError.message);
       }
 
+      // Get uptime information
+      let uptimeInfo = {
+        pretty: null,
+        since: null
+      };
+      try {
+        // Get uptime --pretty
+        const { stdout: uptimePretty } = await execPromise('uptime --pretty');
+        // Remove "up " prefix and trim whitespace
+        uptimeInfo.pretty = uptimePretty.trim().replace(/^up\s+/i, '');
+      } catch (prettyError) {
+        console.warn('Warning: Could not get uptime --pretty:', prettyError.message);
+      }
+      try {
+        // Get uptime --since
+        const { stdout: uptimeSince } = await execPromise('uptime --since');
+        uptimeInfo.since = uptimeSince.trim();
+      } catch (sinceError) {
+        console.warn('Warning: Could not get uptime --since:', sinceError.message);
+      }
+
       // Process version and channel - handle nested mos object structure
       if (release.mos && typeof release.mos === 'object') {
         const originalVersion = release.mos.version || '';
@@ -1798,9 +2041,10 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
         }
       }
 
-      // Combine release info with CPU info and hostname
+      // Combine release info with CPU info, hostname and uptime
       const osInfo = {
         hostname: hostname,
+        uptime: uptimeInfo,
         cpu: {
           manufacturer: cpu.manufacturer,
           brand: cpu.brand,

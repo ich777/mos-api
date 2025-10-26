@@ -836,6 +836,40 @@ class PoolsService {
   }
 
   /**
+   * Ensure that scrub configuration exists in pool config for MergerFS pools with parity
+   * @param {Object} pool - Pool object
+   * @returns {boolean} - Whether the pool was modified
+   * @private
+   */
+  _ensureScrubConfig(pool) {
+    // Only for MergerFS pools with parity devices
+    if (pool.type !== 'mergerfs' || !pool.parity_devices || pool.parity_devices.length === 0) {
+      return false;
+    }
+
+    // Ensure config object exists
+    if (!pool.config) {
+      pool.config = {};
+    }
+
+    // Ensure sync config exists
+    if (!pool.config.sync) {
+      return false; // No sync config, scrub shouldn't be added
+    }
+
+    // Check if scrub config is missing within sync
+    if (!pool.config.sync.scrub) {
+      pool.config.sync.scrub = {
+        enabled: false,
+        schedule: "0 4 * * WED"
+      };
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
    * Update the SnapRAID configuration for a pool
    * @param {Object} pool - Pool object
    * @returns {Promise<void>}
@@ -3544,6 +3578,19 @@ class PoolsService {
         });
       }
 
+      // Ensure scrub config exists for all MergerFS pools with parity
+      let poolsModified = false;
+      for (const pool of pools) {
+        if (this._ensureScrubConfig(pool)) {
+          poolsModified = true;
+        }
+      }
+
+      // Save pools if any were modified
+      if (poolsModified) {
+        await this._writePools(pools);
+      }
+
       // For each pool, update its mounted status and space info
       for (const pool of pools) {
         // Inject real device paths for API display
@@ -3599,10 +3646,17 @@ class PoolsService {
   async getPoolById(poolId, user = null) {
     try {
       const pools = await this._readPools();
-      const pool = pools.find(p => p.id === poolId);
+      const poolIndex = pools.findIndex(p => p.id === poolId);
 
-      if (!pool) {
+      if (poolIndex === -1) {
         throw new Error(`Pool with ID "${poolId}" not found`);
+      }
+
+      const pool = pools[poolIndex];
+
+      // Ensure scrub config exists for MergerFS pools with parity
+      if (this._ensureScrubConfig(pool)) {
+        await this._writePools(pools);
       }
 
       // Inject real device paths for API display
@@ -4641,6 +4695,10 @@ class PoolsService {
           check: {
             enabled: false,
             schedule: "0 0 * */3 SUN"
+          },
+          scrub: {
+            enabled: false,
+            schedule: "0 4 * * WED"
           }
         };
       }
@@ -4948,6 +5006,10 @@ if (snapraidDevice) {
           check: {
             enabled: false,
             schedule: "0 0 * */3 SUN"
+          },
+          scrub: {
+            enabled: false,
+            schedule: "0 4 * * WED"
           }
         };
       }

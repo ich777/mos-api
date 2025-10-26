@@ -219,33 +219,53 @@ const { checkRole } = require('../middleware/auth.middleware');
  *                   type: boolean
  *                   description: Enable remote mounting functionality (SMB/NFS shares)
  *                   example: true
- *     SystemSettings:
- *       type: object
- *       properties:
- *         hostname:
- *           type: string
- *           description: System hostname
- *           example: "mos-server"
- *         global_spindown:
- *           type: boolean
- *           description: Global disk spindown setting
- *           example: true
- *         notification_sound:
- *           type: object
- *           description: System notification sound settings
- *           properties:
- *             startup:
- *               type: boolean
- *               description: Enable sound notification on system startup
- *               example: true
- *             reboot:
- *               type: boolean
- *               description: Enable sound notification on system reboot
- *               example: true
- *             shutdown:
- *               type: boolean
- *               description: Enable sound notification on system shutdown
- *               example: true
+     *     SystemSettings:
+     *       type: object
+     *       properties:
+     *         hostname:
+     *           type: string
+     *           description: System hostname
+     *           example: "mos-server"
+     *         global_spindown:
+     *           type: boolean
+     *           description: Global disk spindown setting
+     *           example: true
+     *         timezone:
+     *           type: string
+     *           description: System timezone
+     *           example: "Europe/Berlin"
+     *         display_timeout:
+     *           type: integer
+     *           description: Display timeout in seconds
+     *           example: 30
+     *         display_powersave:
+     *           type: boolean
+     *           description: Display power save mode
+     *           example: true
+     *         display_powerdown:
+     *           type: integer
+     *           description: Display power down timeout in seconds
+     *           example: 60
+     *         persist_history:
+     *           type: boolean
+     *           description: Persist command history
+     *           example: false
+     *         notification_sound:
+     *           type: object
+     *           description: System notification sound settings
+     *           properties:
+     *             startup:
+     *               type: boolean
+     *               description: Enable sound notification on system startup
+     *               example: true
+     *             reboot:
+     *               type: boolean
+     *               description: Enable sound notification on system reboot
+     *               example: true
+     *             shutdown:
+     *               type: boolean
+     *               description: Enable sound notification on system shutdown
+     *               example: true
  *     Keymap:
  *       type: object
  *       properties:
@@ -837,6 +857,11 @@ router.post('/settings/network', async (req, res) => {
  *             example:
  *               hostname: "mos-server"
  *               global_spindown: true
+ *               timezone: "Europe/Berlin"
+ *               display_timeout: 30
+ *               display_powersave: true
+ *               display_powerdown: 60
+ *               persist_history: false
  *       401:
  *         description: Not authenticated
  *         content:
@@ -876,6 +901,11 @@ router.post('/settings/network', async (req, res) => {
  *           example:
  *             hostname: "new-mos-server"
  *             global_spindown: false
+ *             timezone: "Europe/Berlin"
+ *             display_timeout: 60
+ *             display_powersave: false
+ *             display_powerdown: 120
+ *             persist_history: true
  *             notification_sound:
  *               startup: true
  *               reboot: false
@@ -959,6 +989,22 @@ router.get('/settings/system', async (req, res) => {
  *                 type: string
  *                 description: System timezone
  *                 example: "Europe/Berlin"
+ *               display_timeout:
+ *                 type: integer
+ *                 description: Display timeout in seconds
+ *                 example: 30
+ *               display_powersave:
+ *                 type: boolean
+ *                 description: Display power save mode
+ *                 example: true
+ *               display_powerdown:
+ *                 type: integer
+ *                 description: Display power down timeout in seconds
+ *                 example: 60
+ *               persist_history:
+ *                 type: boolean
+ *                 description: Persist command history
+ *                 example: false
  *               ntp:
  *                 type: object
  *                 description: NTP configuration
@@ -1846,6 +1892,20 @@ router.get('/getreleases', async (req, res) => {
  *                       type: integer
  *                       description: Number of physical CPU cores
  *                       example: 8
+ *                 uptime:
+ *                   type: object
+ *                   description: System uptime information
+ *                   properties:
+ *                     pretty:
+ *                       type: string
+ *                       nullable: true
+ *                       description: Human-readable uptime (without "up" prefix and leading spaces)
+ *                       example: "2 hours, 34 minutes"
+ *                     since:
+ *                       type: string
+ *                       nullable: true
+ *                       description: System boot timestamp
+ *                       example: "2025-10-26 10:30:00"
  *                 mos:
  *                   type: object
  *                   description: MOS release information
@@ -1873,6 +1933,9 @@ router.get('/getreleases', async (req, res) => {
  *                   brand: "Intel(R) Core(TM) i7-12700K"
  *                   cores: 12
  *                   physicalCores: 8
+ *                 uptime:
+ *                   pretty: "2 hours, 34 minutes"
+ *                   since: "2025-10-26 10:30:00"
  *                 mos:
  *                   version: "0.0.1-alpha.4"
  *                   channel: "alpha"
