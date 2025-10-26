@@ -1277,9 +1277,11 @@ class MosService {
       global_spindown: 0,
       keymap: 'us',
       timezone: 'America/New_York',
-      display_timeout: 30,
-      display_powersave: true,
-      display_powerdown: 60,
+      display: {
+        timeout: 30,
+        powersave: true,
+        powerdown: 60
+      },
       persist_history: false,
       ntp: {
         enabled: true,
@@ -1351,10 +1353,12 @@ class MosService {
         if (error.code !== 'ENOENT') throw error;
       }
       // Only allowed fields are updated
-      const allowed = ['hostname', 'global_spindown', 'keymap', 'timezone', 'display_timeout', 'display_powersave', 'display_powerdown', 'persist_history', 'ntp', 'notification_sound', 'cpufreq'];
+      const allowed = ['hostname', 'global_spindown', 'keymap', 'timezone', 'display', 'persist_history', 'ntp', 'notification_sound', 'cpufreq'];
       let ntpChanged = false;
       let keymapChanged = false;
       let timezoneChanged = false;
+      let persistHistoryChanged = false;
+      let persistHistoryValue = null;
 
       for (const key of Object.keys(updates)) {
         if (!allowed.includes(key)) {
@@ -1392,6 +1396,31 @@ class MosService {
             timezoneChanged = true;
           }
           current[key] = updates[key];
+        } else if (key === 'persist_history') {
+          if (updates.persist_history !== current.persist_history && updates.persist_history === true) {
+            persistHistoryChanged = true;
+            persistHistoryValue = true;
+          }
+          current[key] = updates[key];
+        } else if (key === 'display') {
+          // Initialize display with defaults if not present
+          if (!current.display) {
+            current.display = {
+              timeout: 30,
+              powersave: true,
+              powerdown: 60
+            };
+          }
+
+          // Update display settings
+          if (typeof updates.display === 'object' && updates.display !== null) {
+            // Merge with existing settings, keeping defaults for missing values
+            current.display = {
+              timeout: updates.display.timeout !== undefined ? updates.display.timeout : current.display.timeout,
+              powersave: updates.display.powersave !== undefined ? updates.display.powersave : current.display.powersave,
+              powerdown: updates.display.powerdown !== undefined ? updates.display.powerdown : current.display.powerdown
+            };
+          }
         } else if (key === 'notification_sound') {
           // Initialize notification_sound with defaults if not present
           if (!current.notification_sound) {
@@ -1460,6 +1489,22 @@ class MosService {
       // Timezone directly into system set
       if (timezoneChanged) {
         await execPromise(`ln -sf /usr/share/zoneinfo/${current.timezone} /etc/localtime`);
+      }
+
+      // Persist history setup
+      if (persistHistoryChanged && persistHistoryValue === true) {
+        try {
+          // Remove old bash_history file
+          await execPromise('rm -f /root/.bash_history');
+          // Create directory if it doesn't exist
+          await execPromise('mkdir -p /boot/config/system');
+          // Create new bash_history file
+          await execPromise('touch /boot/config/system/.bash_history');
+          // Create symlink
+          await execPromise('ln -s /boot/config/system/.bash_history /root/.bash_history');
+        } catch (error) {
+          console.warn('Warning: Could not setup persistent bash history:', error.message);
+        }
       }
 
       return current;

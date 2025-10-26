@@ -234,18 +234,22 @@ const { checkRole } = require('../middleware/auth.middleware');
      *           type: string
      *           description: System timezone
      *           example: "Europe/Berlin"
-     *         display_timeout:
-     *           type: integer
-     *           description: Display timeout in seconds
-     *           example: 30
-     *         display_powersave:
-     *           type: boolean
-     *           description: Display power save mode
-     *           example: true
-     *         display_powerdown:
-     *           type: integer
-     *           description: Display power down timeout in seconds
-     *           example: 60
+     *         display:
+     *           type: object
+     *           description: Display settings
+     *           properties:
+     *             timeout:
+     *               type: integer
+     *               description: Display timeout in seconds
+     *               example: 30
+     *             powersave:
+     *               type: boolean
+     *               description: Display power save mode
+     *               example: true
+     *             powerdown:
+     *               type: integer
+     *               description: Display power down timeout in seconds
+     *               example: 60
      *         persist_history:
      *           type: boolean
      *           description: Persist command history
@@ -858,9 +862,10 @@ router.post('/settings/network', async (req, res) => {
  *               hostname: "mos-server"
  *               global_spindown: true
  *               timezone: "Europe/Berlin"
- *               display_timeout: 30
- *               display_powersave: true
- *               display_powerdown: 60
+ *               display:
+ *                 timeout: 30
+ *                 powersave: true
+ *                 powerdown: 60
  *               persist_history: false
  *       401:
  *         description: Not authenticated
@@ -902,9 +907,10 @@ router.post('/settings/network', async (req, res) => {
  *             hostname: "new-mos-server"
  *             global_spindown: false
  *             timezone: "Europe/Berlin"
- *             display_timeout: 60
- *             display_powersave: false
- *             display_powerdown: 120
+ *             display:
+ *               timeout: 60
+ *               powersave: false
+ *               powerdown: 120
  *             persist_history: true
  *             notification_sound:
  *               startup: true
@@ -989,18 +995,22 @@ router.get('/settings/system', async (req, res) => {
  *                 type: string
  *                 description: System timezone
  *                 example: "Europe/Berlin"
- *               display_timeout:
- *                 type: integer
- *                 description: Display timeout in seconds
- *                 example: 30
- *               display_powersave:
- *                 type: boolean
- *                 description: Display power save mode
- *                 example: true
- *               display_powerdown:
- *                 type: integer
- *                 description: Display power down timeout in seconds
- *                 example: 60
+ *               display:
+ *                 type: object
+ *                 description: Display settings
+ *                 properties:
+ *                   timeout:
+ *                     type: integer
+ *                     description: Display timeout in seconds
+ *                     example: 30
+ *                   powersave:
+ *                     type: boolean
+ *                     description: Display power save mode
+ *                     example: true
+ *                   powerdown:
+ *                     type: integer
+ *                     description: Display power down timeout in seconds
+ *                     example: 60
  *               persist_history:
  *                 type: boolean
  *                 description: Persist command history
