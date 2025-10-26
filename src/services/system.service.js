@@ -1049,11 +1049,13 @@ class SystemService {
       let content;
       if (tail) {
         // Use tail command for efficient reading from end
-        const { stdout } = await execAsync(`tail -n ${maxLines} "${fullPath}"`);
+        // Increase maxBuffer to 50MB to handle large log files
+        const { stdout } = await execAsync(`tail -n ${maxLines} "${fullPath}"`, { maxBuffer: 50 * 1024 * 1024 });
         content = stdout;
       } else {
         // Use head command for reading from start
-        const { stdout } = await execAsync(`head -n ${maxLines} "${fullPath}"`);
+        // Increase maxBuffer to 50MB to handle large log files
+        const { stdout } = await execAsync(`head -n ${maxLines} "${fullPath}"`, { maxBuffer: 50 * 1024 * 1024 });
         content = stdout;
       }
 

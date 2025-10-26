@@ -1279,7 +1279,7 @@ class MosService {
       timezone: 'America/New_York',
       display: {
         timeout: 30,
-        powersave: true,
+        powersave: 'on',
         powerdown: 60
       },
       persist_history: false,
@@ -1357,6 +1357,7 @@ class MosService {
       let ntpChanged = false;
       let keymapChanged = false;
       let timezoneChanged = false;
+      let displayChanged = false;
       let persistHistoryChanged = false;
       let persistHistoryValue = null;
 
@@ -1407,13 +1408,24 @@ class MosService {
           if (!current.display) {
             current.display = {
               timeout: 30,
-              powersave: true,
+              powersave: 'on',
               powerdown: 60
             };
           }
 
           // Update display settings
           if (typeof updates.display === 'object' && updates.display !== null) {
+            // Check if any display setting changed
+            if (updates.display.timeout !== undefined && updates.display.timeout !== current.display.timeout) {
+              displayChanged = true;
+            }
+            if (updates.display.powersave !== undefined && updates.display.powersave !== current.display.powersave) {
+              displayChanged = true;
+            }
+            if (updates.display.powerdown !== undefined && updates.display.powerdown !== current.display.powerdown) {
+              displayChanged = true;
+            }
+
             // Merge with existing settings, keeping defaults for missing values
             current.display = {
               timeout: updates.display.timeout !== undefined ? updates.display.timeout : current.display.timeout,
@@ -1504,6 +1516,36 @@ class MosService {
           await execPromise('ln -s /boot/config/system/.bash_history /root/.bash_history');
         } catch (error) {
           console.warn('Warning: Could not setup persistent bash history:', error.message);
+        }
+      }
+
+      // Display settings apply with setterm
+      if (displayChanged && current.display) {
+        try {
+          const settermArgs = [];
+
+          // Add --blank parameter for timeout
+          if (current.display.timeout !== undefined && current.display.timeout !== null) {
+            settermArgs.push(`--blank ${current.display.timeout}`);
+          }
+
+          // Add --powersave parameter
+          if (current.display.powersave !== undefined && current.display.powersave !== null) {
+            settermArgs.push(`--powersave ${current.display.powersave}`);
+          }
+
+          // Add --powerdown parameter
+          if (current.display.powerdown !== undefined && current.display.powerdown !== null) {
+            settermArgs.push(`--powerdown ${current.display.powerdown}`);
+          }
+
+          // Execute setterm command if we have arguments
+          if (settermArgs.length > 0) {
+            const settermCmd = `setterm ${settermArgs.join(' ')}`;
+            await execPromise(settermCmd);
+          }
+        } catch (error) {
+          console.warn('Warning: Could not apply display settings with setterm:', error.message);
         }
       }
 

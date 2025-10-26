@@ -243,9 +243,9 @@ const { checkRole } = require('../middleware/auth.middleware');
      *               description: Display timeout in seconds
      *               example: 30
      *             powersave:
-     *               type: boolean
-     *               description: Display power save mode
-     *               example: true
+     *               type: string
+     *               description: Display power save mode (on, vsync, powerdown, off)
+     *               example: "on"
      *             powerdown:
      *               type: integer
      *               description: Display power down timeout in seconds
@@ -864,7 +864,7 @@ router.post('/settings/network', async (req, res) => {
  *               timezone: "Europe/Berlin"
  *               display:
  *                 timeout: 30
- *                 powersave: true
+ *                 powersave: "on"
  *                 powerdown: 60
  *               persist_history: false
  *       401:
@@ -909,7 +909,7 @@ router.post('/settings/network', async (req, res) => {
  *             timezone: "Europe/Berlin"
  *             display:
  *               timeout: 60
- *               powersave: false
+ *               powersave: "off"
  *               powerdown: 120
  *             persist_history: true
  *             notification_sound:
@@ -1004,9 +1004,9 @@ router.get('/settings/system', async (req, res) => {
  *                     description: Display timeout in seconds
  *                     example: 30
  *                   powersave:
- *                     type: boolean
- *                     description: Display power save mode
- *                     example: true
+ *                     type: string
+ *                     description: Display power save mode (on, vsync, powerdown, off)
+ *                     example: "on"
  *                   powerdown:
  *                     type: integer
  *                     description: Display power down timeout in seconds
