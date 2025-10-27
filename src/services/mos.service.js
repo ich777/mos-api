@@ -7,6 +7,7 @@ const execPromise = util.promisify(exec);
 class MosService {
   constructor() {
     this.settingsPath = '/boot/config/docker.json';
+    this.dashboardPath = '/boot/config/dashboard.json';
   }
 
   /**
@@ -2869,6 +2870,65 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
         filesystem: filesystem || null,
         timestamp: new Date().toISOString()
       };
+    }
+  }
+
+  /**
+   * Gets the dashboard layout configuration
+   * @returns {Promise<Array>} The dashboard layout as an array of cards
+   */
+  async getDashboardLayout() {
+    try {
+      const data = await fs.readFile(this.dashboardPath, 'utf8');
+      const layout = JSON.parse(data);
+
+      // Validate the structure
+      if (!Array.isArray(layout)) {
+        throw new Error('Dashboard layout must be an array');
+      }
+
+      return layout;
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        // Return default empty layout if file doesn't exist
+        return [];
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Updates the dashboard layout configuration
+   * @param {Array} layout - Array of dashboard cards with card name and index
+   * @returns {Promise<Array>} The updated dashboard layout
+   */
+  async updateDashboardLayout(layout) {
+    try {
+      // Validate input
+      if (!Array.isArray(layout)) {
+        throw new Error('Dashboard layout must be an array');
+      }
+
+      // Validate each card in the layout
+      for (const item of layout) {
+        if (!item.card || typeof item.card !== 'string') {
+          throw new Error('Each dashboard item must have a "card" property of type string');
+        }
+        if (item.index === undefined || typeof item.index !== 'number') {
+          throw new Error('Each dashboard item must have an "index" property of type number');
+        }
+      }
+
+      // Sort by index
+      const sortedLayout = [...layout].sort((a, b) => a.index - b.index);
+
+      // Write to file
+      await fs.writeFile(this.dashboardPath, JSON.stringify(sortedLayout, null, 2), 'utf8');
+
+      return sortedLayout;
+    } catch (error) {
+      console.error('Error updating dashboard layout:', error.message);
+      throw error;
     }
   }
 }

@@ -2815,4 +2815,155 @@ router.post('/installtodisk', async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /mos/dashboard:
+ *   get:
+ *     summary: Get dashboard layout
+ *     description: Retrieve current dashboard card layout configuration (admin only)
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Dashboard layout retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: object
+ *                 properties:
+ *                   card:
+ *                     type: string
+ *                     description: Dashboard card name
+ *                     example: "mos"
+ *                   index:
+ *                     type: number
+ *                     description: Card position/order index
+ *                     example: 1
+ *             example:
+ *               - card: "mos"
+ *                 index: 1
+ *               - card: "network"
+ *                 index: 2
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *   post:
+ *     summary: Update dashboard layout
+ *     description: Update dashboard card layout configuration (admin only)
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: array
+ *             items:
+ *               type: object
+ *               required:
+ *                 - card
+ *                 - index
+ *               properties:
+ *                 card:
+ *                   type: string
+ *                   description: Dashboard card name
+ *                   example: "mos"
+ *                 index:
+ *                   type: number
+ *                   description: Card position/order index
+ *                   example: 1
+ *           example:
+ *             - card: "mos"
+ *               index: 1
+ *             - card: "network"
+ *               index: 2
+ *             - card: "pools"
+ *               index: 3
+ *     responses:
+ *       200:
+ *         description: Dashboard layout updated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: object
+ *                 properties:
+ *                   card:
+ *                     type: string
+ *                     description: Dashboard card name
+ *                     example: "mos"
+ *                   index:
+ *                     type: number
+ *                     description: Card position/order index
+ *                     example: 1
+ *       400:
+ *         description: Invalid request body
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+
+// GET: Read dashboard layout
+router.get('/dashboard', async (req, res) => {
+  try {
+    const layout = await mosService.getDashboardLayout();
+    res.json(layout);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST: Update dashboard layout
+router.post('/dashboard', async (req, res) => {
+  try {
+    if (!Array.isArray(req.body)) {
+      return res.status(400).json({ error: 'Request body must be an array of dashboard cards.' });
+    }
+
+    const updatedLayout = await mosService.updateDashboardLayout(req.body);
+    res.json(updatedLayout);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
 module.exports = router;
