@@ -2842,11 +2842,17 @@ router.post('/installtodisk', async (req, res) => {
  *                     type: number
  *                     description: Card position/order index
  *                     example: 1
+ *                   hidden:
+ *                     type: boolean
+ *                     description: Whether the card is hidden (defaults to false)
+ *                     example: false
  *             example:
  *               - card: "mos"
  *                 index: 1
+ *                 hidden: false
  *               - card: "network"
  *                 index: 2
+ *                 hidden: false
  *       401:
  *         description: Not authenticated
  *         content:
@@ -2891,13 +2897,20 @@ router.post('/installtodisk', async (req, res) => {
  *                   type: number
  *                   description: Card position/order index
  *                   example: 1
+ *                 hidden:
+ *                   type: boolean
+ *                   description: Whether the card is hidden (optional, defaults to false)
+ *                   example: false
  *           example:
  *             - card: "mos"
  *               index: 1
+ *               hidden: false
  *             - card: "network"
  *               index: 2
+ *               hidden: false
  *             - card: "pools"
  *               index: 3
+ *               hidden: true
  *     responses:
  *       200:
  *         description: Dashboard layout updated successfully
@@ -2916,6 +2929,10 @@ router.post('/installtodisk', async (req, res) => {
  *                     type: number
  *                     description: Card position/order index
  *                     example: 1
+ *                   hidden:
+ *                     type: boolean
+ *                     description: Whether the card is hidden
+ *                     example: false
  *       400:
  *         description: Invalid request body
  *         content:

@@ -2899,7 +2899,7 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
 
   /**
    * Updates the dashboard layout configuration
-   * @param {Array} layout - Array of dashboard cards with card name and index
+   * @param {Array} layout - Array of dashboard cards with card name, index and hidden status
    * @returns {Promise<Array>} The updated dashboard layout
    */
   async updateDashboardLayout(layout) {
@@ -2917,10 +2917,20 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
         if (item.index === undefined || typeof item.index !== 'number') {
           throw new Error('Each dashboard item must have an "index" property of type number');
         }
+        if (item.hidden !== undefined && typeof item.hidden !== 'boolean') {
+          throw new Error('The "hidden" property must be a boolean value');
+        }
       }
 
+      // Normalize items - ensure hidden defaults to false if not provided
+      const normalizedLayout = layout.map(item => ({
+        card: item.card,
+        index: item.index,
+        hidden: item.hidden !== undefined ? item.hidden : false
+      }));
+
       // Sort by index
-      const sortedLayout = [...layout].sort((a, b) => a.index - b.index);
+      const sortedLayout = [...normalizedLayout].sort((a, b) => a.index - b.index);
 
       // Write to file
       await fs.writeFile(this.dashboardPath, JSON.stringify(sortedLayout, null, 2), 'utf8');
