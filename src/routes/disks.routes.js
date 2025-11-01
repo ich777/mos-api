@@ -1558,7 +1558,7 @@ router.post('/power/manage', checkRole(['admin']), async (req, res) => {
 // ========== UNASSIGNED DISK OPERATIONS ==========
 
 // List unassigned disks
-router.get('/unassigned', async (req, res) => {
+router.get('/unassigned', authenticateToken, async (req, res) => {
   try {
     const {
       includePerformance = 'false',
@@ -1570,7 +1570,7 @@ router.get('/unassigned', async (req, res) => {
       skipStandby: skipStandby === 'true'
     };
 
-    const result = await disksService.getUnassignedDisks(options);
+    const result = await disksService.getUnassignedDisks(options, req.user);
 
     // Return only the unassigned disks, not the complete analysis
     res.json({

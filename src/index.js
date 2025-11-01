@@ -267,8 +267,6 @@ async function startServer() {
 
   // Setup Socket.io handlers
   const terminalService = require('./services/terminal.service');
-  const poolsService = require('./services/pools.service');
-  const { PoolsService } = poolsService;
   const systemService = require('./services/system.service');
   const PoolWebSocketManager = require('./websockets/pools.websocket');
   const SystemLoadWebSocketManager = require('./websockets/system.websocket');
@@ -284,7 +282,33 @@ async function startServer() {
   const terminalNamespace = io.of('/terminal');
 
   // Initialize pool WebSocket manager with pools namespace
-  const poolsServiceInstance = new PoolsService(serviceEventEmitter);
+  const PoolsService = require('./services/pools.service');
+  
+  // Create a simple wrapper for WebSocket compatibility
+  class PoolsServiceWebSocketWrapper {
+    constructor(eventEmitter) {
+      this.poolsService = new PoolsService(eventEmitter);
+    }
+    
+    async listPools() {
+      return await this.poolsService.listPools({});
+    }
+    
+    async getPoolById(id) {
+      const pools = await this.listPools();
+      return pools.find(p => p.id === id);
+    }
+    
+    async getPoolStatus(poolId) {
+      const pool = await this.getPoolById(poolId);
+      if (!pool) {
+        throw new Error(`Pool with ID "${poolId}" not found`);
+      }
+      return await this.poolsService._getPoolStatus(pool);
+    }
+  }
+  
+  const poolsServiceInstance = new PoolsServiceWebSocketWrapper(serviceEventEmitter);
   const poolWebSocketManager = new PoolWebSocketManager(poolsNamespace, poolsServiceInstance);
 
   // Initialize system load WebSocket manager with system namespace
@@ -333,7 +357,8 @@ async function startServer() {
 
     // Pool-Service wurde auf neue Version umgestellt
     try {
-      const poolsService = require('./services/pools.service');
+      const PoolsService = require('./services/pools.service');
+      const poolsService = new PoolsService();
       logger.info('Initialisiere Pools...');
       await poolsService.listPools();
       logger.info('Pools erfolgreich initialisiert');

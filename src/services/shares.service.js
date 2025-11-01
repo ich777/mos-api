@@ -3,7 +3,7 @@ const path = require('path');
 const { exec } = require('child_process');
 const util = require('util');
 const execAsync = util.promisify(exec);
-const poolsService = require('./pools.service');
+const PoolsService = require('./pools.service');
 
 class SharesService {
   constructor() {
@@ -180,10 +180,11 @@ class SharesService {
    */
   async getAvailablePools() {
     try {
-      const pools = await poolsService.listPools();
+      const poolsService = new PoolsService();
+      const pools = await poolsService.listPools({});
 
       // Filter only mounted pools
-      const availablePools = pools.pools
+      const availablePools = pools
         .filter(pool => pool.status && pool.status.mounted)
         .map(pool => ({
           name: pool.name,

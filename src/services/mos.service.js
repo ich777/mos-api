@@ -3,6 +3,7 @@ const path = require('path');
 const { exec } = require('child_process');
 const util = require('util');
 const execPromise = util.promisify(exec);
+const PoolsService = require('./pools.service');
 
 class MosService {
   constructor() {
@@ -17,8 +18,8 @@ class MosService {
    */
   async _getFirstNonMergerFSPool() {
     try {
-      const poolsService = require('./pools.service');
-      const pools = await poolsService._readPools();
+      const baseService = new PoolsService();
+      const pools = await baseService.listPools({});
 
       let firstMergerFSPool = null;
 
@@ -26,7 +27,7 @@ class MosService {
       for (const pool of pools) {
         if (pool.type !== 'mergerfs') {
           const mountPoint = `/mnt/${pool.name}`;
-          const isMounted = await poolsService._isMounted(mountPoint);
+          const isMounted = await baseService._isMounted(mountPoint);
           if (isMounted) {
             return pool.name;
           }
@@ -69,8 +70,8 @@ class MosService {
           const stats = await fs.stat(diskPath);
           if (stats.isDirectory()) {
             // Verify it's actually mounted by checking if it's accessible
-            const poolsService = require('./pools.service');
-            const isMounted = await poolsService._isMounted(diskPath);
+            const baseService = new PoolsService();
+            const isMounted = await baseService._isMounted(diskPath);
             if (isMounted) {
               return `disk${i}`;
             }
@@ -177,13 +178,13 @@ class MosService {
         poolPath = `/mnt/${poolName}`;
       }
 
-      // Lazy-load Pool-Service to avoid circular dependencies
-      const poolsService = require('./pools.service');
+      // Lazy-load PoolsService to avoid circular dependencies
+      const baseService = new PoolsService();
 
       try {
         // Check if Pool exists and status
         // Use listPools() to get real-time mount status instead of static pools.json
-        const pools = await poolsService.listPools();
+        const pools = await baseService.listPools({});
         const pool = pools.find(p => p.name === poolName);
 
         if (!pool) {
@@ -221,7 +222,7 @@ class MosService {
         // For MergerFS disk paths, verify the specific disk is mounted
         if (isMergerfsDiskPath && diskPath) {
           const diskMountPoint = `/var/mergerfs/${poolName}/${diskPath}`;
-          const isDiskMounted = await poolsService._isMounted(diskMountPoint);
+          const isDiskMounted = await baseService._isMounted(diskMountPoint);
 
           if (!isDiskMounted) {
             return {

@@ -2,7 +2,7 @@ const si = require('systeminformation');
 const { exec } = require('child_process');
 const util = require('util');
 const execPromise = util.promisify(exec);
-const poolsService = require('./pools.service');
+const PoolsService = require('./pools.service');
 const fs = require('fs').promises;
 const path = require('path');
 
@@ -672,7 +672,8 @@ class DisksService {
     try {
       // Check pool membership using UUID-based approach
       try {
-        const pools = await poolsService.listPools();
+        const baseService = new PoolsService();
+        const pools = await baseService.listPools({});
 
         // Get all UUIDs that belong to this device by reading /dev/disk/by-uuid/
         const deviceUuids = await this._getDeviceUuidsBySymlinks(device);
@@ -1096,12 +1097,14 @@ class DisksService {
 
   /**
    * Find unassigned disks - improved logic with BTRFS multi-device support
+   * @param {Object} options - Options for disk listing
+   * @param {Object} user - User object with byte_format preference
    */
-  async getUnassignedDisks(options = {}) {
+  async getUnassignedDisks(options = {}, user = null) {
     try {
       // Ensure skipStandby is true by default to avoid waking up disks
       const diskOptions = { skipStandby: true, ...options };
-      const allDisks = await this.getAllDisks(diskOptions);
+      const allDisks = await this.getAllDisks(diskOptions, user);
       const unassignedDisks = [];
 
       // Collect all mounted BTRFS UUIDs
