@@ -1007,11 +1007,18 @@ class DockerService {
           runningContainers.has(containerName)
         ).length;
 
+        // Check if any container in the group has an update available
+        const updateAvailable = filteredContainers.some(containerName => {
+          const container = containers.find(c => c.name === containerName);
+          return container && container.update_available === true;
+        });
+
         return {
           ...group,
           containers: filteredContainers,
           count: filteredContainers.length,
-          runningCount: runningCount
+          runningCount: runningCount,
+          update_available: updateAvailable
         };
       }).sort((a, b) => a.index - b.index);
 

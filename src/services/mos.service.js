@@ -1821,63 +1821,94 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
   }
 
   /**
+   * Fast read of docker enabled status without loading defaults
+   * @returns {Promise<boolean>} Docker enabled status
+   */
+  async _getDockerEnabledStatus() {
+    try {
+      const data = await fs.readFile(this.settingsPath, 'utf8');
+      const settings = JSON.parse(data);
+      return settings.enabled === true;
+    } catch (error) {
+      return false; // File not found or error - defaults to false
+    }
+  }
+
+  /**
+   * Fast read of LXC enabled status without loading defaults
+   * @returns {Promise<boolean>} LXC enabled status
+   */
+  async _getLxcEnabledStatus() {
+    try {
+      const data = await fs.readFile('/boot/config/lxc.json', 'utf8');
+      const settings = JSON.parse(data);
+      return settings.enabled === true;
+    } catch (error) {
+      return false; // File not found or error - defaults to false
+    }
+  }
+
+  /**
+   * Fast read of VM enabled status without loading defaults
+   * @returns {Promise<boolean>} VM enabled status
+   */
+  async _getVmEnabledStatus() {
+    try {
+      const data = await fs.readFile('/boot/config/vm.json', 'utf8');
+      const settings = JSON.parse(data);
+      return settings.enabled === true;
+    } catch (error) {
+      return false; // File not found or error - defaults to false
+    }
+  }
+
+  /**
+   * Fast read of network services status without loading defaults
+   * @returns {Promise<Object>} Network services with enabled status
+   */
+  async _getNetworkServicesStatus() {
+    try {
+      const data = await fs.readFile('/boot/config/network.json', 'utf8');
+      const settings = JSON.parse(data);
+      const result = {};
+      
+      if (settings.services && typeof settings.services === 'object') {
+        for (const [serviceName, serviceConfig] of Object.entries(settings.services)) {
+          if (serviceConfig && typeof serviceConfig === 'object' && 'enabled' in serviceConfig) {
+            result[serviceName] = {
+              enabled: serviceConfig.enabled === true
+            };
+          }
+        }
+      }
+      
+      return result;
+    } catch (error) {
+      return {}; // File not found or error - return empty object
+    }
+  }
+
+  /**
    * Gets the status of all services from different configuration files
+   * Optimized version that only reads enabled flags without loading defaults
    * @returns {Promise<Object>} Status object with all services (flat structure)
    */
   async getAllServiceStatus() {
     try {
+      // Execute all status reads in parallel for maximum performance
+      const [dockerEnabled, lxcEnabled, vmEnabled, networkServices] = await Promise.all([
+        this._getDockerEnabledStatus(),
+        this._getLxcEnabledStatus(),
+        this._getVmEnabledStatus(),
+        this._getNetworkServicesStatus()
+      ]);
+
       const result = {
-        docker: { enabled: false },
-        lxc: { enabled: false },
-        vm: { enabled: false }
+        docker: { enabled: dockerEnabled },
+        lxc: { enabled: lxcEnabled },
+        vm: { enabled: vmEnabled },
+        ...networkServices
       };
-
-      // Docker Status
-      try {
-        const dockerSettings = await this.getDockerSettings();
-        result.docker.enabled = dockerSettings.enabled === true;
-      } catch (error) {
-        // File not found or error - remains false
-        console.warn('Docker settings not accessible:', error.message);
-      }
-
-      // LXC Status
-      try {
-        const lxcSettings = await this.getLxcSettings();
-        result.lxc.enabled = lxcSettings.enabled === true;
-      } catch (error) {
-        // File not found or error - remains false
-        console.warn('LXC settings not accessible:', error.message);
-      }
-
-      // VM Status
-      try {
-        const vmSettings = await this.getVmSettings();
-        result.vm.enabled = vmSettings.enabled === true;
-      } catch (error) {
-        // File not found or error - remains false
-        console.warn('VM settings not accessible:', error.message);
-      }
-
-      // Network Services Status - directly in result (flat structure)
-      try {
-        const networkSettings = await this.getNetworkSettings();
-
-        // Dynamically extract all services from network.json.services
-        if (networkSettings.services && typeof networkSettings.services === 'object') {
-          for (const [serviceName, serviceConfig] of Object.entries(networkSettings.services)) {
-            if (serviceConfig && typeof serviceConfig === 'object' && 'enabled' in serviceConfig) {
-              result[serviceName] = {
-                enabled: serviceConfig.enabled === true
-              };
-            }
-          }
-        }
-
-      } catch (error) {
-        // File not found or error - services are skipped
-        console.warn('Network settings not accessible:', error.message);
-      }
 
       return result;
     } catch (error) {

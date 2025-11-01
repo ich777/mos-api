@@ -1054,6 +1054,18 @@ async function waitForContainerState(containerId, expectedState, maxRetries = 10
  *           type: string
  *           nullable: true
  *           description: Icon name/identifier for the group
+ *         count:
+ *           type: integer
+ *           description: Number of containers in the group
+ *           example: 3
+ *         runningCount:
+ *           type: integer
+ *           description: Number of running containers in the group
+ *           example: 2
+ *         update_available:
+ *           type: boolean
+ *           description: Whether any container in the group has an update available
+ *           example: true
  */
 
 /**
@@ -1073,6 +1085,23 @@ async function waitForContainerState(containerId, expectedState, maxRetries = 10
  *               type: array
  *               items:
  *                 $ref: '#/components/schemas/ContainerGroup'
+ *             example:
+ *               - id: "1695384000123"
+ *                 name: "Web Services"
+ *                 index: 1
+ *                 containers: ["nginx", "apache"]
+ *                 icon: "web"
+ *                 count: 2
+ *                 runningCount: 2
+ *                 update_available: true
+ *               - id: "1695384000456"
+ *                 name: "Database Services"
+ *                 index: 2
+ *                 containers: ["mysql", "redis"]
+ *                 icon: "database"
+ *                 count: 2
+ *                 runningCount: 1
+ *                 update_available: false
  *       401:
  *         description: Unauthorized
  *         content:
