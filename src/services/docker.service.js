@@ -53,18 +53,24 @@ class DockerService {
       const command = name ? `${scriptPath} ${name}` : scriptPath;
 
       // Execute command
+      // Note: stderr may contain warnings (e.g., swap limit), but exit code 0 means success
       const { stdout, stderr } = await execPromise(command);
-
-      if (stderr) {
-        throw new Error(`Error executing update check: ${stderr}`);
-      }
 
       // Try to parse the output as JSON, if possible
       try {
-        return JSON.parse(stdout);
+        const result = JSON.parse(stdout);
+        // Append stderr to message if present
+        if (stderr && stderr.trim() && result.message) {
+          result.message += '\n' + stderr.trim();
+        }
+        return result;
       } catch (parseError) {
         // If no JSON output, return text
-        return { message: stdout.trim() };
+        let message = stdout.trim();
+        if (stderr && stderr.trim()) {
+          message += '\n' + stderr.trim();
+        }
+        return { message };
       }
     } catch (error) {
       throw new Error(`Failed to check for updates: ${error.message}`);
@@ -89,16 +95,19 @@ class DockerService {
       const command = `${dockerPath} container stop ${name} && ${dockerPath} container start ${name}`;
 
       // Execute command
+      // Note: stderr may contain warnings, but exit code 0 means success
       const { stdout, stderr } = await execPromise(command);
 
-      if (stderr) {
-        throw new Error(`Error restarting: ${stderr}`);
-      }
-
-      // Try to parse the output as JSON, if possible
-      return {
+      const result = {
         success: true
       };
+
+      // Append stderr to message if present
+      if (stderr && stderr.trim()) {
+        result.message = stderr.trim();
+      }
+
+      return result;
     } catch (error) {
       throw new Error(`Failed to restart: ${error.message}`);
     }
@@ -126,20 +135,24 @@ class DockerService {
       }
 
       // Execute command
+      // Note: stderr may contain warnings (e.g., kernel swap limit), but exit code 0 means success
       const { stdout, stderr } = await execPromise(command);
-
-      if (stderr) {
-        throw new Error(`Error executing upgrade: ${stderr}`);
-      }
 
       // Try to parse the output as JSON, if possible
       try {
         const result = JSON.parse(stdout);
+        // Append stderr to message if present
+        if (stderr && stderr.trim() && result.message) {
+          result.message += '\n' + stderr.trim();
+        }
         return result;
       } catch (parseError) {
         // If no JSON output, return text
-        const result = { message: stdout.trim() };
-        return result;
+        let message = stdout.trim();
+        if (stderr && stderr.trim()) {
+          message += '\n' + stderr.trim();
+        }
+        return { message };
       }
     } catch (error) {
       throw new Error(`Failed to upgrade: ${error.message}`);
@@ -600,11 +613,8 @@ class DockerService {
       const command = `${scriptPath} ${url}`;
 
       // Execute command
+      // Note: stderr may contain warnings, but exit code 0 means success
       const { stdout, stderr } = await execPromise(command);
-
-      if (stderr) {
-        throw new Error(`Error executing XML conversion: ${stderr}`);
-      }
 
       // Try to parse the output as JSON, if possible
       let result;
@@ -612,7 +622,16 @@ class DockerService {
         result = JSON.parse(stdout);
       } catch (parseError) {
         // If no JSON output, return text
-        return { message: stdout.trim() };
+        let message = stdout.trim();
+        if (stderr && stderr.trim()) {
+          message += '\n' + stderr.trim();
+        }
+        return { message };
+      }
+
+      // Append stderr to message if present
+      if (stderr && stderr.trim() && result.message) {
+        result.message += '\n' + stderr.trim();
       }
 
       // Check if name field is null, which indicates an error
