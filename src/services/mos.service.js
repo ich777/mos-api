@@ -1871,7 +1871,7 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
       const data = await fs.readFile('/boot/config/network.json', 'utf8');
       const settings = JSON.parse(data);
       const result = {};
-      
+
       if (settings.services && typeof settings.services === 'object') {
         for (const [serviceName, serviceConfig] of Object.entries(settings.services)) {
           if (serviceConfig && typeof serviceConfig === 'object' && 'enabled' in serviceConfig) {
@@ -1881,7 +1881,7 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
           }
         }
       }
-      
+
       return result;
     } catch (error) {
       return {}; // File not found or error - return empty object
@@ -2214,10 +2214,17 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
         args.push('update_kernel');
       }
 
-      const command = `/usr/local/bin/mos-os_update ${args.join(' ')}`;
+      // Create a detached child process that executes the update immediately
+      const { spawn } = require('child_process');
 
-      // Execute script
-      const { stdout, stderr } = await execPromise(command);
+      // Execute the update directly in a detached process
+      const child = spawn('/usr/local/bin/mos-os_update', args, {
+        detached: true,
+        stdio: 'ignore'
+      });
+
+      // Detach the child process from the parent, so it continues running even if the API is terminated
+      child.unref();
 
       return {
         success: true,
@@ -2225,9 +2232,6 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
         version,
         channel,
         updateKernel,
-        command,
-        output: stdout,
-        error: stderr || null,
         timestamp: new Date().toISOString()
       };
 
@@ -2259,18 +2263,22 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
         args.push('not_kernel');
       }
 
-      const command = `/usr/local/bin/mos-os_update ${args.join(' ')}`;
+      // Create a detached child process that executes the rollback immediately
+      const { spawn } = require('child_process');
 
-      // Execute script
-      const { stdout, stderr } = await execPromise(command);
+      // Execute the rollback directly in a detached process
+      const child = spawn('/usr/local/bin/mos-os_update', args, {
+        detached: true,
+        stdio: 'ignore'
+      });
+
+      // Detach the child process from the parent, so it continues running even if the API is terminated
+      child.unref();
 
       return {
         success: true,
         message: 'OS rollback initiated successfully',
         kernelRollback,
-        command,
-        output: stdout,
-        error: stderr || null,
         timestamp: new Date().toISOString()
       };
 
@@ -2356,18 +2364,22 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
         throw new Error('Version must be "recommended" or start with a version number (e.g., 6.1.0, 6.17.1-mos, 6.1.0-alpha.1)');
       }
 
-      const command = `/usr/local/bin/mos-kernel_update ${version}`;
+      // Create a detached child process that executes the kernel update immediately
+      const { spawn } = require('child_process');
 
-      // Execute script
-      const { stdout, stderr } = await execPromise(command);
+      // Execute the kernel update directly in a detached process
+      const child = spawn('/usr/local/bin/mos-kernel_update', [version], {
+        detached: true,
+        stdio: 'ignore'
+      });
+
+      // Detach the child process from the parent, so it continues running even if the API is terminated
+      child.unref();
 
       return {
         success: true,
         message: 'Kernel update initiated successfully',
         version,
-        command,
-        output: stdout,
-        error: stderr || null,
         timestamp: new Date().toISOString()
       };
 
@@ -2388,17 +2400,21 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
    */
   async rollbackKernel() {
     try {
-      const command = '/usr/local/bin/mos-kernel_update rollback';
+      // Create a detached child process that executes the kernel rollback immediately
+      const { spawn } = require('child_process');
 
-      // Execute script
-      const { stdout, stderr } = await execPromise(command);
+      // Execute the kernel rollback directly in a detached process
+      const child = spawn('/usr/local/bin/mos-kernel_update', ['rollback'], {
+        detached: true,
+        stdio: 'ignore'
+      });
+
+      // Detach the child process from the parent, so it continues running even if the API is terminated
+      child.unref();
 
       return {
         success: true,
         message: 'Kernel rollback initiated successfully',
-        command,
-        output: stdout,
-        error: stderr || null,
         timestamp: new Date().toISOString()
       };
 

@@ -42,6 +42,10 @@ const options = {
         description: 'Docker Container Management'
       },
       {
+        name: 'Docker WebSocket',
+        description: 'Real-time Docker operations via WebSocket'
+      },
+      {
         name: 'LXC',
         description: 'LXC Container Management'
       },
@@ -122,7 +126,7 @@ const options = {
       }
     ]
   },
-  apis: ['./src/routes/*.js']
+  apis: ['./src/routes/*.js', './src/routes/websocket/*.js']
 };
 
 const specs = swaggerJSDoc(options);

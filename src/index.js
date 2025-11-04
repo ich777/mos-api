@@ -26,9 +26,10 @@ const usersRoutes = require('./routes/users.routes');
 const cronRoutes = require('./routes/cron.routes');
 const terminalRoutes = require('./routes/terminal.routes');
 const notificationsRoutes = require('./routes/notifications.routes');
-const poolsWebSocketRoutes = require('./routes/pools.websocket.routes');
-const systemWebSocketRoutes = require('./routes/system.websocket.routes');
-const terminalWebSocketRoutes = require('./routes/terminal.websocket.routes');
+const poolsWebSocketRoutes = require('./routes/websocket/pools.websocket.routes');
+const systemWebSocketRoutes = require('./routes/websocket/system.websocket.routes');
+const terminalWebSocketRoutes = require('./routes/websocket/terminal.websocket.routes');
+const dockerWebSocketRoutes = require('./routes/websocket/docker.websocket.routes');
 
 // Middleware
 const { authenticateToken } = require('./middleware/auth.middleware');
@@ -157,6 +158,7 @@ async function startServer() {
   app.use('/api/v1/pools', poolsWebSocketRoutes);
   app.use('/api/v1/system', systemWebSocketRoutes);
   app.use('/api/v1/terminal', terminalWebSocketRoutes);
+  app.use('/api/v1/docker', dockerWebSocketRoutes);
 
   // Error Handling
   app.use(errorHandler);
@@ -268,9 +270,11 @@ async function startServer() {
   // Setup Socket.io handlers
   const terminalService = require('./services/terminal.service');
   const systemService = require('./services/system.service');
+  const dockerService = require('./services/docker.service');
   const PoolWebSocketManager = require('./websockets/pools.websocket');
   const SystemLoadWebSocketManager = require('./websockets/system.websocket');
   const TerminalWebSocketManager = require('./websockets/terminal.websocket');
+  const DockerWebSocketManager = require('./websockets/docker.websocket');
 
   // Initialize event emitter for service communication
   const EventEmitter = require('events');
@@ -280,25 +284,26 @@ async function startServer() {
   const poolsNamespace = io.of('/pools');
   const systemNamespace = io.of('/system');
   const terminalNamespace = io.of('/terminal');
+  const dockerNamespace = io.of('/docker');
 
   // Initialize pool WebSocket manager with pools namespace
   const PoolsService = require('./services/pools.service');
-  
+
   // Create a simple wrapper for WebSocket compatibility
   class PoolsServiceWebSocketWrapper {
     constructor(eventEmitter) {
       this.poolsService = new PoolsService(eventEmitter);
     }
-    
+
     async listPools() {
       return await this.poolsService.listPools({});
     }
-    
+
     async getPoolById(id) {
       const pools = await this.listPools();
       return pools.find(p => p.id === id);
     }
-    
+
     async getPoolStatus(poolId) {
       const pool = await this.getPoolById(poolId);
       if (!pool) {
@@ -307,7 +312,7 @@ async function startServer() {
       return await this.poolsService._getPoolStatus(pool);
     }
   }
-  
+
   const poolsServiceInstance = new PoolsServiceWebSocketWrapper(serviceEventEmitter);
   const poolWebSocketManager = new PoolWebSocketManager(poolsNamespace, poolsServiceInstance);
 
@@ -317,10 +322,14 @@ async function startServer() {
   // Initialize terminal WebSocket manager with terminal namespace
   const terminalWebSocketManager = new TerminalWebSocketManager(terminalNamespace, terminalService);
 
+  // Initialize Docker WebSocket manager with docker namespace
+  const dockerWebSocketManager = new DockerWebSocketManager(dockerNamespace, dockerService);
+
   // Make WebSocket managers available to routes
   app.locals.poolWebSocketManager = poolWebSocketManager;
   app.locals.systemLoadWebSocketManager = systemLoadWebSocketManager;
   app.locals.terminalWebSocketManager = terminalWebSocketManager;
+  app.locals.dockerWebSocketManager = dockerWebSocketManager;
 
   // Setup namespace handlers
   poolsNamespace.on('connection', (socket) => {
@@ -337,6 +346,12 @@ async function startServer() {
   terminalNamespace.on('connection', (socket) => {
     logger.info(`Terminal WebSocket client connected: ${socket.id}`);
     terminalWebSocketManager.handleConnection(socket);
+  });
+
+  // Docker namespace for Docker operations
+  dockerNamespace.on('connection', (socket) => {
+    logger.info(`Docker WebSocket client connected: ${socket.id}`);
+    dockerWebSocketManager.handleConnection(socket);
   });
 
   server.listen(PORT, '0.0.0.0', async () => {
