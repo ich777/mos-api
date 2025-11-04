@@ -15,6 +15,7 @@ const systemRoutes = require('./routes/system.routes');
 const disksRoutes = require('./routes/disks.routes');
 const poolsRoutes = require('./routes/pools.routes');
 const dockerRoutes = require('./routes/docker.routes');
+const dockerComposeRoutes = require('./routes/dockercompose.routes');
 const lxcRoutes = require('./routes/lxc.routes');
 const vmRoutes = require('./routes/vm.routes');
 const mosRoutes = require('./routes/mos.routes');
@@ -143,6 +144,7 @@ async function startServer() {
   app.use('/api/v1/system', authenticateToken, systemRoutes);
   app.use('/api/v1/disks', authenticateToken, disksRoutes);
   app.use('/api/v1/pools', authenticateToken, poolsRoutes);
+  app.use('/api/v1/docker/mos/compose', authenticateToken, dockerComposeRoutes);
   app.use('/api/v1/docker', authenticateToken, dockerRoutes);
   app.use('/api/v1/lxc', authenticateToken, lxcRoutes);
   app.use('/api/v1/vm', authenticateToken, vmRoutes);

@@ -42,6 +42,10 @@ const options = {
         description: 'Docker Container Management'
       },
       {
+        name: 'Docker Compose',
+        description: 'Docker Compose Stack Management'
+      },
+      {
         name: 'Docker WebSocket',
         description: 'Real-time Docker operations via WebSocket'
       },

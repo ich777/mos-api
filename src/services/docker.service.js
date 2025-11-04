@@ -1015,11 +1015,24 @@ class DockerService {
       // Get running containers ONCE for all groups (performance optimization)
       const runningContainers = await this._getRunningContainers();
 
+      // Track if any groups were modified (for cleanup)
+      let groupsModified = false;
+
       // Enrich groups with current container status and sort by index
       const enrichedGroups = groups.map(group => {
-        const filteredContainers = group.containers.filter(containerName =>
-          containers.some(c => c.name === containerName)
-        );
+        // For compose groups, don't filter containers (they're not in the containers file)
+        // For regular groups, filter to only show existing containers
+        const filteredContainers = group.compose
+          ? group.containers
+          : group.containers.filter(containerName =>
+              containers.some(c => c.name === containerName)
+            );
+
+        // If containers were removed from a non-compose group, update the stored group
+        if (!group.compose && filteredContainers.length !== group.containers.length) {
+          group.containers = filteredContainers;
+          groupsModified = true;
+        }
 
         // Count running containers in this group (O(1) lookup per container)
         const runningCount = filteredContainers.filter(containerName =>
@@ -1027,19 +1040,26 @@ class DockerService {
         ).length;
 
         // Check if any container in the group has an update available
-        const updateAvailable = filteredContainers.some(containerName => {
+        // (only relevant for non-compose groups)
+        const updateAvailable = !group.compose && filteredContainers.some(containerName => {
           const container = containers.find(c => c.name === containerName);
           return container && container.update_available === true;
         });
 
         return {
           ...group,
+          compose: group.compose || false, // Ensure compose field exists, default to false
           containers: filteredContainers,
           count: filteredContainers.length,
           runningCount: runningCount,
           update_available: updateAvailable
         };
       }).sort((a, b) => a.index - b.index);
+
+      // Save groups if any were modified (cleanup of deleted containers)
+      if (groupsModified) {
+        await this._writeGroups(groups);
+      }
 
       return enrichedGroups;
     } catch (error) {
@@ -1078,9 +1098,12 @@ class DockerService {
    * Create a new container group
    * @param {string} name - Group name
    * @param {Array} containers - Array of container names
+   * @param {Object} options - Optional settings
+   * @param {boolean} options.compose - Whether this is a compose stack group (default: false)
+   * @param {string|null} options.icon - Icon path (default: null)
    * @returns {Promise<Object>} Created group
    */
-  async createContainerGroup(name, containers = []) {
+  async createContainerGroup(name, containers = [], options = {}) {
     try {
       if (!name || typeof name !== 'string') {
         throw new Error('Group name is required and must be a string');
@@ -1093,25 +1116,28 @@ class DockerService {
         throw new Error(`Group with name '${name}' already exists`);
       }
 
-      // Validate containers exist
-      const existingContainers = await this.getDockerImages();
-      const existingContainerNames = existingContainers.map(c => c.name);
+      // Skip container validation for compose groups (containers may not exist yet)
+      if (!options.compose) {
+        // Validate containers exist
+        const existingContainers = await this.getDockerImages();
+        const existingContainerNames = existingContainers.map(c => c.name);
 
-      const invalidContainers = containers.filter(containerName =>
-        !existingContainerNames.includes(containerName)
-      );
-
-      if (invalidContainers.length > 0) {
-        throw new Error(`Containers not found: ${invalidContainers.join(', ')}`);
-      }
-
-      // Check for container conflicts (containers already in other groups)
-      const conflicts = await this._checkContainerConflicts(containers);
-      if (conflicts.length > 0) {
-        const conflictMessages = conflicts.map(c =>
-          `'${c.container}' is already in group '${c.groupName}'`
+        const invalidContainers = containers.filter(containerName =>
+          !existingContainerNames.includes(containerName)
         );
-        throw new Error(`Container conflicts: ${conflictMessages.join(', ')}`);
+
+        if (invalidContainers.length > 0) {
+          throw new Error(`Containers not found: ${invalidContainers.join(', ')}`);
+        }
+
+        // Check for container conflicts (containers already in other groups)
+        const conflicts = await this._checkContainerConflicts(containers);
+        if (conflicts.length > 0) {
+          const conflictMessages = conflicts.map(c =>
+            `'${c.container}' is already in group '${c.groupName}'`
+          );
+          throw new Error(`Container conflicts: ${conflictMessages.join(', ')}`);
+        }
       }
 
       // Get next index
@@ -1122,7 +1148,8 @@ class DockerService {
         name,
         index: nextIndex,
         containers: [...new Set(containers)], // Remove duplicates
-        icon: null
+        icon: options.icon || null,
+        compose: options.compose || false
       };
 
       groups.push(newGroup);
@@ -1409,22 +1436,25 @@ class DockerService {
           throw new Error('Containers must be an array');
         }
 
-        // Validate containers exist
-        const allContainers = await this.getDockerImages();
-        const containerNames = allContainers.map(c => c.name);
-        const invalidContainers = updateData.containers.filter(name => !containerNames.includes(name));
+        // Skip container validation for compose groups (containers may not exist yet)
+        if (!group.compose) {
+          // Validate containers exist
+          const allContainers = await this.getDockerImages();
+          const containerNames = allContainers.map(c => c.name);
+          const invalidContainers = updateData.containers.filter(name => !containerNames.includes(name));
 
-        if (invalidContainers.length > 0) {
-          throw new Error(`Invalid containers: ${invalidContainers.join(', ')}`);
-        }
+          if (invalidContainers.length > 0) {
+            throw new Error(`Invalid containers: ${invalidContainers.join(', ')}`);
+          }
 
-        // Check for container conflicts (exclude current group)
-        const conflicts = await this._checkContainerConflicts(updateData.containers, groupId);
-        if (conflicts.length > 0) {
-          const conflictMessages = conflicts.map(c =>
-            `'${c.container}' is already in group '${c.groupName}'`
-          );
-          throw new Error(`Container conflicts: ${conflictMessages.join(', ')}`);
+          // Check for container conflicts (exclude current group)
+          const conflicts = await this._checkContainerConflicts(updateData.containers, groupId);
+          if (conflicts.length > 0) {
+            const conflictMessages = conflicts.map(c =>
+              `'${c.container}' is already in group '${c.groupName}'`
+            );
+            throw new Error(`Container conflicts: ${conflictMessages.join(', ')}`);
+          }
         }
 
         group.containers = [...new Set(updateData.containers)]; // Remove duplicates
