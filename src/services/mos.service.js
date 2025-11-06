@@ -1367,6 +1367,7 @@ class MosService {
       let displayChanged = false;
       let persistHistoryChanged = false;
       let persistHistoryValue = null;
+      let cpufreqChanged = false;
 
       for (const key of Object.keys(updates)) {
         if (!allowed.includes(key)) {
@@ -1471,6 +1472,17 @@ class MosService {
 
           // Update cpufreq settings
           if (typeof updates.cpufreq === 'object' && updates.cpufreq !== null) {
+            // Check if any cpufreq setting changed
+            if (updates.cpufreq.governor !== undefined && updates.cpufreq.governor !== current.cpufreq.governor) {
+              cpufreqChanged = true;
+            }
+            if (updates.cpufreq.max_speed !== undefined && updates.cpufreq.max_speed !== current.cpufreq.max_speed) {
+              cpufreqChanged = true;
+            }
+            if (updates.cpufreq.min_speed !== undefined && updates.cpufreq.min_speed !== current.cpufreq.min_speed) {
+              cpufreqChanged = true;
+            }
+
             // Merge with existing settings, keeping defaults for missing values
             current.cpufreq = {
               governor: updates.cpufreq.governor !== undefined ? updates.cpufreq.governor : current.cpufreq.governor,
@@ -1553,6 +1565,15 @@ class MosService {
           }
         } catch (error) {
           console.warn('Warning: Could not apply display settings with setterm:', error.message);
+        }
+      }
+
+      // CPU frequency scaling settings apply with cpupower service
+      if (cpufreqChanged) {
+        try {
+          await execPromise('/etc/init.d/cpupower start');
+        } catch (error) {
+          console.warn('Warning: Could not apply cpufreq settings with cpupower:', error.message);
         }
       }
 
