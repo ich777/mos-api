@@ -677,28 +677,29 @@ router.post('/settings/vm', async (req, res) => {
 
 /**
  * @swagger
- * /mos/settings/network:
+ * /mos/settings/network/interfaces:
  *   get:
- *     summary: Get network settings
- *     description: Retrieve current network service configuration (admin only)
+ *     summary: Get network interfaces
+ *     description: Retrieve current network interfaces configuration (admin only)
  *     tags: [MOS]
  *     security:
  *       - bearerAuth: []
  *     responses:
  *       200:
- *         description: Network settings retrieved successfully
+ *         description: Network interfaces retrieved successfully
  *         content:
  *           application/json:
  *             schema:
- *               $ref: '#/components/schemas/NetworkSettings'
+ *               type: array
+ *               items:
+ *                 type: object
  *             example:
- *               services:
- *                 samba:
- *                   enabled: true
- *                 nfs:
- *                   enabled: false
- *                 nut:
- *                   enabled: false
+ *               - name: "eth0"
+ *                 type: "ethernet"
+ *                 mode: null
+ *                 interfaces: []
+ *                 ipv4: [{"dhcp": true}]
+ *                 ipv6: []
  *       401:
  *         description: Not authenticated
  *         content:
@@ -711,12 +712,6 @@ router.post('/settings/vm', async (req, res) => {
  *           application/json:
  *             schema:
  *               $ref: '#/components/schemas/Error'
- *       404:
- *         description: Network settings not found
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/Error'
  *       500:
  *         description: Server error
  *         content:
@@ -724,8 +719,8 @@ router.post('/settings/vm', async (req, res) => {
  *             schema:
  *               $ref: '#/components/schemas/Error'
  *   post:
- *     summary: Update network settings
- *     description: Update network service configuration and interfaces (admin only)
+ *     summary: Update network interfaces
+ *     description: Update network interfaces configuration (admin only)
  *     tags: [MOS]
  *     security:
  *       - bearerAuth: []
@@ -734,61 +729,52 @@ router.post('/settings/vm', async (req, res) => {
  *       content:
  *         application/json:
  *           schema:
- *             $ref: '#/components/schemas/SettingsUpdateRequest'
+ *             type: array
+ *             items:
+ *               type: object
  *           examples:
- *             services_only:
- *               summary: Update services only
- *               value:
- *                 services:
- *                   samba:
- *                     enabled: true
- *                   nfs:
- *                     enabled: true
  *             ethernet_dhcp:
  *               summary: Ethernet with DHCP
  *               value:
- *                 interfaces:
- *                   - name: "eth0"
- *                     type: "ethernet"
- *                     mode: null
- *                     interfaces: []
- *                     ipv4: [{"dhcp": true}]
- *                     ipv6: []
+ *                 - name: "eth0"
+ *                   type: "ethernet"
+ *                   mode: null
+ *                   interfaces: []
+ *                   ipv4: [{"dhcp": true}]
+ *                   ipv6: []
  *             ethernet_static:
  *               summary: Ethernet with static IP
  *               value:
- *                 interfaces:
- *                   - name: "eth0"
- *                     type: "ethernet"
- *                     mode: null
- *                     interfaces: []
- *                     ipv4: [{"dhcp": false, "address": "10.0.0.1/24", "gateway": "10.0.0.5", "dns": ["10.0.0.5"]}]
- *                     ipv6: []
+ *                 - name: "eth0"
+ *                   type: "ethernet"
+ *                   mode: null
+ *                   interfaces: []
+ *                   ipv4: [{"dhcp": false, "address": "10.0.0.1/24", "gateway": "10.0.0.5", "dns": ["10.0.0.5"]}]
+ *                   ipv6: []
  *             bridge_setup:
  *               summary: Bridge configuration
  *               value:
- *                 interfaces:
- *                   - name: "eth0"
- *                     type: "bridged"
- *                     mode: null
- *                     interfaces: []
- *                     ipv4: []
- *                     ipv6: []
- *                   - name: "br0"
- *                     type: "bridge"
- *                     mode: null
- *                     interfaces: ["eth0"]
- *                     ipv4: [{"dhcp": false, "address": "10.0.0.1/24", "gateway": "10.0.0.5", "dns": ["10.0.0.5"]}]
- *                     ipv6: []
- *               nut:
- *                 enabled: false
+ *                 - name: "eth0"
+ *                   type: "bridged"
+ *                   mode: null
+ *                   interfaces: []
+ *                   ipv4: []
+ *                   ipv6: []
+ *                 - name: "br0"
+ *                   type: "bridge"
+ *                   mode: null
+ *                   interfaces: ["eth0"]
+ *                   ipv4: [{"dhcp": false, "address": "10.0.0.1/24", "gateway": "10.0.0.5", "dns": ["10.0.0.5"]}]
+ *                   ipv6: []
  *     responses:
  *       200:
- *         description: Network settings updated successfully
+ *         description: Network interfaces updated successfully
  *         content:
  *           application/json:
  *             schema:
- *               $ref: '#/components/schemas/NetworkSettings'
+ *               type: array
+ *               items:
+ *                 type: object
  *       400:
  *         description: Invalid request body
  *         content:
@@ -815,13 +801,13 @@ router.post('/settings/vm', async (req, res) => {
  *               $ref: '#/components/schemas/Error'
  */
 
-// GET: Read network settings
-router.get('/settings/network', async (req, res) => {
+// GET: Read network interfaces
+router.get('/settings/network/interfaces', async (req, res) => {
   try {
-    const settings = await mosService.getNetworkSettings();
-    res.json(settings);
+    const interfaces = await mosService.getNetworkInterfaces();
+    res.json(interfaces);
   } catch (error) {
-    if (error.message.includes('nicht gefunden')) {
+    if (error.message.includes('not found')) {
       res.status(404).json({ error: error.message });
     } else {
       res.status(500).json({ error: error.message });
@@ -829,13 +815,135 @@ router.get('/settings/network', async (req, res) => {
   }
 });
 
-// POST: Update network settings (only services.samba, services.nfs, services.nut)
-router.post('/settings/network', async (req, res) => {
+// POST: Update network interfaces
+router.post('/settings/network/interfaces', async (req, res) => {
+  try {
+    if (!Array.isArray(req.body)) {
+      return res.status(400).json({ error: 'Request body must be an array of interfaces.' });
+    }
+    const updated = await mosService.updateNetworkInterfaces(req.body);
+    res.json(updated);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /mos/settings/network/services:
+ *   get:
+ *     summary: Get network services
+ *     description: Retrieve current network services configuration (admin only)
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Network services retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *             example:
+ *               ssh:
+ *                 enabled: true
+ *               samba:
+ *                 enabled: true
+ *               nfs:
+ *                 enabled: false
+ *               nut:
+ *                 enabled: false
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *   post:
+ *     summary: Update network services
+ *     description: Update network services configuration (admin only)
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *           example:
+ *             samba:
+ *               enabled: true
+ *             nfs:
+ *               enabled: true
+ *             nut:
+ *               enabled: false
+ *     responses:
+ *       200:
+ *         description: Network services updated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *       400:
+ *         description: Invalid request body
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+
+// GET: Read network services
+router.get('/settings/network/services', async (req, res) => {
+  try {
+    const services = await mosService.getNetworkServices();
+    res.json(services);
+  } catch (error) {
+    if (error.message.includes('not found')) {
+      res.status(404).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
+// POST: Update network services
+router.post('/settings/network/services', async (req, res) => {
   try {
     if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
-      return res.status(400).json({ error: 'Request body must be an object.' });
+      return res.status(400).json({ error: 'Request body must be an object with service configurations.' });
     }
-    const updated = await mosService.updateNetworkSettings(req.body);
+    const updated = await mosService.updateNetworkServices(req.body);
     res.json(updated);
   } catch (error) {
     res.status(500).json({ error: error.message });

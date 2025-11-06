@@ -953,200 +953,116 @@ class MosService {
   }
 
   /**
-   * Writes new values to the network.json. If a service status changes, the service is restarted.
-   * @param {Object} updates - The fields to update (services.samba, services.nfs, services.nut and interfaces are considered)
-   * @returns {Promise<Object>} The updated settings
+   * Reads only the network interfaces from the network.json file.
+   * @returns {Promise<Array>} Array of network interfaces
    */
-  async updateNetworkSettings(updates) {
+  async getNetworkInterfaces() {
     try {
-      // Read current settings with defaults
+      const settings = await this.getNetworkSettings();
+      return settings.interfaces || [];
+    } catch (error) {
+      throw new Error(`Error reading network interfaces: ${error.message}`);
+    }
+  }
+
+  /**
+   * Reads only the network services from the network.json file.
+   * @returns {Promise<Object>} Network services object
+   */
+  async getNetworkServices() {
+    try {
+      const settings = await this.getNetworkSettings();
+      return settings.services || {};
+    } catch (error) {
+      throw new Error(`Error reading network services: ${error.message}`);
+    }
+  }
+
+  /**
+   * Updates only the network interfaces in the network.json file.
+   * @param {Array} interfaces - Array of network interfaces
+   * @returns {Promise<Array>} The updated interfaces array
+   */
+  async updateNetworkInterfaces(interfaces) {
+    try {
+      if (!Array.isArray(interfaces)) {
+        throw new Error('interfaces must be an array');
+      }
+
+      // Read current settings
       const defaults = this._getDefaultNetworkSettings();
       let current = { ...defaults };
 
       try {
         const data = await fs.readFile('/boot/config/network.json', 'utf8');
         const loadedSettings = JSON.parse(data);
-        // Merge loaded settings with defaults
         current = this._deepMerge(defaults, loadedSettings);
       } catch (error) {
         if (error.code !== 'ENOENT') throw error;
       }
 
-      // Handle services and interfaces
-      let sambaChanged = false, sambaValue = null;
-      let nfsChanged = false, nfsValue = null;
-      let nutChanged = false, nutValue = null;
-      let sshChanged = false, sshValue = null;
-      let nmbdChanged = false, nmbdValue = null;
-      let tailscaleChanged = false, tailscaleValue = null;
-      let netbirdChanged = false, netbirdValue = null;
-
-      // Handle remote_mounting setting (now under services)
-      let remoteMountingChanged = false, remoteMountingValue = null;
-      if (updates.services && updates.services.remote_mounting && typeof updates.services.remote_mounting === 'object') {
-        if (!current.services) current.services = {};
-        if (!current.services.remote_mounting) current.services.remote_mounting = {};
-        if (typeof updates.services.remote_mounting.enabled === 'boolean') {
-          if (current.services.remote_mounting.enabled !== updates.services.remote_mounting.enabled) {
-            remoteMountingChanged = true;
-            remoteMountingValue = updates.services.remote_mounting.enabled;
-          }
-          current.services.remote_mounting.enabled = updates.services.remote_mounting.enabled;
-        }
-      }
-
-      // Handle services
-      if (updates.services) {
-        if (updates.services.samba && typeof updates.services.samba.enabled === 'boolean') {
-          if (!current.services) current.services = {};
-          if (!current.services.samba) current.services.samba = {};
-          if (current.services.samba.enabled !== updates.services.samba.enabled) {
-            sambaChanged = true;
-            sambaValue = updates.services.samba.enabled;
-          }
-          current.services.samba.enabled = updates.services.samba.enabled;
-        }
-        if (updates.services.nfs && typeof updates.services.nfs.enabled === 'boolean') {
-          if (!current.services) current.services = {};
-          if (!current.services.nfs) current.services.nfs = {};
-          if (current.services.nfs.enabled !== updates.services.nfs.enabled) {
-            nfsChanged = true;
-            nfsValue = updates.services.nfs.enabled;
-          }
-          current.services.nfs.enabled = updates.services.nfs.enabled;
-          // Add exports if necessary
-          if (Array.isArray(updates.services.nfs.exports)) {
-            current.services.nfs.exports = updates.services.nfs.exports;
-          }
-        }
-        if (updates.services.nut && typeof updates.services.nut.enabled === 'boolean') {
-          if (!current.services) current.services = {};
-          if (!current.services.nut) current.services.nut = {};
-          if (current.services.nut.enabled !== updates.services.nut.enabled) {
-            nutChanged = true;
-            nutValue = updates.services.nut.enabled;
-          }
-          current.services.nut.enabled = updates.services.nut.enabled;
-        }
-        if (updates.services.ssh && typeof updates.services.ssh.enabled === 'boolean') {
-          if (!current.services) current.services = {};
-          if (!current.services.ssh) current.services.ssh = {};
-          if (current.services.ssh.enabled !== updates.services.ssh.enabled) {
-            sshChanged = true;
-            sshValue = updates.services.ssh.enabled;
-          }
-          current.services.ssh.enabled = updates.services.ssh.enabled;
-        }
-        if (updates.services.nmbd && typeof updates.services.nmbd.enabled === 'boolean') {
-          if (!current.services) current.services = {};
-          if (!current.services.nmbd) current.services.nmbd = {};
-          if (current.services.nmbd.enabled !== updates.services.nmbd.enabled) {
-            nmbdChanged = true;
-            nmbdValue = updates.services.nmbd.enabled;
-          }
-          current.services.nmbd.enabled = updates.services.nmbd.enabled;
-        }
-        if (updates.services.tailscale) {
-          if (!current.services) current.services = {};
-          if (!current.services.tailscale) current.services.tailscale = {};
-          if (typeof updates.services.tailscale.enabled === 'boolean' &&
-              current.services.tailscale.enabled !== updates.services.tailscale.enabled) {
-            tailscaleChanged = true;
-            tailscaleValue = updates.services.tailscale.enabled;
-          }
-          if (updates.services.tailscale.enabled !== undefined)
-            current.services.tailscale.enabled = updates.services.tailscale.enabled;
-          if (updates.services.tailscale.update_check !== undefined)
-            current.services.tailscale.update_check = updates.services.tailscale.update_check;
-          if (updates.services.tailscale.tailscaled_params !== undefined)
-            current.services.tailscale.tailscaled_params = updates.services.tailscale.tailscaled_params;
-        }
-        if (updates.services.netbird) {
-          if (!current.services) current.services = {};
-          if (!current.services.netbird) current.services.netbird = {};
-          if (typeof updates.services.netbird.enabled === 'boolean' &&
-              current.services.netbird.enabled !== updates.services.netbird.enabled) {
-            netbirdChanged = true;
-            netbirdValue = updates.services.netbird.enabled;
-          }
-          if (updates.services.netbird.enabled !== undefined)
-            current.services.netbird.enabled = updates.services.netbird.enabled;
-          if (updates.services.netbird.update_check !== undefined)
-            current.services.netbird.update_check = updates.services.netbird.update_check;
-          if (updates.services.netbird.netbird_service_params !== undefined)
-            current.services.netbird.netbird_service_params = updates.services.netbird.netbird_service_params;
-        }
-      }
-
-      // Handle interfaces
+      // Track interface changes
       let interfacesChanged = false;
       let primaryInterfaceChanged = false;
       let oldPrimaryInterface = this._determinePrimaryInterface(current.interfaces || []);
 
-      if (updates.interfaces) {
-        if (!Array.isArray(current.interfaces)) current.interfaces = [];
-        if (!Array.isArray(updates.interfaces)) {
-          throw new Error('interfaces must be an array');
+      // Check if anything has changed
+      if (JSON.stringify(current.interfaces) !== JSON.stringify(interfaces)) {
+        interfacesChanged = true;
+      }
+
+      // Analyze current and new interface states
+      const currentEth0 = current.interfaces.find(iface => iface.name === 'eth0');
+      const currentBr0 = current.interfaces.find(iface => iface.name === 'br0');
+      const newEth0 = interfaces.find(iface => iface.name === 'eth0');
+      const newBr0 = interfaces.find(iface => iface.name === 'br0');
+
+      // Interfaces directly assign (only new format supported)
+      current.interfaces = interfaces;
+
+      // Bridge logic: eth0 set to bridged and br0 is missing
+      if (newEth0 && newEth0.type === 'bridged' && !newBr0) {
+        // Automatically create br0 Bridge-Interface
+        const br0Interface = {
+          name: 'br0',
+          type: 'bridge',
+          mode: null,
+          interfaces: ['eth0'],
+          ipv4: newEth0.ipv4 && newEth0.ipv4.length > 0 ? newEth0.ipv4 : [{ dhcp: false }],
+          ipv6: []
+        };
+
+        // Reset eth0 (bridged interfaces have no IP configuration)
+        newEth0.ipv4 = [];
+        newEth0.ipv6 = [];
+
+        current.interfaces.push(br0Interface);
+        interfacesChanged = true;
+      }
+
+      // Bridge logic: eth0 from bridged to ethernet and br0 exists
+      if (newEth0 && newEth0.type === 'ethernet' && currentBr0) {
+        // IP configuration from br0 to eth0 (new format)
+        if (currentBr0.ipv4 && Array.isArray(currentBr0.ipv4) && currentBr0.ipv4.length > 0) {
+          newEth0.ipv4 = currentBr0.ipv4;
         }
 
-        // Check if anything has changed
-        if (JSON.stringify(current.interfaces) !== JSON.stringify(updates.interfaces)) {
-          interfacesChanged = true;
+        // br0 aus interfaces entfernen
+        current.interfaces = current.interfaces.filter(iface => iface.name !== 'br0');
+        interfacesChanged = true;
+      }
+
+      // Validation for static IP configuration
+      for (const iface of current.interfaces) {
+        // Skip validation for bridged interfaces (they don't need IP configuration)
+        if (iface.type === 'bridged') {
+          continue;
         }
 
-        // Analyze current and new interface states
-        const currentEth0 = current.interfaces.find(iface => iface.name === 'eth0');
-        const currentBr0 = current.interfaces.find(iface => iface.name === 'br0');
-        const newEth0 = updates.interfaces.find(iface => iface.name === 'eth0');
-        const newBr0 = updates.interfaces.find(iface => iface.name === 'br0');
-
-        // Interfaces directly assign (only new format supported)
-        current.interfaces = updates.interfaces;
-
-        // Bridge logic: eth0 set to bridged and br0 is missing
-        if (newEth0 && newEth0.type === 'bridged' && !newBr0) {
-          // Automatically create br0 Bridge-Interface
-          const br0Interface = {
-            name: 'br0',
-            type: 'bridge',
-            mode: null,
-            interfaces: ['eth0'],
-            ipv4: newEth0.ipv4 && newEth0.ipv4.length > 0 ? newEth0.ipv4 : [{ dhcp: false }],
-            ipv6: []
-          };
-
-          // Reset eth0 (bridged interfaces have no IP configuration)
-          newEth0.ipv4 = [];
-          newEth0.ipv6 = [];
-
-          current.interfaces.push(br0Interface);
-          interfacesChanged = true;
-        }
-
-        // Bridge logic: eth0 from bridged to ethernet and br0 exists
-        if (newEth0 && newEth0.type === 'ethernet' && currentBr0) {
-          // IP configuration from br0 to eth0 (new format)
-          if (currentBr0.ipv4 && Array.isArray(currentBr0.ipv4) && currentBr0.ipv4.length > 0) {
-            newEth0.ipv4 = currentBr0.ipv4;
-          }
-
-          // br0 aus interfaces entfernen
-          current.interfaces = current.interfaces.filter(iface => iface.name !== 'br0');
-          interfacesChanged = true;
-        }
-
-        // Validation for static IP configuration
-        for (const iface of current.interfaces) {
-          // Skip validation for bridged interfaces (they don't need IP configuration)
-          if (iface.type === 'bridged') {
-            continue;
-          }
-
-          if (iface.ipv4 && Array.isArray(iface.ipv4)) {
-            for (const ipv4Config of iface.ipv4) {
-              if (ipv4Config.dhcp === false && !ipv4Config.address) {
-                throw new Error(`Interface ${iface.name}: address is required when dhcp=false`);
-              }
+        if (iface.ipv4 && Array.isArray(iface.ipv4)) {
+          for (const ipv4Config of iface.ipv4) {
+            if (ipv4Config.dhcp === false && !ipv4Config.address) {
+              throw new Error(`Interface ${iface.name}: address is required when dhcp=false`);
             }
           }
         }
@@ -1156,6 +1072,164 @@ class MosService {
       const newPrimaryInterface = this._determinePrimaryInterface(current.interfaces || []);
       if (oldPrimaryInterface !== newPrimaryInterface) {
         primaryInterfaceChanged = true;
+      }
+
+      // Write updated settings
+      await fs.writeFile('/boot/config/network.json', JSON.stringify(current, null, 2), 'utf8');
+
+      // Update LXC default.conf if interfaces or primary interface have changed
+      if (interfacesChanged || primaryInterfaceChanged) {
+        await this._updateLxcDefaultConf(newPrimaryInterface, current.interfaces);
+      }
+
+      // Networking restart if interfaces have changed
+      if (interfacesChanged) {
+        await execPromise('/etc/init.d/networking restart');
+      }
+
+      return current.interfaces;
+    } catch (error) {
+      throw new Error(`Error updating network interfaces: ${error.message}`);
+    }
+  }
+
+  /**
+   * Updates only the network services in the network.json file.
+   * @param {Object} services - Network services object
+   * @returns {Promise<Object>} The updated services object
+   */
+  async updateNetworkServices(services) {
+    try {
+      if (!services || typeof services !== 'object') {
+        throw new Error('services must be an object');
+      }
+
+      // Read current settings
+      const defaults = this._getDefaultNetworkSettings();
+      let current = { ...defaults };
+
+      try {
+        const data = await fs.readFile('/boot/config/network.json', 'utf8');
+        const loadedSettings = JSON.parse(data);
+        current = this._deepMerge(defaults, loadedSettings);
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
+
+      // Track service changes
+      let sambaChanged = false, sambaValue = null;
+      let nfsChanged = false, nfsValue = null;
+      let nutChanged = false, nutValue = null;
+      let sshChanged = false, sshValue = null;
+      let nmbdChanged = false, nmbdValue = null;
+      let tailscaleChanged = false, tailscaleValue = null;
+      let netbirdChanged = false, netbirdValue = null;
+      let remoteMountingChanged = false, remoteMountingValue = null;
+
+      // Handle remote_mounting setting
+      if (services.remote_mounting && typeof services.remote_mounting === 'object') {
+        if (!current.services) current.services = {};
+        if (!current.services.remote_mounting) current.services.remote_mounting = {};
+        if (typeof services.remote_mounting.enabled === 'boolean') {
+          if (current.services.remote_mounting.enabled !== services.remote_mounting.enabled) {
+            remoteMountingChanged = true;
+            remoteMountingValue = services.remote_mounting.enabled;
+          }
+          current.services.remote_mounting.enabled = services.remote_mounting.enabled;
+        }
+      }
+
+      // Handle samba service
+      if (services.samba && typeof services.samba.enabled === 'boolean') {
+        if (!current.services) current.services = {};
+        if (!current.services.samba) current.services.samba = {};
+        if (current.services.samba.enabled !== services.samba.enabled) {
+          sambaChanged = true;
+          sambaValue = services.samba.enabled;
+        }
+        current.services.samba.enabled = services.samba.enabled;
+      }
+
+      // Handle nfs service
+      if (services.nfs && typeof services.nfs.enabled === 'boolean') {
+        if (!current.services) current.services = {};
+        if (!current.services.nfs) current.services.nfs = {};
+        if (current.services.nfs.enabled !== services.nfs.enabled) {
+          nfsChanged = true;
+          nfsValue = services.nfs.enabled;
+        }
+        current.services.nfs.enabled = services.nfs.enabled;
+        // Add exports if necessary
+        if (Array.isArray(services.nfs.exports)) {
+          current.services.nfs.exports = services.nfs.exports;
+        }
+      }
+
+      // Handle nut service
+      if (services.nut && typeof services.nut.enabled === 'boolean') {
+        if (!current.services) current.services = {};
+        if (!current.services.nut) current.services.nut = {};
+        if (current.services.nut.enabled !== services.nut.enabled) {
+          nutChanged = true;
+          nutValue = services.nut.enabled;
+        }
+        current.services.nut.enabled = services.nut.enabled;
+      }
+
+      // Handle ssh service
+      if (services.ssh && typeof services.ssh.enabled === 'boolean') {
+        if (!current.services) current.services = {};
+        if (!current.services.ssh) current.services.ssh = {};
+        if (current.services.ssh.enabled !== services.ssh.enabled) {
+          sshChanged = true;
+          sshValue = services.ssh.enabled;
+        }
+        current.services.ssh.enabled = services.ssh.enabled;
+      }
+
+      // Handle nmbd service
+      if (services.nmbd && typeof services.nmbd.enabled === 'boolean') {
+        if (!current.services) current.services = {};
+        if (!current.services.nmbd) current.services.nmbd = {};
+        if (current.services.nmbd.enabled !== services.nmbd.enabled) {
+          nmbdChanged = true;
+          nmbdValue = services.nmbd.enabled;
+        }
+        current.services.nmbd.enabled = services.nmbd.enabled;
+      }
+
+      // Handle tailscale service
+      if (services.tailscale) {
+        if (!current.services) current.services = {};
+        if (!current.services.tailscale) current.services.tailscale = {};
+        if (typeof services.tailscale.enabled === 'boolean' &&
+            current.services.tailscale.enabled !== services.tailscale.enabled) {
+          tailscaleChanged = true;
+          tailscaleValue = services.tailscale.enabled;
+        }
+        if (services.tailscale.enabled !== undefined)
+          current.services.tailscale.enabled = services.tailscale.enabled;
+        if (services.tailscale.update_check !== undefined)
+          current.services.tailscale.update_check = services.tailscale.update_check;
+        if (services.tailscale.tailscaled_params !== undefined)
+          current.services.tailscale.tailscaled_params = services.tailscale.tailscaled_params;
+      }
+
+      // Handle netbird service
+      if (services.netbird) {
+        if (!current.services) current.services = {};
+        if (!current.services.netbird) current.services.netbird = {};
+        if (typeof services.netbird.enabled === 'boolean' &&
+            current.services.netbird.enabled !== services.netbird.enabled) {
+          netbirdChanged = true;
+          netbirdValue = services.netbird.enabled;
+        }
+        if (services.netbird.enabled !== undefined)
+          current.services.netbird.enabled = services.netbird.enabled;
+        if (services.netbird.update_check !== undefined)
+          current.services.netbird.update_check = services.netbird.update_check;
+        if (services.netbird.netbird_service_params !== undefined)
+          current.services.netbird.netbird_service_params = services.netbird.netbird_service_params;
       }
 
       // Write updated settings
@@ -1172,16 +1246,6 @@ class MosService {
         } catch (error) {
           console.warn('Failed to unmount remotes when disabling remote_mounting:', error.message);
         }
-      }
-
-      // Update LXC default.conf if interfaces or primary interface have changed
-      if (interfacesChanged || primaryInterfaceChanged) {
-        await this._updateLxcDefaultConf(newPrimaryInterface, current.interfaces);
-      }
-
-      // Networking restart if interfaces have changed
-      if (interfacesChanged) {
-        await execPromise('/etc/init.d/networking restart');
       }
 
       // Services stop/start
@@ -1236,9 +1300,10 @@ class MosService {
           await execPromise('/etc/init.d/netbird start');
         }
       }
-      return current;
+
+      return current.services;
     } catch (error) {
-      throw new Error(`Fehler beim Schreiben der network.json: ${error.message}`);
+      throw new Error(`Error updating network services: ${error.message}`);
     }
   }
 
