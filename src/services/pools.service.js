@@ -898,11 +898,67 @@ class PoolsService {
   }
 
   /**
+   * Parse SnapRAID progress from socket file output
+   * @param {string} socketPath - Path to socket file
+   * @param {Object} user - User object with byte_format preference
+   * @returns {Promise<Object|null>} Progress object or null if not available
+   * @private
+   */
+  async _parseSnapraidProgress(socketPath, user = null) {
+    try {
+      // Read last 1000 bytes of socket file to get latest progress line
+      const { stdout } = await execPromise(`tail -c 1000 ${socketPath} 2>/dev/null || echo ""`);
+
+      if (!stdout || !stdout.trim()) {
+        return null;
+      }
+
+      // Get last non-empty line
+      const lines = stdout.trim().split('\n').filter(line => line.trim());
+      const lastLine = lines[lines.length - 1];
+
+      // Pattern: "52%, 27524348 MB, 519 MB/s, 495 stripe/s, CPU 18%, 11:04 ETA"
+      // Support MB, GB, TB for both data and speed
+      const progressRegex = /(\d+)%,\s+([\d.]+)\s+(MB|GB|TB),\s+([\d.]+)\s+(MB|GB|TB)\/s,\s+([\d.]+)\s+stripe\/s.*?([\d]+:[\d]+)\s+ETA/;
+      const match = lastLine.match(progressRegex);
+
+      if (!match) {
+        return null;
+      }
+
+      const [, percent, dataAmount, dataUnit, speedValue, speedUnit, stripes, eta] = match;
+
+      // Convert to bytes for formatting
+      const units = {
+        'MB': 1000000,
+        'GB': 1000000000,
+        'TB': 1000000000000
+      };
+
+      const bytesAmount = parseFloat(dataAmount) * units[dataUnit];
+      const bytesPerSecond = parseFloat(speedValue) * units[speedUnit];
+
+      return {
+        status: 'running',
+        percent: parseInt(percent),
+        height: this.formatBytes(bytesAmount, user),
+        speed: this.formatSpeed(bytesPerSecond, user),
+        stripes: `${stripes} stripe/s`,
+        eta: eta
+      };
+    } catch (error) {
+      // Silent fail - socket might not be readable or format unexpected
+      return null;
+    }
+  }
+
+  /**
    * Inject parity operation status into pool.status object (API-only, not persisted)
    * @param {Object} pool - Pool object to inject status into
+   * @param {Object} user - User object with byte_format preference
    * @returns {Promise<void>}
    */
-  async _injectParityOperationStatus(pool) {
+  async _injectParityOperationStatus(pool, user = null) {
     try {
       // Ensure status object exists
       if (!pool.status) {
@@ -912,6 +968,7 @@ class PoolsService {
       // Only MergerFS pools can have parity operations
       if (pool.type !== 'mergerfs') {
         pool.status.parity_operation = false;
+        pool.status.parity_progress = null;
         return;
       }
 
@@ -921,13 +978,31 @@ class PoolsService {
         await fs.access(socketPath);
         // Socket exists, operation is running
         pool.status.parity_operation = true;
+
+        // Try to parse progress information
+        const progress = await this._parseSnapraidProgress(socketPath, user);
+        if (progress) {
+          pool.status.parity_progress = progress;
+        } else {
+          // Socket exists but no progress data yet
+          pool.status.parity_progress = {
+            status: 'preparing',
+            percent: 0,
+            height: null,
+            speed: null,
+            stripes: null,
+            eta: null
+          };
+        }
       } catch (error) {
         if (error.code === 'ENOENT') {
           // Socket doesn't exist, no operation running
           pool.status.parity_operation = false;
+          pool.status.parity_progress = null;
         } else {
           // Other error, assume no operation running
           pool.status.parity_operation = false;
+          pool.status.parity_progress = null;
         }
       }
     } catch (error) {
@@ -936,6 +1011,7 @@ class PoolsService {
         pool.status = {};
       }
       pool.status.parity_operation = false;
+      pool.status.parity_progress = null;
     }
   }
 
@@ -3581,7 +3657,7 @@ class PoolsService {
         await this._injectDiskInfoIntoDevices(pool);
 
         // Inject parity operation status (API-only, not persisted)
-        await this._injectParityOperationStatus(pool);
+        await this._injectParityOperationStatus(pool, user);
       }
 
       // Note: We don't write back to pools.json for read-only operations
@@ -3646,7 +3722,7 @@ class PoolsService {
         await this._injectDiskInfoIntoDevices(pool);
 
         // Inject parity operation status (API-only, not persisted)
-        await this._injectParityOperationStatus(pool);
+        await this._injectParityOperationStatus(pool, user);
       }
 
       return pool;
