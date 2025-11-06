@@ -55,6 +55,10 @@ const { checkRole } = require('../middleware/auth.middleware');
  *           nullable: true
  *           description: VNC port number (5900 + display number) if VM is running and has VNC enabled
  *           example: 5900
+ *         autostart:
+ *           type: boolean
+ *           description: Whether the VM is configured to start automatically on system boot
+ *           example: true
  *     VmOperationResult:
  *       type: object
  *       properties:
@@ -96,6 +100,7 @@ router.use(checkRole(['admin']));
  *                   - target: "vda"
  *                     source: "/var/lib/libvirt/images/ubuntu-server.qcow2"
  *                 vncPort: 5900
+ *                 autostart: true
  *               - name: "windows-10"
  *                 state: "stopped"
  *                 disks:
@@ -104,6 +109,7 @@ router.use(checkRole(['admin']));
  *                   - target: "vdb"
  *                     source: "/var/lib/libvirt/images/data.qcow2"
  *                 vncPort: null
+ *                 autostart: false
  *       401:
  *         description: Not authenticated
  *         content:
@@ -343,6 +349,321 @@ router.post('/machines/:name/kill', async (req, res) => {
   try {
     const { name } = req.params;
     const result = await vmService.killVm(name);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /vm/machines/{name}/restart:
+ *   post:
+ *     summary: Restart a virtual machine (graceful reboot)
+ *     description: Gracefully reboot a running virtual machine by sending ACPI reboot signal (admin only)
+ *     tags: [VM]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: name
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Virtual machine name
+ *         example: "ubuntu-server"
+ *     responses:
+ *       200:
+ *         description: Virtual machine restart initiated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/VmOperationResult'
+ *             example:
+ *               success: true
+ *               message: "VM ubuntu-server restart initiated"
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Error restarting virtual machine
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *             examples:
+ *               vm_not_running:
+ *                 summary: VM is not running
+ *                 value:
+ *                   error: "Failed to restart VM ubuntu-server: domain is not running"
+ *               vm_not_found:
+ *                 summary: VM does not exist
+ *                 value:
+ *                   error: "Failed to restart VM ubuntu-server: Domain not found"
+ *               restart_failed:
+ *                 summary: Restart command failed
+ *                 value:
+ *                   error: "Failed to restart VM ubuntu-server: guest agent not available"
+ */
+
+// Restart a VM (graceful reboot)
+router.post('/machines/:name/restart', async (req, res) => {
+  try {
+    const { name } = req.params;
+    const result = await vmService.restartVm(name);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /vm/machines/{name}/reset:
+ *   post:
+ *     summary: Reset a virtual machine (hard reset)
+ *     description: Forcefully reset a running virtual machine without graceful shutdown, like pressing the reset button (admin only)
+ *     tags: [VM]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: name
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Virtual machine name
+ *         example: "ubuntu-server"
+ *     responses:
+ *       200:
+ *         description: Virtual machine reset successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/VmOperationResult'
+ *             example:
+ *               success: true
+ *               message: "VM ubuntu-server reset successfully"
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Error resetting virtual machine
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *             examples:
+ *               vm_not_running:
+ *                 summary: VM is not running
+ *                 value:
+ *                   error: "Failed to reset VM ubuntu-server: domain is not running"
+ *               vm_not_found:
+ *                 summary: VM does not exist
+ *                 value:
+ *                   error: "Failed to reset VM ubuntu-server: Domain not found"
+ *               reset_failed:
+ *                 summary: Reset command failed
+ *                 value:
+ *                   error: "Failed to reset VM ubuntu-server: operation failed"
+ */
+
+// Reset a VM (hard reset)
+router.post('/machines/:name/reset', async (req, res) => {
+  try {
+    const { name } = req.params;
+    const result = await vmService.resetVm(name);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /vm/machines/{name}/autostart:
+ *   get:
+ *     summary: Get autostart status of a virtual machine
+ *     description: Retrieve whether a virtual machine is configured to start automatically on system boot (admin only)
+ *     tags: [VM]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: name
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Virtual machine name
+ *         example: "ubuntu-server"
+ *     responses:
+ *       200:
+ *         description: Autostart status retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 vmName:
+ *                   type: string
+ *                   description: Virtual machine name
+ *                   example: "ubuntu-server"
+ *                 autostart:
+ *                   type: boolean
+ *                   description: Whether autostart is enabled
+ *                   example: true
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Error retrieving autostart status
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *             example:
+ *               error: "Failed to get autostart status for VM ubuntu-server: Domain not found"
+ */
+
+// Get autostart status
+router.get('/machines/:name/autostart', async (req, res) => {
+  try {
+    const { name } = req.params;
+    const result = await vmService.getAutostartStatus(name);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /vm/machines/{name}/autostart:
+ *   put:
+ *     summary: Set autostart status for a virtual machine
+ *     description: Enable or disable automatic startup of a virtual machine on system boot (admin only)
+ *     tags: [VM]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: name
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Virtual machine name
+ *         example: "ubuntu-server"
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - enabled
+ *             properties:
+ *               enabled:
+ *                 type: boolean
+ *                 description: Enable or disable autostart
+ *                 example: true
+ *           examples:
+ *             enable:
+ *               summary: Enable autostart
+ *               value:
+ *                 enabled: true
+ *             disable:
+ *               summary: Disable autostart
+ *               value:
+ *                 enabled: false
+ *     responses:
+ *       200:
+ *         description: Autostart status updated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   description: Operation successful
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   description: Operation status message
+ *                   example: "Autostart enabled for VM ubuntu-server"
+ *                 autostart:
+ *                   type: boolean
+ *                   description: Current autostart status
+ *                   example: true
+ *       400:
+ *         description: Invalid request body
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *             example:
+ *               error: "enabled field is required and must be a boolean"
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Error setting autostart status
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *             example:
+ *               error: "Failed to set autostart for VM ubuntu-server: Domain not found"
+ */
+
+// Set autostart status
+router.put('/machines/:name/autostart', async (req, res) => {
+  try {
+    const { name } = req.params;
+    const { enabled } = req.body;
+    
+    // Validate request body
+    if (typeof enabled !== 'boolean') {
+      return res.status(400).json({ error: 'enabled field is required and must be a boolean' });
+    }
+    
+    const result = await vmService.setAutostart(name, enabled);
     res.json(result);
   } catch (error) {
     res.status(500).json({ error: error.message });

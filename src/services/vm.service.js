@@ -27,10 +27,23 @@ class VmService {
           name,
           state: runningVms.includes(name) ? 'running' : 'stopped',
           disks: [],
-          vncPort: null
+          vncPort: null,
+          autostart: false
         };
 
         try {
+          // Get autostart information
+          try {
+            const { stdout: autostartStdout } = await execPromise(`virsh dominfo ${name}`);
+            const autostartLine = autostartStdout.split('\n').find(line => line.includes('Autostart:'));
+            if (autostartLine) {
+              vmInfo.autostart = autostartLine.includes('enable');
+            }
+          } catch (autostartError) {
+            // If we can't get autostart info, default to false
+            vmInfo.autostart = false;
+          }
+
           // Get disk information
           const { stdout: diskStdout } = await execPromise(`virsh domblklist ${name}`);
           const diskLines = diskStdout.trim().split('\n').slice(2); // Skip header lines
@@ -116,6 +129,73 @@ class VmService {
       return { success: true, message: `VM ${vmName} forcefully stopped` };
     } catch (error) {
       throw new Error(`Failed to kill VM ${vmName}: ${error.message}`);
+    }
+  }
+
+  /**
+   * Restart a virtual machine (graceful reboot)
+   * @param {string} vmName - Name of the VM to restart
+   * @returns {Promise<Object>} Result of the operation
+   */
+  async restartVm(vmName) {
+    try {
+      await execPromise(`virsh reboot ${vmName}`);
+      return { success: true, message: `VM ${vmName} restart initiated` };
+    } catch (error) {
+      throw new Error(`Failed to restart VM ${vmName}: ${error.message}`);
+    }
+  }
+
+  /**
+   * Reset a virtual machine (hard reset)
+   * @param {string} vmName - Name of the VM to reset
+   * @returns {Promise<Object>} Result of the operation
+   */
+  async resetVm(vmName) {
+    try {
+      await execPromise(`virsh reset ${vmName}`);
+      return { success: true, message: `VM ${vmName} reset successfully` };
+    } catch (error) {
+      throw new Error(`Failed to reset VM ${vmName}: ${error.message}`);
+    }
+  }
+
+  /**
+   * Get autostart status of a virtual machine
+   * @param {string} vmName - Name of the VM
+   * @returns {Promise<Object>} Autostart status
+   */
+  async getAutostartStatus(vmName) {
+    try {
+      const { stdout } = await execPromise(`virsh dominfo ${vmName}`);
+      const autostartLine = stdout.split('\n').find(line => line.includes('Autostart:'));
+      const autostart = autostartLine ? autostartLine.includes('enable') : false;
+      return { vmName, autostart };
+    } catch (error) {
+      throw new Error(`Failed to get autostart status for VM ${vmName}: ${error.message}`);
+    }
+  }
+
+  /**
+   * Set autostart status for a virtual machine
+   * @param {string} vmName - Name of the VM
+   * @param {boolean} enabled - Enable or disable autostart
+   * @returns {Promise<Object>} Result of the operation
+   */
+  async setAutostart(vmName, enabled) {
+    try {
+      const command = enabled
+        ? `virsh autostart ${vmName}`
+        : `virsh autostart ${vmName} --disable`;
+      await execPromise(command);
+      const status = enabled ? 'enabled' : 'disabled';
+      return {
+        success: true,
+        message: `Autostart ${status} for VM ${vmName}`,
+        autostart: enabled
+      };
+    } catch (error) {
+      throw new Error(`Failed to set autostart for VM ${vmName}: ${error.message}`);
     }
   }
 }
