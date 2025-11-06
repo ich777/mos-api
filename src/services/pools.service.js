@@ -2045,20 +2045,6 @@ class PoolsService {
       // Ensure partition exists (create if whole disk)
       const targetDevice = await this._ensurePartition(device);
 
-      // Check if the target device (partition) is already formatted with the requested filesystem
-      const deviceInfo = await this.checkDeviceFilesystem(targetDevice);
-
-      if (deviceInfo.isFormatted && deviceInfo.filesystem === filesystem) {
-        return {
-          success: true,
-          message: `Device ${targetDevice} is already formatted with ${filesystem}`,
-          device: targetDevice,
-          filesystem,
-          uuid: deviceInfo.uuid,
-          alreadyFormatted: true
-        };
-      }
-
       // Format the partition with the specified filesystem
       let command;
 
