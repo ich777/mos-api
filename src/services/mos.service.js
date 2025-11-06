@@ -1137,6 +1137,11 @@ class MosService {
 
         // Validation for static IP configuration
         for (const iface of current.interfaces) {
+          // Skip validation for bridged interfaces (they don't need IP configuration)
+          if (iface.type === 'bridged') {
+            continue;
+          }
+
           if (iface.ipv4 && Array.isArray(iface.ipv4)) {
             for (const ipv4Config of iface.ipv4) {
               if (ipv4Config.dhcp === false && !ipv4Config.address) {
