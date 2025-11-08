@@ -7,6 +7,9 @@ class SystemService {
   constructor() {
     // Cache for network speed calculation
     this.networkSpeedCache = new Map();
+    // Cache for memory breakdown (Docker/LXC/VM services)
+    this.memoryBreakdownCache = null;
+    this.memoryBreakdownTimestamp = 0;
   }
 
   /**
@@ -276,26 +279,41 @@ class SystemService {
   }
 
   /**
-   * Get memory information only
+   * Get memory information including installed/reserved and services breakdown
    * @param {Object} user - User object with byte_format preference
-   * @returns {Promise<Object>} Memory info
+   * @returns {Promise<Object>} Memory info with installed, reserved, and services breakdown
    */
   async getMemoryLoad(user = null) {
     try {
       const mem = await si.mem();
 
+      // Get installed memory and calculate reserved
+      let installed = await this.getInstalledMemory();
+      if (!installed) {
+        installed = mem.total; // Fallback if dmidecode unavailable
+      }
+      const reserved = installed - mem.total;
+
       // Calculate actually used RAM without dirty caches
       const actuallyUsed = mem.total - mem.available;
       const dirtyCaches = Math.max(0, mem.used - actuallyUsed);
 
+      // Get memory breakdown by services (Docker/LXC/VM/System)
+      const breakdown = await this.getMemoryServicesBreakdown();
+
       return {
         memory: {
+          installed: installed,
+          installed_human: this.formatMemoryBytes(installed),
+          reserved: reserved,
+          reserved_human: this.formatMemoryBytes(reserved),
           total: mem.total,
           total_human: this.formatMemoryBytes(mem.total),
           free: mem.available,
           free_human: this.formatMemoryBytes(mem.available),
           used: actuallyUsed,
           used_human: this.formatMemoryBytes(actuallyUsed),
+          breakdown: breakdown,
           dirty: {
             free: mem.free,
             used: mem.used,
@@ -785,7 +803,261 @@ class SystemService {
     }
   }
 
+  /**
+   * Get installed memory using improved heuristic
+   * Reads /proc/meminfo and rounds to nearest standard RAM size
+   * @returns {Promise<number>} Installed memory in bytes or null if unavailable
+   */
+  async getInstalledMemory() {
+    const fs = require('fs').promises;
 
+    try {
+      // Read MemTotal from /proc/meminfo (native Linux method)
+      const meminfo = await fs.readFile('/proc/meminfo', 'utf8');
+      const memTotalMatch = meminfo.match(/MemTotal:\s+(\d+)\s+kB/);
+
+      if (!memTotalMatch) {
+        return null;
+      }
+
+      const memTotalBytes = parseInt(memTotalMatch[1]) * 1024; // Convert KB to bytes
+
+      // Standard RAM sizes in bytes (more common sizes included)
+      const standardSizes = [
+        4 * Math.pow(1024, 3),    // 4 GB
+        8 * Math.pow(1024, 3),    // 8 GB
+        12 * Math.pow(1024, 3),   // 12 GB
+        16 * Math.pow(1024, 3),   // 16 GB
+        24 * Math.pow(1024, 3),   // 24 GB
+        32 * Math.pow(1024, 3),   // 32 GB
+        48 * Math.pow(1024, 3),   // 48 GB
+        64 * Math.pow(1024, 3),   // 64 GB
+        96 * Math.pow(1024, 3),   // 96 GB
+        128 * Math.pow(1024, 3),  // 128 GB
+        192 * Math.pow(1024, 3),  // 192 GB
+        256 * Math.pow(1024, 3),  // 256 GB
+        384 * Math.pow(1024, 3),  // 384 GB
+        512 * Math.pow(1024, 3),  // 512 GB
+        768 * Math.pow(1024, 3),  // 768 GB
+        1024 * Math.pow(1024, 3)  // 1 TB
+      ];
+
+      // Find closest standard size above usable memory (within 5% margin)
+      for (const size of standardSizes) {
+        if (memTotalBytes < size && memTotalBytes > size * 0.95) {
+          return size;
+        }
+      }
+
+      // If no match found, round up to nearest power of 2
+      const powerOf2 = Math.pow(2, Math.ceil(Math.log2(memTotalBytes)));
+      if (powerOf2 > memTotalBytes && powerOf2 < memTotalBytes * 1.1) {
+        return powerOf2;
+      }
+
+      // Last resort: return usable memory
+      return memTotalBytes;
+    } catch (error) {
+      console.error('Failed to determine installed memory:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Get Docker container memory usage (cgroup v2 only)
+   * Reads memory.stat and sums relevant fields (anon, kernel, pagetables, etc.)
+   * @returns {Promise<Object>} Object with bytes and container count
+   */
+  async getDockerMemory() {
+    const fs = require('fs').promises;
+
+    try {
+      const { stdout } = await execAsync('docker ps -q --no-trunc 2>/dev/null');
+      const containers = stdout.trim().split('\n').filter(id => id);
+
+      if (containers.length === 0) {
+        return { bytes: 0, containers: 0 };
+      }
+
+      let totalMemory = 0;
+
+      for (const containerId of containers) {
+        try {
+          // cgroup v2 path - read memory.stat instead of memory.current
+          const memStatPath = `/sys/fs/cgroup/docker/${containerId}/memory.stat`;
+          const content = await fs.readFile(memStatPath, 'utf8');
+          const lines = content.split('\n');
+
+          // Fields to sum (same as bash script and LXC)
+          const relevantFields = ['anon', 'kernel', 'kernel_stack', 'pagetables', 'sec_pagetables', 'percpu', 'sock', 'vmalloc', 'shmem'];
+
+          for (const line of lines) {
+            const parts = line.trim().split(/\s+/);
+            if (parts.length >= 2) {
+              const field = parts[0];
+              const value = parts[1];
+
+              // Check if this is a relevant field and value is numeric
+              if (relevantFields.includes(field) && /^\d+$/.test(value)) {
+                totalMemory += parseInt(value);
+              }
+            }
+          }
+        } catch (err) {
+          console.warn(`
+ not read memory for Docker container ${containerId}: ${err.message}`);
+        }
+      }
+
+      return { bytes: totalMemory, containers: containers.length };
+    } catch (error) {
+      console.warn('Docker memory read failed:', error.message);
+      return { bytes: 0, containers: 0 };
+    }
+  }
+
+  /**
+   * Get LXC container memory usage (cgroup v2 only)
+   * Reads memory.stat and sums relevant fields (anon, kernel, pagetables, etc.)
+   * @returns {Promise<Object>} Object with bytes and container count
+   */
+  async getLxcMemory() {
+    try {
+      const { stdout } = await execAsync('lxc-ls --line --active 2>/dev/null');
+      const containers = stdout.trim().split('\n').filter(c => c);
+
+      if (containers.length === 0) {
+        return { bytes: 0, containers: 0 };
+      }
+
+      let totalMemory = 0;
+
+      for (const container of containers) {
+        try {
+          // Read memory.stat and sum relevant fields
+          const { stdout } = await execAsync(`lxc-cgroup ${container} memory.stat 2>/dev/null`);
+          const lines = stdout.split('\n');
+
+          // Fields to sum (same as bash script)
+          const relevantFields = ['anon', 'kernel', 'kernel_stack', 'pagetables', 'sec_pagetables', 'percpu', 'sock', 'vmalloc', 'shmem'];
+
+          for (const line of lines) {
+            const parts = line.trim().split(/\s+/);
+            if (parts.length >= 2) {
+              const field = parts[0];
+              const value = parts[1];
+
+              // Check if this is a relevant field and value is numeric
+              if (relevantFields.includes(field) && /^\d+$/.test(value)) {
+                totalMemory += parseInt(value);
+              }
+            }
+          }
+        } catch (err) {
+          console.warn(`
+ not read memory for LXC container ${container}: ${err.message}`);
+        }
+      }
+
+      return { bytes: totalMemory, containers: containers.length };
+    } catch (error) {
+      console.warn('LXC memory read failed:', error.message);
+      return { bytes: 0, containers: 0 };
+    }
+  }
+
+  /**
+   * Get VM memory usage via libvirt
+   * @returns {Promise<Object>} Object with bytes and VM count
+   */
+  async getVmMemory() {
+    try {
+      const { stdout } = await execAsync('virsh domstats --list-active --balloon 2>/dev/null');
+
+      let totalMemory = 0;
+      let vmCount = 0;
+      const lines = stdout.split('\n');
+
+      for (const line of lines) {
+        // Count VMs
+        if (line.match(/^Domain:/)) {
+          vmCount++;
+        }
+
+        // balloon.rss = actual RSS memory used by VM
+        const match = line.match(/balloon\.rss=(\d+)/);
+        if (match) {
+          totalMemory += parseInt(match[1]) * 1024; // Convert KB to bytes
+        }
+      }
+
+      return { bytes: totalMemory, vms: vmCount };
+    } catch (error) {
+      console.warn('VM memory read failed:', error.message);
+      return { bytes: 0, vms: 0 };
+    }
+  }
+
+  /**
+   * Get memory breakdown by services (Docker, LXC, VMs, System)
+   * Uses 5 second cache to avoid excessive system calls
+   * @returns {Promise<Object>} Memory breakdown by service type
+   */
+  async getMemoryServicesBreakdown() {
+    const now = Date.now();
+    const CACHE_TTL = 5000; // 5 seconds cache
+
+    // Return cached data if still valid
+    if (this.memoryBreakdownCache && (now - this.memoryBreakdownTimestamp) < CACHE_TTL) {
+      return this.memoryBreakdownCache;
+    }
+
+    // Fetch all data in parallel
+    const [docker, lxc, vms, totalMem] = await Promise.all([
+      this.getDockerMemory(),
+      this.getLxcMemory(),
+      this.getVmMemory(),
+      si.mem()
+    ]);
+
+    // Calculate actually used (without caches) to match the 'used' field in response
+    const actuallyUsed = totalMem.total - totalMem.available;
+
+    // System memory = actuallyUsed minus all services
+    // Note: Docker/LXC report full usage including their caches, so system might be small or 0
+    const systemMemory = actuallyUsed - docker.bytes - lxc.bytes - vms.bytes;
+
+    // Calculate percentages based on total memory
+    // Sum of all breakdown percentages should equal percentage.actuallyUsed
+    const breakdown = {
+      system: {
+        bytes: Math.max(0, systemMemory),
+        bytes_human: this.formatMemoryBytes(Math.max(0, systemMemory)),
+        percentage: Math.round((Math.max(0, systemMemory) / totalMem.total) * 100)
+      },
+      docker: {
+        bytes: docker.bytes,
+        bytes_human: this.formatMemoryBytes(docker.bytes),
+        percentage: Math.round((docker.bytes / totalMem.total) * 100)
+      },
+      lxc: {
+        bytes: lxc.bytes,
+        bytes_human: this.formatMemoryBytes(lxc.bytes),
+        percentage: Math.round((lxc.bytes / totalMem.total) * 100)
+      },
+      vms: {
+        bytes: vms.bytes,
+        bytes_human: this.formatMemoryBytes(vms.bytes),
+        percentage: Math.round((vms.bytes / totalMem.total) * 100)
+      }
+    };
+
+    // Update cache
+    this.memoryBreakdownCache = breakdown;
+    this.memoryBreakdownTimestamp = now;
+
+    return breakdown;
+  }
 
 
 

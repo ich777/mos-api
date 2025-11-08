@@ -36,40 +36,128 @@ const mosService = require('../services/mos.service');
  *     MemoryInfo:
  *       type: object
  *       properties:
+ *         installed:
+ *           type: integer
+ *           description: Physically installed memory in bytes (from BIOS/UEFI)
+ *           example: 137438953472
+ *         installed_human:
+ *           type: string
+ *           description: Physically installed memory in human-readable format
+ *           example: "128.0 GiB"
+ *         reserved:
+ *           type: integer
+ *           description: Hardware-reserved memory in bytes (installed - total)
+ *           example: 2583560192
+ *         reserved_human:
+ *           type: string
+ *           description: Hardware-reserved memory in human-readable format
+ *           example: "2.4 GiB"
  *         total:
  *           type: integer
- *           description: Total memory in bytes
- *           example: 17179869184
+ *           description: Total usable memory in bytes (OS perspective)
+ *           example: 134855393280
+ *         total_human:
+ *           type: string
+ *           description: Total usable memory in human-readable format
+ *           example: "125.6 GiB"
  *         free:
  *           type: integer
  *           description: Available memory in bytes
- *           example: 8589934592
+ *           example: 101748690944
+ *         free_human:
+ *           type: string
+ *           description: Available memory in human-readable format
+ *           example: "94.8 GiB"
  *         used:
  *           type: integer
- *           description: Actually used memory (without dirty caches)
- *           example: 4294967296
+ *           description: Actually used memory in bytes (without dirty caches)
+ *           example: 33106702336
+ *         used_human:
+ *           type: string
+ *           description: Actually used memory in human-readable format
+ *           example: "30.8 GiB"
+ *         breakdown:
+ *           type: object
+ *           description: Memory breakdown by service type (Docker, LXC, VMs, System). Percentages are calculated relative to total memory. Sum of all breakdown percentages equals percentage.actuallyUsed.
+ *           properties:
+ *             system:
+ *               type: object
+ *               description: Host system memory usage (excluding Docker/LXC/VM memory)
+ *               properties:
+ *                 bytes:
+ *                   type: integer
+ *                   example: 0
+ *                 bytes_human:
+ *                   type: string
+ *                   example: "0 B"
+ *                 percentage:
+ *                   type: integer
+ *                   description: Percentage of total memory
+ *                   example: 3
+ *             docker:
+ *               type: object
+ *               description: Docker containers total memory usage (including caches)
+ *               properties:
+ *                 bytes:
+ *                   type: integer
+ *                   example: 15000000000
+ *                 bytes_human:
+ *                   type: string
+ *                   example: "14.0 GiB"
+ *                 percentage:
+ *                   type: integer
+ *                   description: Percentage of total memory
+ *                   example: 11
+ *             lxc:
+ *               type: object
+ *               description: LXC containers total memory usage (including caches)
+ *               properties:
+ *                 bytes:
+ *                   type: integer
+ *                   example: 14000000000
+ *                 bytes_human:
+ *                   type: string
+ *                   example: "13.0 GiB"
+ *                 percentage:
+ *                   type: integer
+ *                   description: Percentage of total memory
+ *                   example: 10
+ *             vms:
+ *               type: object
+ *               description: Virtual machines total memory usage
+ *               properties:
+ *                 bytes:
+ *                   type: integer
+ *                   example: 0
+ *                 bytes_human:
+ *                   type: string
+ *                   example: "0 B"
+ *                 percentage:
+ *                   type: integer
+ *                   description: Percentage of total memory
+ *                   example: 0
  *         dirty:
  *           type: object
  *           properties:
  *             free:
  *               type: integer
  *               description: Free memory (kernel perspective)
- *               example: 2147483648
+ *               example: 3138637824
  *             used:
  *               type: integer
  *               description: Used memory (kernel perspective)
- *               example: 8589934592
+ *               example: 131716755456
  *             dirtyCaches:
  *               type: integer
  *               description: Memory used by dirty caches
- *               example: 4294967296
+ *               example: 98610053120
  *         percentage:
  *           type: object
  *           properties:
  *             used:
  *               type: integer
  *               description: Used memory percentage (dirty)
- *               example: 50
+ *               example: 98
  *             actuallyUsed:
  *               type: integer
  *               description: Actually used memory percentage (clean)
@@ -77,7 +165,7 @@ const mosService = require('../services/mos.service');
  *             dirtyCaches:
  *               type: integer
  *               description: Dirty caches percentage
- *               example: 25
+ *               example: 73
  *     BasicSystemInfo:
  *       type: object
  *       properties:
@@ -427,7 +515,7 @@ router.get('/detailed', checkRole(['admin']), async (req, res) => {
  * /system/load:
  *   get:
  *     summary: Get system load, temperature, memory and network utilization
- *     description: Retrieve current system load, temperature information including per-core metrics, memory usage, and network utilization for all interfaces (available to all authenticated users)
+ *     description: Retrieve current system load, temperature information including per-core metrics, detailed memory usage with installed/reserved memory and services breakdown (Docker/LXC/VMs), and network utilization for all interfaces (available to all authenticated users)
  *     tags: [System]
  *     security:
  *       - bearerAuth: []
@@ -753,20 +841,41 @@ router.get('/detailed', checkRole(['admin']), async (req, res) => {
  *                 min: 61.3
  *                 cores: [65.5, 67.2, 72.1, 61.3, 69.8, 63.4, 70.1, 64.9]
  *               memory:
- *                 total: 17179869184
- *                 total_human: "16.00 GiB"
- *                 free: 8589934592
- *                 free_human: "8.00 GiB"
- *                 used: 4294967296
- *                 used_human: "4.00 GiB"
+ *                 installed: 137438953472
+ *                 installed_human: "128.0 GiB"
+ *                 reserved: 2583560192
+ *                 reserved_human: "2.4 GiB"
+ *                 total: 134855393280
+ *                 total_human: "125.6 GiB"
+ *                 free: 101748690944
+ *                 free_human: "94.8 GiB"
+ *                 used: 33106702336
+ *                 used_human: "30.8 GiB"
+ *                 breakdown:
+ *                   system:
+ *                     bytes: 4000000000
+ *                     bytes_human: "3.7 GiB"
+ *                     percentage: 3
+ *                   docker:
+ *                     bytes: 15000000000
+ *                     bytes_human: "14.0 GiB"
+ *                     percentage: 11
+ *                   lxc:
+ *                     bytes: 14000000000
+ *                     bytes_human: "13.0 GiB"
+ *                     percentage: 10
+ *                   vms:
+ *                     bytes: 0
+ *                     bytes_human: "0 B"
+ *                     percentage: 0
  *                 dirty:
- *                   free: 2147483648
- *                   used: 8589934592
- *                   dirtyCaches: 4294967296
+ *                   free: 3138637824
+ *                   used: 131716755456
+ *                   dirtyCaches: 98610053120
  *                 percentage:
- *                   used: 50
+ *                   used: 98
  *                   actuallyUsed: 25
- *                   dirtyCaches: 25
+ *                   dirtyCaches: 73
  *               network:
  *                 interfaces:
  *                   - interface: "eth0"
