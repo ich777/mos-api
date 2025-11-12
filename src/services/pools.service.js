@@ -1815,8 +1815,10 @@ class PoolsService {
     }
 
     // Remount with all devices
+    const createPolicy = pool.config.policies?.create || 'epmfs';
+    const searchPolicy = pool.config.policies?.search || 'ff';
     const mergerfsOptions = pool.config.global_options?.join(',') ||
-      'defaults,allow_other,use_ino,cache.files=partial,dropcacheonclose=true,category.create=mfs';
+      `defaults,allow_other,use_ino,cache.files=partial,dropcacheonclose=true,category.create=${createPolicy},category.search=${searchPolicy}`;
     await execPromise(`mergerfs -o ${mergerfsOptions} ${allMountPoints} ${mountPoint}`);
 
     // Update SnapRAID config if applicable
@@ -4189,9 +4191,11 @@ class PoolsService {
         const mountPoints = pool.data_devices.map((_, index) =>
           path.join(baseDir, `disk${pool.data_devices[index].slot}`)
         ).join(':');
+        const createPolicy = pool.config.policies?.create || 'epmfs';
+        const searchPolicy = pool.config.policies?.search || 'ff';
         const mergerfsOptions = pool.config.global_options ?
           pool.config.global_options.join(',') :
-          'defaults,allow_other,use_ino,cache.files=partial,dropcacheonclose=true,category.create=mfs';
+          `defaults,allow_other,use_ino,cache.files=partial,dropcacheonclose=true,category.create=${createPolicy},category.search=${searchPolicy}`;
 
         await execPromise(`mergerfs -o ${mergerfsOptions} ${mountPoints} ${mainMountPoint}`);
       } catch (error) {
@@ -6287,7 +6291,9 @@ class PoolsService {
     await this._createDirectoryWithOwnership(mountPoint);
 
     // Mount MergerFS
-    const mergerfsOptions = 'defaults,allow_other,use_ino,cache.files=off,dropcacheonclose=true,category.create=mfs';
+    const createPolicy = pool.config?.policies?.create || 'epmfs';
+    const searchPolicy = pool.config?.policies?.search || 'ff';
+    const mergerfsOptions = `defaults,allow_other,use_ino,cache.files=off,dropcacheonclose=true,category.create=${createPolicy},category.search=${searchPolicy}`;
     const mergerfsCommand = `mergerfs ${mountedDevices.join(':')} ${mountPoint} -o ${mergerfsOptions}`;
     await execPromise(mergerfsCommand);
 

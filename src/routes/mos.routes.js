@@ -3067,6 +3067,202 @@ router.post('/installtodisk', async (req, res) => {
  *               $ref: '#/components/schemas/Error'
  */
 
+/**
+ * @swagger
+ * /mos/readfile:
+ *   get:
+ *     summary: Read a file from the filesystem
+ *     description: Read the content of any file on the filesystem
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Absolute path to the file to read
+ *         example: "/etc/config.txt"
+ *     responses:
+ *       200:
+ *         description: File content retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 path:
+ *                   type: string
+ *                   example: "/etc/config.txt"
+ *                 content:
+ *                   type: string
+ *                   description: The file content as a string
+ *                   example: "file content here"
+ *                 size:
+ *                   type: integer
+ *                   description: Size of the file in bytes
+ *                   example: 1024
+ *       400:
+ *         description: Bad request - missing path parameter
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: File not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+
+// GET: Read a file from the filesystem
+router.get('/readfile', checkRole(['admin']), async (req, res) => {
+  try {
+    const { path } = req.query;
+
+    if (!path) {
+      return res.status(400).json({ error: 'path query parameter is required' });
+    }
+
+    const result = await mosService.readFile(path);
+    res.json(result);
+  } catch (error) {
+    if (error.message.includes('File does not exist')) {
+      return res.status(404).json({ error: error.message });
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /mos/editfile:
+ *   post:
+ *     summary: Edit a file on the filesystem
+ *     description: Edit any file on the filesystem. Creates a backup with .backup extension if create_backup is true
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - path
+ *               - content
+ *             properties:
+ *               path:
+ *                 type: string
+ *                 description: Absolute path to the file to edit
+ *                 example: "/etc/config.txt"
+ *               content:
+ *                 type: string
+ *                 description: New content for the file
+ *                 example: "new file content"
+ *               create_backup:
+ *                 type: boolean
+ *                 description: Whether to create a backup file with .backup extension
+ *                 example: true
+ *                 default: false
+ *     responses:
+ *       200:
+ *         description: File edited successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "File edited successfully"
+ *                 backupPath:
+ *                   type: string
+ *                   nullable: true
+ *                   description: Path to the backup file if create_backup was true
+ *                   example: "/etc/config.txt.backup"
+ *       400:
+ *         description: Bad request - missing required parameters
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: File not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+
+// POST: Edit a file on the filesystem
+router.post('/editfile', checkRole(['admin']), async (req, res) => {
+  try {
+    const { path, content, create_backup = false } = req.body;
+
+    if (!path) {
+      return res.status(400).json({ error: 'path parameter is required' });
+    }
+
+    if (content === undefined) {
+      return res.status(400).json({ error: 'content parameter is required' });
+    }
+
+    const result = await mosService.editFile(path, content, create_backup);
+    res.json(result);
+  } catch (error) {
+    if (error.message.includes('File does not exist')) {
+      return res.status(404).json({ error: error.message });
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // GET: Read dashboard layout
 router.get('/dashboard', async (req, res) => {
   try {

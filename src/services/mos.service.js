@@ -3013,6 +3013,69 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
   }
 
   /**
+   * Reads a file from the filesystem
+   * @param {string} filePath - Path to the file to read
+   * @returns {Promise<Object>} Result object with file content and metadata
+   */
+  async readFile(filePath) {
+    try {
+      // Check if file exists and read it
+      const content = await fs.readFile(filePath, 'utf8');
+
+      return {
+        success: true,
+        path: filePath,
+        content: content,
+        size: Buffer.byteLength(content, 'utf8')
+      };
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        throw new Error(`File does not exist: ${filePath}`);
+      }
+      console.error('Error reading file:', error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Edits a file on the filesystem
+   * @param {string} filePath - Path to the file to edit
+   * @param {string} content - New content for the file
+   * @param {boolean} createBackup - Whether to create a backup file (default: false)
+   * @returns {Promise<Object>} Result object with success status and optional backup path
+   */
+  async editFile(filePath, content, createBackup = false) {
+    try {
+      // Check if file exists
+      try {
+        await fs.access(filePath);
+      } catch (error) {
+        throw new Error(`File does not exist: ${filePath}`);
+      }
+
+      // Create backup if requested
+      let backupPath = null;
+      if (createBackup) {
+        backupPath = `${filePath}.backup`;
+        const originalContent = await fs.readFile(filePath, 'utf8');
+        await fs.writeFile(backupPath, originalContent, 'utf8');
+      }
+
+      // Write new content to file
+      await fs.writeFile(filePath, content, 'utf8');
+
+      return {
+        success: true,
+        message: 'File edited successfully',
+        backupPath: backupPath
+      };
+    } catch (error) {
+      console.error('Error editing file:', error.message);
+      throw error;
+    }
+  }
+
+  /**
    * Gets the dashboard layout configuration
    * @returns {Promise<Array>} The dashboard layout as an array of cards
    */
