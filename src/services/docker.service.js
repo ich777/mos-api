@@ -83,33 +83,38 @@ class DockerService {
    */
   async Restart(name) {
     try {
-      // Path to update script
-      const dockerPath = '/usr/bin/docker';
-
       // Check if name is not empty
       if (!name) {
         throw new Error('Name is required');
       }
 
-      // Command with or without parameter
-      const command = `${dockerPath} container stop ${name} && ${dockerPath} container start ${name}`;
-
-      // Execute command
-      // Note: stderr may contain warnings, but exit code 0 means success
-      const { stdout, stderr } = await execPromise(command);
+      // Use Docker REST API to restart container
+      await axios({
+        method: 'POST',
+        url: `http://localhost/containers/${name}/restart`,
+        socketPath: '/var/run/docker.sock',
+        validateStatus: () => true,
+        timeout: 10000
+      });
 
       const result = {
-        success: true
+        success: true,
+        message: 'Container restarted successfully'
       };
-
-      // Append stderr to message if present
-      if (stderr && stderr.trim()) {
-        result.message = stderr.trim();
-      }
 
       return result;
     } catch (error) {
-      throw new Error(`Failed to restart: ${error.message}`);
+      let errorMessage = 'Failed to restart container';
+      if (error.response && error.response.data) {
+        if (typeof error.response.data === 'string') {
+          errorMessage = error.response.data;
+        } else if (error.response.data.message) {
+          errorMessage = error.response.data.message;
+        }
+      } else if (error.message) {
+        errorMessage = error.message;
+      }
+      throw new Error(errorMessage);
     }
   }
 
@@ -1198,6 +1203,11 @@ class DockerService {
         throw new Error(`Group with ID '${groupId}' not found`);
       }
 
+      // Check if this is a compose group
+      if (group.compose === true) {
+        throw new Error(`Group '${group.name}' is a Docker Compose stack. Use the compose API endpoints to manage compose stacks.`);
+      }
+
       const results = {
         groupId,
         groupName: group.name,
@@ -1207,10 +1217,16 @@ class DockerService {
         failureCount: 0
       };
 
-      // Start each container in the group
+      // Start each container in the group using Docker API
       for (const containerName of group.containers) {
         try {
-          await execPromise(`docker start ${containerName}`);
+          await axios({
+            method: 'POST',
+            url: `http://localhost/containers/${containerName}/start`,
+            socketPath: '/var/run/docker.sock',
+            validateStatus: () => true,
+            timeout: 10000
+          });
           results.results.push({
             container: containerName,
             status: 'success',
@@ -1218,10 +1234,15 @@ class DockerService {
           });
           results.successCount++;
         } catch (error) {
-          // Extract detailed error message from stderr if available
-          let errorMessage = error.message;
-          if (error.stderr) {
-            errorMessage = error.stderr.trim() || error.message;
+          let errorMessage = 'Unknown error';
+          if (error.response && error.response.data) {
+            if (typeof error.response.data === 'string') {
+              errorMessage = error.response.data;
+            } else if (error.response.data.message) {
+              errorMessage = error.response.data.message;
+            }
+          } else if (error.message) {
+            errorMessage = error.message;
           }
 
           results.results.push({
@@ -1240,6 +1261,77 @@ class DockerService {
   }
 
   /**
+   * Restart all containers in a group (sequential execution)
+   * @param {string} groupId - Group ID
+   * @returns {Promise<Object>} Result with success/failure details
+   */
+  async restartContainerGroup(groupId) {
+    try {
+      const groups = await this._readGroups();
+      const group = groups.find(g => g.id === groupId);
+
+      if (!group) {
+        throw new Error(`Group with ID '${groupId}' not found`);
+      }
+
+      // Check if this is a compose group
+      if (group.compose === true) {
+        throw new Error(`Group '${group.name}' is a Docker Compose stack. Use the compose API endpoints to manage compose stacks.`);
+      }
+
+      const results = {
+        groupId,
+        groupName: group.name,
+        totalContainers: group.containers.length,
+        results: [],
+        successCount: 0,
+        failureCount: 0
+      };
+
+      // Restart each container in the group using Docker API
+      for (const containerName of group.containers) {
+        try {
+          await axios({
+            method: 'POST',
+            url: `http://localhost/containers/${containerName}/restart`,
+            socketPath: '/var/run/docker.sock',
+            validateStatus: () => true,
+            timeout: 10000
+          });
+          results.results.push({
+            container: containerName,
+            status: 'success',
+            message: 'Container restarted successfully'
+          });
+          results.successCount++;
+        } catch (error) {
+          let errorMessage = 'Unknown error';
+          if (error.response && error.response.data) {
+            if (typeof error.response.data === 'string') {
+              errorMessage = error.response.data;
+            } else if (error.response.data.message) {
+              errorMessage = error.response.data.message;
+            }
+          } else if (error.message) {
+            errorMessage = error.message;
+          }
+
+          results.results.push({
+            container: containerName,
+            status: 'error',
+            message: errorMessage
+          });
+          results.failureCount++;
+        }
+      }
+
+      return results;
+    } catch (error) {
+      throw new Error(`Failed to restart container group: ${error.message}`);
+    }
+  }
+
+  /**
    * Stop all containers in a group (parallel execution)
    * @param {string} groupId - Group ID
    * @returns {Promise<Object>} Result with success/failure details
@@ -1253,6 +1345,11 @@ class DockerService {
         throw new Error(`Group with ID '${groupId}' not found`);
       }
 
+      // Check if this is a compose group
+      if (group.compose === true) {
+        throw new Error(`Group '${group.name}' is a Docker Compose stack. Use the compose API endpoints to manage compose stacks.`);
+      }
+
       const results = {
         groupId,
         groupName: group.name,
@@ -1262,20 +1359,36 @@ class DockerService {
         failureCount: 0
       };
 
-      // Stop all containers in parallel using Promise.allSettled
+      // Stop all containers in parallel using Promise.allSettled with Docker API
       const stopPromises = group.containers.map(async (containerName) => {
         try {
-          await execPromise(`docker stop ${containerName}`);
+          await axios({
+            method: 'POST',
+            url: `http://localhost/containers/${containerName}/stop`,
+            socketPath: '/var/run/docker.sock',
+            validateStatus: () => true,
+            timeout: 10000
+          });
           return {
             container: containerName,
             status: 'success',
             message: 'Container stopped successfully'
           };
         } catch (error) {
+          let errorMessage = 'Unknown error';
+          if (error.response && error.response.data) {
+            if (typeof error.response.data === 'string') {
+              errorMessage = error.response.data;
+            } else if (error.response.data.message) {
+              errorMessage = error.response.data.message;
+            }
+          } else if (error.message) {
+            errorMessage = error.message;
+          }
           return {
             container: containerName,
             status: 'error',
-            message: error.message
+            message: errorMessage
           };
         }
       });

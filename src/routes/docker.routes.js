@@ -1465,7 +1465,9 @@ router.put('/mos/groups/:groupId', async (req, res) => {
  * /docker/mos/groups/{groupId}/start:
  *   post:
  *     summary: Start all containers in a group
- *     description: Start all containers that belong to the specified group
+ *     description: |
+ *       Start all containers that belong to the specified group.
+ *       Note: Docker Compose groups are not supported - use the compose API endpoints instead.
  *     tags: [Docker]
  *     security:
  *       - bearerAuth: []
@@ -1523,6 +1525,14 @@ router.put('/mos/groups/:groupId', async (req, res) => {
  *                         type: string
  *                         description: Status message
  *                         example: "Container started successfully"
+ *       400:
+ *         description: Group is a Docker Compose stack
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *             example:
+ *               error: "Group 'mystack' is a Docker Compose stack. Use the compose API endpoints to manage compose stacks."
  *       404:
  *         description: Group not found
  *         content:
@@ -1555,7 +1565,9 @@ router.post('/mos/groups/:groupId/start', async (req, res) => {
  * /docker/mos/groups/{groupId}/stop:
  *   post:
  *     summary: Stop all containers in a group
- *     description: Stop all containers that belong to the specified group
+ *     description: |
+ *       Stop all containers that belong to the specified group.
+ *       Note: Docker Compose groups are not supported - use the compose API endpoints instead.
  *     tags: [Docker]
  *     security:
  *       - bearerAuth: []
@@ -1613,6 +1625,14 @@ router.post('/mos/groups/:groupId/start', async (req, res) => {
  *                         type: string
  *                         description: Status message
  *                         example: "Container stopped successfully"
+ *       400:
+ *         description: Group is a Docker Compose stack
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *             example:
+ *               error: "Group 'mystack' is a Docker Compose stack. Use the compose API endpoints to manage compose stacks."
  *       404:
  *         description: Group not found
  *         content:
@@ -1630,6 +1650,106 @@ router.post('/mos/groups/:groupId/stop', async (req, res) => {
   try {
     const { groupId } = req.params;
     const result = await dockerService.stopContainerGroup(groupId);
+    res.json(result);
+  } catch (error) {
+    if (error.message.includes('not found')) {
+      res.status(404).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
+/**
+ * @swagger
+ * /docker/mos/groups/{groupId}/restart:
+ *   post:
+ *     summary: Restart all containers in a group
+ *     description: |
+ *       Restart all containers that belong to the specified group (stop and start sequentially).
+ *       Note: Docker Compose groups are not supported - use the compose API endpoints instead.
+ *     tags: [Docker]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: groupId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Group ID
+ *         example: "1695384000123456789"
+ *     responses:
+ *       200:
+ *         description: Group restart operation completed
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 groupId:
+ *                   type: string
+ *                   description: Group ID
+ *                   example: "1695384000123456789"
+ *                 groupName:
+ *                   type: string
+ *                   description: Group name
+ *                   example: "Web Services"
+ *                 totalContainers:
+ *                   type: integer
+ *                   description: Total number of containers in group
+ *                   example: 3
+ *                 successCount:
+ *                   type: integer
+ *                   description: Number of containers restarted successfully
+ *                   example: 3
+ *                 failureCount:
+ *                   type: integer
+ *                   description: Number of containers that failed to restart
+ *                   example: 0
+ *                 results:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       container:
+ *                         type: string
+ *                         description: Container name
+ *                         example: "nginx"
+ *                       status:
+ *                         type: string
+ *                         enum: [success, error]
+ *                         description: Operation status
+ *                         example: "success"
+ *                       message:
+ *                         type: string
+ *                         description: Status message
+ *                         example: "Container restarted successfully"
+ *       400:
+ *         description: Group is a Docker Compose stack
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *             example:
+ *               error: "Group 'mystack' is a Docker Compose stack. Use the compose API endpoints to manage compose stacks."
+ *       404:
+ *         description: Group not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+router.post('/mos/groups/:groupId/restart', async (req, res) => {
+  try {
+    const { groupId } = req.params;
+    const result = await dockerService.restartContainerGroup(groupId);
     res.json(result);
   } catch (error) {
     if (error.message.includes('not found')) {
