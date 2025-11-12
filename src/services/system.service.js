@@ -7,6 +7,54 @@ class SystemService {
   constructor() {
     // Cache for network speed calculation
     this.networkSpeedCache = new Map();
+
+    // Service availability cache (checked once at startup)
+    this.servicesAvailable = null;
+  }
+
+  /**
+   * Check which virtualization/container services are available on this system
+   * @returns {Promise<Object>} Object with service availability flags
+   */
+  async checkServiceAvailability() {
+    if (this.servicesAvailable !== null) {
+      return this.servicesAvailable;
+    }
+
+    try {
+      const [dockerAvailable, lxcAvailable, vmAvailable] = await Promise.all([
+        // Check if docker binary exists and is executable
+        execAsync('which docker 2>/dev/null')
+          .then(() => true)
+          .catch(() => false),
+
+        // Check if lxc binaries exist
+        execAsync('which lxc-ls 2>/dev/null')
+          .then(() => true)
+          .catch(() => false),
+
+        // Check if virsh (libvirt) is available
+        execAsync('which virsh 2>/dev/null')
+          .then(() => true)
+          .catch(() => false)
+      ]);
+
+      this.servicesAvailable = {
+        docker: dockerAvailable,
+        lxc: lxcAvailable,
+        vm: vmAvailable
+      };
+
+      return this.servicesAvailable;
+    } catch (error) {
+      // If checking fails, assume nothing is available
+      this.servicesAvailable = {
+        docker: false,
+        lxc: false,
+        vm: false
+      };
+      return this.servicesAvailable;
+    }
   }
 
   /**
@@ -1109,7 +1157,6 @@ class SystemService {
 
       return { bytes: totalMemory, vms: vmCount };
     } catch (error) {
-      console.warn('VM memory read failed:', error.message);
       return { bytes: 0, vms: 0 };
     }
   }
@@ -1119,14 +1166,32 @@ class SystemService {
    * @returns {Promise<Object>} Memory breakdown by service type
    */
   async getMemoryServicesBreakdown() {
+    // Check which services are available on this system
+    const servicesAvailable = await this.checkServiceAvailability();
 
-    // Fetch all data in parallel
-    const [docker, lxc, vms, totalMem] = await Promise.all([
-      this.getDockerMemory(),
-      this.getLxcMemory(),
-      this.getVmMemory(),
-      si.mem()
-    ]);
+    // Build parallel fetch promises only for available services
+    const fetchPromises = [si.mem()]; // Always need total memory
+
+    if (servicesAvailable.docker) {
+      fetchPromises.push(this.getDockerMemory());
+    } else {
+      fetchPromises.push(Promise.resolve({ bytes: 0, containers: 0 }));
+    }
+
+    if (servicesAvailable.lxc) {
+      fetchPromises.push(this.getLxcMemory());
+    } else {
+      fetchPromises.push(Promise.resolve({ bytes: 0, containers: 0 }));
+    }
+
+    if (servicesAvailable.vm) {
+      fetchPromises.push(this.getVmMemory());
+    } else {
+      fetchPromises.push(Promise.resolve({ bytes: 0, vms: 0 }));
+    }
+
+    // Fetch data in parallel
+    const [totalMem, docker, lxc, vms] = await Promise.all(fetchPromises);
 
     // Calculate actually used (without caches) to match the 'used' field in response
     const actuallyUsed = totalMem.total - totalMem.available;
