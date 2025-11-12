@@ -7,9 +7,6 @@ class SystemService {
   constructor() {
     // Cache for network speed calculation
     this.networkSpeedCache = new Map();
-    // Cache for memory breakdown (Docker/LXC/VM services)
-    this.memoryBreakdownCache = null;
-    this.memoryBreakdownTimestamp = 0;
   }
 
   /**
@@ -207,19 +204,19 @@ class SystemService {
    * Get CPU and temperature information only (fastest - no memory or network)
    * @returns {Promise<Object>} CPU and temperature info
    */
-  async getCpuLoad() {
+  /**
+   * Get static CPU information (cores, architecture, etc.) - called once
+   */
+  async getCpuStaticInfo() {
     try {
-      const [currentLoad, temp, cpu] = await Promise.all([
-        si.currentLoad(),
-        si.cpuTemperature(),
-        si.cpu()
+      const [cpu, cpuFlags] = await Promise.all([
+        si.cpu(),
+        si.cpuFlags()
       ]);
 
-      // Get detailed CPU information for core types
-      const cpuFlags = await si.cpuFlags();
-
       // Prepare core-specific information with enhanced details
-      const coreLoads = currentLoad.cpus.map((core, index) => {
+      const coreInfos = [];
+      for (let index = 0; index < cpu.cores; index++) {
         // Determine core type information
         const isPhysical = index < cpu.physicalCores;
         const isHyperThreaded = index >= cpu.physicalCores;
@@ -239,39 +236,127 @@ class SystemService {
           }
         }
 
-        return {
+        coreInfos.push({
           number: index + 1,
-          load: {
-            total: Math.round(core.load * 100) / 100,
-          },
-          temperature: temp.cores[index] !== undefined ? temp.cores[index] : null,
           isPhysical: isPhysical,
           isHyperThreaded: isHyperThreaded,
           physicalCoreNumber: physicalCoreNumber,
           coreArchitecture: coreArchitecture
-        };
-      });
+        });
+      }
 
       return {
-        cpu: {
-          load: Math.round(currentLoad.currentLoad * 100) / 100,
-          info: {
-            brand: cpu.brand,
-            manufacturer: cpu.manufacturer,
-            totalCores: cpu.cores,
-            physicalCores: cpu.physicalCores,
-            logicalCores: cpu.cores,
-            hyperThreadingEnabled: cpu.cores > cpu.physicalCores,
-            architecture: cpu.family ? `Family ${cpu.family}, Model ${cpu.model}` : 'Unknown'
-          },
-          cores: coreLoads
+        brand: cpu.brand,
+        manufacturer: cpu.manufacturer,
+        totalCores: cpu.cores,
+        physicalCores: cpu.physicalCores,
+        logicalCores: cpu.cores,
+        hyperThreadingEnabled: cpu.cores > cpu.physicalCores,
+        architecture: cpu.family ? `Family ${cpu.family}, Model ${cpu.model}` : 'Unknown',
+        cores: coreInfos
+      };
+    } catch (error) {
+      throw new Error(`Error getting CPU static info: ${error.message}`);
+    }
+  }
+
+  /**
+   * Get CPU load data only (no temperature) - called frequently
+   */
+  async getCpuLoadOnly() {
+    try {
+      const currentLoad = await si.currentLoad();
+
+      // Prepare core-specific load data only
+      const coreData = currentLoad.cpus.map((core, index) => ({
+        number: index + 1,
+        load: Math.round(core.load * 100) / 100
+      }));
+
+      return {
+        load: Math.round(currentLoad.currentLoad * 100) / 100,
+        cores: coreData
+      };
+    } catch (error) {
+      throw new Error(`Error getting CPU load only: ${error.message}`);
+    }
+  }
+
+  /**
+   * Get CPU temperature data only (no load) - called less frequently
+   */
+  async getCpuTemperatureOnly() {
+    try {
+      const temp = await si.cpuTemperature();
+
+      return {
+        temperature: {
+          main: temp.main,
+          max: Math.max(...temp.cores.filter(t => t !== null)),
+          min: Math.min(...temp.cores.filter(t => t !== null)),
+          cores: temp.cores
         },
+        cores: temp.cores.map((temp, index) => ({
+          number: index + 1,
+          temperature: temp
+        }))
+      };
+    } catch (error) {
+      throw new Error(`Error getting CPU temperature only: ${error.message}`);
+    }
+  }
+
+  /**
+   * Get dynamic CPU load and temperature data - called frequently (legacy method)
+   */
+  async getCpuDynamicLoad() {
+    try {
+      const [currentLoad, temp] = await Promise.all([
+        si.currentLoad(),
+        si.cpuTemperature()
+      ]);
+
+      // Prepare core-specific load and temperature data
+      const coreData = currentLoad.cpus.map((core, index) => ({
+        number: index + 1,
+        load: Math.round(core.load * 100) / 100,
+        temperature: temp.cores[index] !== undefined ? temp.cores[index] : null
+      }));
+
+      return {
+        load: Math.round(currentLoad.currentLoad * 100) / 100,
+        cores: coreData,
         temperature: {
           main: temp.main,
           max: Math.max(...temp.cores.filter(t => t !== null)),
           min: Math.min(...temp.cores.filter(t => t !== null)),
           cores: temp.cores
         }
+      };
+    } catch (error) {
+      throw new Error(`Error getting CPU dynamic load: ${error.message}`);
+    }
+  }
+
+  async getCpuLoad() {
+    try {
+      const [staticInfo, dynamicData] = await Promise.all([
+        this.getCpuStaticInfo(),
+        this.getCpuDynamicLoad()
+      ]);
+
+      // Combine static and dynamic data for backward compatibility
+      return {
+        cpu: {
+          load: dynamicData.load,
+          info: staticInfo,
+          cores: staticInfo.cores.map((staticCore, index) => ({
+            ...staticCore,
+            load: dynamicData.cores[index].load,
+            temperature: dynamicData.cores[index].temperature
+          }))
+        },
+        temperature: dynamicData.temperature
       };
     } catch (error) {
       throw new Error(`Error getting CPU load: ${error.message}`);
@@ -283,47 +368,90 @@ class SystemService {
    * @param {Object} user - User object with byte_format preference
    * @returns {Promise<Object>} Memory info with installed, reserved, and services breakdown
    */
-  async getMemoryLoad(user = null) {
+  /**
+   * Get static memory information (installed memory only)
+   */
+  async getMemoryStaticInfo() {
     try {
-      const mem = await si.mem();
-
-      // Get installed memory and calculate reserved
+      // Get installed memory (very static)
       let installed = await this.getInstalledMemory();
       if (!installed) {
-        installed = mem.total; // Fallback if dmidecode unavailable
+        // Fallback: get from si.mem() if dmidecode unavailable
+        const mem = await si.mem();
+        installed = mem.total;
       }
-      const reserved = installed - mem.total;
+
+      return {
+        installed: installed,
+        installed_human: this.formatMemoryBytes(installed)
+      };
+    } catch (error) {
+      throw new Error(`Error getting memory static info: ${error.message}`);
+    }
+  }
+
+  /**
+   * Get dynamic memory services breakdown (updated more frequently)
+   */
+  async getMemoryDynamicServices() {
+    try {
+      return await this.getMemoryServicesBreakdown();
+    } catch (error) {
+      throw new Error(`Error getting memory dynamic services: ${error.message}`);
+    }
+  }
+
+  /**
+   * Get dynamic memory usage data (current RAM stats)
+   */
+  async getMemoryDynamicUsage() {
+    try {
+      const mem = await si.mem();
 
       // Calculate actually used RAM without dirty caches
       const actuallyUsed = mem.total - mem.available;
       const dirtyCaches = Math.max(0, mem.used - actuallyUsed);
 
-      // Get memory breakdown by services (Docker/LXC/VM/System)
-      const breakdown = await this.getMemoryServicesBreakdown();
+      return {
+        total: mem.total,
+        total_human: this.formatMemoryBytes(mem.total),
+        free: mem.available,
+        free_human: this.formatMemoryBytes(mem.available),
+        used: actuallyUsed,
+        used_human: this.formatMemoryBytes(actuallyUsed),
+        dirty: {
+          free: mem.free,
+          used: mem.used,
+          dirtyCaches: dirtyCaches
+        },
+        percentage: {
+          used: Math.round((mem.used / mem.total) * 100),
+          actuallyUsed: Math.round((actuallyUsed / mem.total) * 100),
+          dirtyCaches: Math.round((dirtyCaches / mem.total) * 100)
+        }
+      };
+    } catch (error) {
+      throw new Error(`Error getting memory dynamic usage: ${error.message}`);
+    }
+  }
+
+  async getMemoryLoad(user = null) {
+    try {
+      const [staticInfo, dynamicUsage, dynamicServices] = await Promise.all([
+        this.getMemoryStaticInfo(),
+        this.getMemoryDynamicUsage(),
+        this.getMemoryDynamicServices()
+      ]);
+
+      const reserved = staticInfo.installed - dynamicUsage.total;
 
       return {
         memory: {
-          installed: installed,
-          installed_human: this.formatMemoryBytes(installed),
+          ...staticInfo,
           reserved: reserved,
           reserved_human: this.formatMemoryBytes(reserved),
-          total: mem.total,
-          total_human: this.formatMemoryBytes(mem.total),
-          free: mem.available,
-          free_human: this.formatMemoryBytes(mem.available),
-          used: actuallyUsed,
-          used_human: this.formatMemoryBytes(actuallyUsed),
-          breakdown: breakdown,
-          dirty: {
-            free: mem.free,
-            used: mem.used,
-            dirtyCaches: dirtyCaches
-          },
-          percentage: {
-            used: Math.round((mem.used / mem.total) * 100),
-            actuallyUsed: Math.round((actuallyUsed / mem.total) * 100),
-            dirtyCaches: Math.round((dirtyCaches / mem.total) * 100)
-          }
+          breakdown: dynamicServices,
+          ...dynamicUsage
         }
       };
     } catch (error) {
@@ -338,55 +466,7 @@ class SystemService {
    */
   async getCpuMemoryLoad(user = null) {
     try {
-      const [currentLoad, temp, mem, cpu] = await Promise.all([
-        si.currentLoad(),
-        si.cpuTemperature(),
-        si.mem(),
-        si.cpu()
-      ]);
-
-      // Get detailed CPU information for core types
-      const cpuFlags = await si.cpuFlags();
-
-      // Prepare core-specific information with enhanced details
-      const coreLoads = currentLoad.cpus.map((core, index) => {
-        // Determine core type information
-        const isPhysical = index < cpu.physicalCores;
-        const isHyperThreaded = index >= cpu.physicalCores;
-        const physicalCoreNumber = isPhysical ? index + 1 : (index - cpu.physicalCores) + 1;
-
-        // Try to detect Performance vs Efficiency cores (mainly for Intel 12th gen+)
-        let coreArchitecture = 'Standard';
-        if (cpu.brand && cpu.brand.toLowerCase().includes('intel')) {
-          const totalCores = cpu.cores;
-          const physicalCores = cpu.physicalCores;
-
-          // Heuristic: If we have more logical than physical cores and it's a modern Intel CPU
-          if (totalCores > physicalCores && cpu.brand.match(/1[2-9]th|[2-9][0-9]th/)) {
-            // Assume first cores are Performance cores, later ones might be Efficiency
-            const estimatedPCores = Math.floor(physicalCores * 0.6); // Rough estimate
-            coreArchitecture = index < estimatedPCores ? 'Performance' : 'Mixed/Efficiency';
-          }
-        }
-
-        return {
-          number: index + 1,
-          load: {
-            total: Math.round(core.load * 100) / 100,
-          },
-          temperature: temp.cores[index] !== undefined ? temp.cores[index] : null,
-          isPhysical: isPhysical,
-          isHyperThreaded: isHyperThreaded,
-          physicalCoreNumber: physicalCoreNumber,
-          coreArchitecture: coreArchitecture
-        };
-      });
-
-      // Calculate actually used RAM without dirty caches
-      const actuallyUsed = mem.total - mem.available;
-      const dirtyCaches = Math.max(0, mem.used - actuallyUsed);
-
-      // Combine CPU and Memory data
+      // Use optimized methods that cache static data
       const [cpuData, memoryData] = await Promise.all([
         this.getCpuLoad(),
         this.getMemoryLoad(user)
@@ -406,22 +486,32 @@ class SystemService {
    * @param {Object} user - User object with byte_format preference
    * @returns {Promise<Object>} Network statistics
    */
-  async getNetworkLoad(user = null) {
+  /**
+   * Get static network interface information (IP, MAC, speed, etc.)
+   */
+  async getNetworkStaticInterfaces() {
     try {
-      // Get current network counters and interface details in parallel
-      const [networkCounters, interfaceDetails] = await Promise.all([
-        this.getNetworkCountersOnly(),
-        this.getNetworkInterfaceDetails()
-      ]);
-      const currentTime = Date.now();
+      const interfaceDetails = await this.getNetworkInterfaceDetails();
 
-
-      // Create a map of interface details for quick lookup
+      // Create a map for quick lookup
       const interfaceMap = {};
       interfaceDetails.forEach(iface => {
         interfaceMap[iface.name] = iface;
       });
 
+      return interfaceMap;
+    } catch (error) {
+      throw new Error(`Error getting network static interfaces: ${error.message}`);
+    }
+  }
+
+  /**
+   * Get dynamic network counters and calculate speeds
+   */
+  async getNetworkDynamicCounters(user = null) {
+    try {
+      const networkCounters = await this.getNetworkCountersOnly();
+      const currentTime = Date.now();
 
       // Calculate speeds using cached previous values
       const calculateSpeed = (iface, currentRx, currentTx) => {
@@ -460,98 +550,124 @@ class SystemService {
         return { rxSpeed, txSpeed };
       };
 
-      // Process network statistics - no filtering needed as interfaces are pre-filtered
-      const interfaces = networkCounters
-        .map(stat => {
-          const { rxSpeed, txSpeed } = calculateSpeed(stat.iface, stat.rx_bytes, stat.tx_bytes);
-          const interfaceInfo = interfaceMap[stat.iface] || {};
+      // Process network statistics
+      const interfaces = networkCounters.map(stat => {
+        const { rxSpeed, txSpeed } = calculateSpeed(stat.iface, stat.rx_bytes, stat.tx_bytes);
 
-          return {
-            interface: stat.iface,
-            type: interfaceInfo.type || 'unknown',
-            state: interfaceInfo.state || 'unknown',
-            speed: interfaceInfo.speed || null,
-            ip4: interfaceInfo.ip4 || null,
-            ip6: interfaceInfo.ip6 || null,
-            mac: interfaceInfo.mac || null,
-            statistics: {
-              rx: {
-                bytes: stat.rx_bytes,
-                bytes_human: this.formatBytes(stat.rx_bytes, user),
-                packets: stat.rx_packets,
-                errors: stat.rx_errors,
-                dropped: stat.rx_dropped,
-                speed_bps: rxSpeed,
-                speed_human: this.formatSpeed(rxSpeed, user)
-              },
-              tx: {
-                bytes: stat.tx_bytes,
-                bytes_human: this.formatBytes(stat.tx_bytes, user),
-                packets: stat.tx_packets,
-                errors: stat.tx_errors,
-                dropped: stat.tx_dropped,
-                speed_bps: txSpeed,
-                speed_human: this.formatSpeed(txSpeed, user)
-              },
-              total: {
-                bytes: stat.rx_bytes + stat.tx_bytes,
-                bytes_human: this.formatBytes(stat.rx_bytes + stat.tx_bytes, user),
-                packets: stat.rx_packets + stat.tx_packets,
-                speed_bps: rxSpeed + txSpeed,
-                speed_human: this.formatSpeed(rxSpeed + txSpeed, user)
-              }
+        return {
+          interface: stat.iface,
+          statistics: {
+            rx: {
+              bytes: stat.rx_bytes,
+              bytes_human: this.formatBytes(stat.rx_bytes, user?.byte_format || 'binary'),
+              packets: stat.rx_packets,
+              errors: stat.rx_errors,
+              dropped: stat.rx_dropped,
+              speed_bps: rxSpeed,
+              speed_human: this.formatBytes(rxSpeed, user?.byte_format || 'binary') + '/s'
+            },
+            tx: {
+              bytes: stat.tx_bytes,
+              bytes_human: this.formatBytes(stat.tx_bytes, user?.byte_format || 'binary'),
+              packets: stat.tx_packets,
+              errors: stat.tx_errors,
+              dropped: stat.tx_dropped,
+              speed_bps: txSpeed,
+              speed_human: this.formatBytes(txSpeed, user?.byte_format || 'binary') + '/s'
+            },
+            total: {
+              bytes: stat.rx_bytes + stat.tx_bytes,
+              bytes_human: this.formatBytes(stat.rx_bytes + stat.tx_bytes, user?.byte_format || 'binary'),
+              packets: stat.rx_packets + stat.tx_packets,
+              speed_bps: rxSpeed + txSpeed,
+              speed_human: this.formatBytes(rxSpeed + txSpeed, user?.byte_format || 'binary') + '/s'
             }
-          };
-        });
+          }
+        };
+      });
 
-      // Calculate totals across all interfaces
-      const totals = interfaces.reduce((acc, iface) => {
-        acc.rx_bytes += iface.statistics.rx.bytes;
-        acc.tx_bytes += iface.statistics.tx.bytes;
-        acc.rx_packets += iface.statistics.rx.packets;
-        acc.tx_packets += iface.statistics.tx.packets;
-        acc.rx_speed += iface.statistics.rx.speed_bps;
-        acc.tx_speed += iface.statistics.tx.speed_bps;
-        return acc;
-      }, {
-        rx_bytes: 0,
-        tx_bytes: 0,
-        rx_packets: 0,
-        tx_packets: 0,
-        rx_speed: 0,
-        tx_speed: 0
+      // Calculate summary
+      const totals = interfaces.reduce((acc, iface) => ({
+        rx: {
+          bytes: acc.rx.bytes + iface.statistics.rx.bytes,
+          packets: acc.rx.packets + iface.statistics.rx.packets,
+          speed_bps: acc.rx.speed_bps + iface.statistics.rx.speed_bps
+        },
+        tx: {
+          bytes: acc.tx.bytes + iface.statistics.tx.bytes,
+          packets: acc.tx.packets + iface.statistics.tx.packets,
+          speed_bps: acc.tx.speed_bps + iface.statistics.tx.speed_bps
+        },
+        combined: {
+          bytes: acc.combined.bytes + iface.statistics.total.bytes,
+          packets: acc.combined.packets + iface.statistics.total.packets,
+          speed_bps: acc.combined.speed_bps + iface.statistics.total.speed_bps
+        }
+      }), { rx: { bytes: 0, packets: 0, speed_bps: 0 }, tx: { bytes: 0, packets: 0, speed_bps: 0 }, combined: { bytes: 0, packets: 0, speed_bps: 0 } });
+
+      return {
+        interfaces: interfaces,
+        summary: {
+          total_interfaces: interfaces.length,
+          active_interfaces: interfaces.filter(iface => iface.statistics.rx.bytes > 0 || iface.statistics.tx.bytes > 0).length,
+          totals: {
+            rx: {
+              bytes: totals.rx.bytes,
+              bytes_human: this.formatBytes(totals.rx.bytes, user?.byte_format || 'binary'),
+              packets: totals.rx.packets,
+              speed_bps: totals.rx.speed_bps,
+              speed_human: this.formatBytes(totals.rx.speed_bps, user?.byte_format || 'binary') + '/s'
+            },
+            tx: {
+              bytes: totals.tx.bytes,
+              bytes_human: this.formatBytes(totals.tx.bytes, user?.byte_format || 'binary'),
+              packets: totals.tx.packets,
+              speed_bps: totals.tx.speed_bps,
+              speed_human: this.formatBytes(totals.tx.speed_bps, user?.byte_format || 'binary') + '/s'
+            },
+            combined: {
+              bytes: totals.combined.bytes,
+              bytes_human: this.formatBytes(totals.combined.bytes, user?.byte_format || 'binary'),
+              packets: totals.combined.packets,
+              speed_bps: totals.combined.speed_bps,
+              speed_human: this.formatBytes(totals.combined.speed_bps, user?.byte_format || 'binary') + '/s'
+            }
+          }
+        }
+      };
+    } catch (error) {
+      throw new Error(`Error getting network dynamic counters: ${error.message}`);
+    }
+  }
+
+  async getNetworkLoad(user = null) {
+    try {
+      // Get static and dynamic data in parallel
+      const [staticInterfaces, dynamicCounters] = await Promise.all([
+        this.getNetworkStaticInterfaces(),
+        this.getNetworkDynamicCounters(user)
+      ]);
+
+      // Combine static interface info with dynamic counters
+      const interfaces = dynamicCounters.interfaces.map(iface => {
+        const staticInfo = staticInterfaces[iface.interface] || {};
+
+        return {
+          interface: iface.interface,
+          type: staticInfo.type || 'unknown',
+          state: staticInfo.state || 'unknown',
+          speed: staticInfo.speed || null,
+          ip4: staticInfo.ip4 || null,
+          ip6: staticInfo.ip6 || null,
+          mac: staticInfo.mac || null,
+          statistics: iface.statistics
+        };
       });
 
       return {
         network: {
-          interfaces,
-          summary: {
-            total_interfaces: interfaces.length,
-            active_interfaces: interfaces.filter(i => i.state === 'up').length,
-            totals: {
-              rx: {
-                bytes: totals.rx_bytes,
-                bytes_human: this.formatBytes(totals.rx_bytes, user),
-                packets: totals.rx_packets,
-                speed_bps: totals.rx_speed,
-                speed_human: this.formatSpeed(totals.rx_speed, user)
-              },
-              tx: {
-                bytes: totals.tx_bytes,
-                bytes_human: this.formatBytes(totals.tx_bytes, user),
-                packets: totals.tx_packets,
-                speed_bps: totals.tx_speed,
-                speed_human: this.formatSpeed(totals.tx_speed, user)
-              },
-              combined: {
-                bytes: totals.rx_bytes + totals.tx_bytes,
-                bytes_human: this.formatBytes(totals.rx_bytes + totals.tx_bytes, user),
-                packets: totals.rx_packets + totals.tx_packets,
-                speed_bps: totals.rx_speed + totals.tx_speed,
-                speed_human: this.formatSpeed(totals.rx_speed + totals.tx_speed, user)
-              }
-            }
-          }
+          interfaces: interfaces,
+          summary: dynamicCounters.summary
         }
       };
     } catch (error) {
@@ -1000,17 +1116,9 @@ class SystemService {
 
   /**
    * Get memory breakdown by services (Docker, LXC, VMs, System)
-   * Uses 5 second cache to avoid excessive system calls
    * @returns {Promise<Object>} Memory breakdown by service type
    */
   async getMemoryServicesBreakdown() {
-    const now = Date.now();
-    const CACHE_TTL = 5000; // 5 seconds cache
-
-    // Return cached data if still valid
-    if (this.memoryBreakdownCache && (now - this.memoryBreakdownTimestamp) < CACHE_TTL) {
-      return this.memoryBreakdownCache;
-    }
 
     // Fetch all data in parallel
     const [docker, lxc, vms, totalMem] = await Promise.all([
@@ -1051,10 +1159,6 @@ class SystemService {
         percentage: Math.round((vms.bytes / totalMem.total) * 100)
       }
     };
-
-    // Update cache
-    this.memoryBreakdownCache = breakdown;
-    this.memoryBreakdownTimestamp = now;
 
     return breakdown;
   }

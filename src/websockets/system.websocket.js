@@ -6,10 +6,21 @@ class SystemLoadWebSocketManager {
     this.dataCache = new Map();
     this.staticDataCache = new Map();
     this.clientStaticDataSent = new Set();
-    this.cacheDuration = 750;
+    this.authCache = new Map();
+    this.authCacheDuration = 5 * 60 * 1000; // 5 minutes
+    this.cacheDuration = 1500;
+    this.cpuStaticCacheDuration = 30 * 60 * 1000; // 30 minutes for static CPU data
+    this.cpuLoadCacheDuration = 1000; // 1 second for CPU load data
+    this.cpuTempCacheDuration = 5000; // 5 seconds for CPU temperature data
+    this.memoryStaticCacheDuration = 30 * 60 * 1000; // 30 minutes for memory static data
+    this.memoryServicesCacheDuration = 16 * 1000; // 16 seconds for memory services data
+    this.networkStaticCacheDuration = 30 * 60 * 1000; // 30 minutes for network static data
     this.cpuInterval = 1000;
     this.memoryInterval = 8000;
     this.networkInterval = 2000;
+
+    // Start cache cleanup timer (every 10 minutes)
+    setInterval(() => this.cleanupExpiredCaches(), 10 * 60 * 1000);
   }
 
   /**
@@ -121,14 +132,34 @@ class SystemLoadWebSocketManager {
           return;
         }
 
-        // Get first connected user for data formatting
-        const firstSocketId = room ? Array.from(room)[0] : null;
-        const socketObj = firstSocketId ? this.io.sockets.get(firstSocketId) : null;
-        const user = socketObj?.user || null;
+        // Get first connected user for data formatting (cached for efficiency)
+        const user = this.getFirstConnectedUser();
 
-        // Get CPU data and send update
-        const cpuData = await this.getCpuDataWithCache(false, user);
-        this.io.to('system-load').emit('load-update', cpuData);
+        // Get CPU dynamic data only (fast updates for load/temperature)
+        const dynamicData = await this.getCpuDynamicDataWithCache(false, user);
+
+        // Get static data for complete structure (ensure it's available)
+        let staticData = this.getStaticCpuData();
+        if (!staticData) {
+          // Fallback: load static data if not cached yet
+          staticData = await this.cacheStaticCpuData();
+        }
+
+        // Combine for complete CPU update (frontend expects full structure)
+        const cpuUpdate = {
+          cpu: {
+            info: staticData.cpu.info,
+            load: dynamicData.cpu.load,
+            cores: staticData.cpu.cores.map((staticCore, index) => ({
+              ...staticCore,
+              load: dynamicData.cpu.cores[index]?.load,
+              temperature: dynamicData.cpu.cores[index]?.temperature
+            }))
+          },
+          temperature: dynamicData.temperature
+        };
+
+        this.io.to('system-load').emit('load-update', cpuUpdate);
       } catch (error) {
         console.error('Error in CPU monitoring:', error);
       }
@@ -145,10 +176,8 @@ class SystemLoadWebSocketManager {
           return;
         }
 
-        // Get first connected user for data formatting
-        const firstSocketId = room ? Array.from(room)[0] : null;
-        const socketObj = firstSocketId ? this.io.sockets.get(firstSocketId) : null;
-        const user = socketObj?.user || null;
+        // Get first connected user for data formatting (cached for efficiency)
+        const user = this.getFirstConnectedUser();
 
         // Get Memory and Uptime data and send update
         const [memoryData, uptime] = await Promise.all([
@@ -178,10 +207,8 @@ class SystemLoadWebSocketManager {
           return;
         }
 
-        // Get first connected user for data formatting
-        const firstSocketId = room ? Array.from(room)[0] : null;
-        const socketObj = firstSocketId ? this.io.sockets.get(firstSocketId) : null;
-        const user = socketObj?.user || null;
+        // Get first connected user for data formatting (cached for efficiency)
+        const user = this.getFirstConnectedUser();
 
         // Get Network data and send update
         const networkData = await this.getNetworkDataWithCache(false, user);
@@ -261,6 +288,20 @@ class SystemLoadWebSocketManager {
   }
 
   /**
+   * Get first connected user from system-load room for data formatting
+   */
+  getFirstConnectedUser() {
+    const room = this.io.adapter.rooms.get('system-load');
+    if (!room || room.size === 0) return null;
+
+    // Use iterator for better performance than Array.from()
+    const iterator = room.keys();
+    const firstSocketId = iterator.next().value;
+    const socketObj = firstSocketId ? this.io.sockets.get(firstSocketId) : null;
+    return socketObj?.user || null;
+  }
+
+  /**
    * Send initial system load data to new client
    * @param {Object} socket - Socket to send to
    * @param {boolean} forceRefresh - Force cache refresh
@@ -269,7 +310,7 @@ class SystemLoadWebSocketManager {
     try {
       // Get all data types for initial connection including uptime
       const [cpuData, memoryData, networkData, uptime] = await Promise.all([
-        this.getCpuDataWithCache(forceRefresh, socket.user),
+        this.getCombinedCpuData(socket.user),
         this.getMemoryDataWithCache(forceRefresh, socket.user),
         this.getNetworkDataWithCache(forceRefresh, socket.user),
         this.systemService.getUptime()
@@ -298,7 +339,7 @@ class SystemLoadWebSocketManager {
   }
 
   /**
-   * Get CPU data with caching
+   * Get full CPU data with caching (static + dynamic)
    */
   async getCpuDataWithCache(forceRefresh = false, user = null) {
     const cacheKey = 'cpu-data';
@@ -325,6 +366,96 @@ class SystemLoadWebSocketManager {
 
     } catch (error) {
       console.error('Error getting CPU data:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get CPU load data with caching (1 second cache)
+   */
+  async getCpuLoadDataWithCache(forceRefresh = false) {
+    const cacheKey = 'cpu-load-data';
+    const cached = this.dataCache.get(cacheKey);
+
+    // Return cached data if valid and not forcing refresh
+    if (!forceRefresh && cached && (Date.now() - cached.timestamp) < this.cpuLoadCacheDuration) {
+      return cached.data;
+    }
+
+    try {
+      const loadData = await this.systemService.getCpuLoadOnly();
+
+      // Cache the result
+      this.dataCache.set(cacheKey, {
+        data: loadData,
+        timestamp: Date.now()
+      });
+
+      return loadData;
+
+    } catch (error) {
+      console.error('Error getting CPU load data:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get CPU temperature data with caching (5 seconds cache)
+   */
+  async getCpuTempDataWithCache(forceRefresh = false) {
+    const cacheKey = 'cpu-temp-data';
+    const cached = this.dataCache.get(cacheKey);
+
+    // Return cached data if valid and not forcing refresh
+    if (!forceRefresh && cached && (Date.now() - cached.timestamp) < this.cpuTempCacheDuration) {
+      return cached.data;
+    }
+
+    try {
+      const tempData = await this.systemService.getCpuTemperatureOnly();
+
+      // Cache the result
+      this.dataCache.set(cacheKey, {
+        data: tempData,
+        timestamp: Date.now()
+      });
+
+      return tempData;
+
+    } catch (error) {
+      console.error('Error getting CPU temperature data:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get combined CPU dynamic data (load + temperature) with optimized caching
+   */
+  async getCpuDynamicDataWithCache(forceRefresh = false, user = null) {
+    try {
+      // Get load and temperature data with different cache durations
+      const [loadData, tempData] = await Promise.all([
+        this.getCpuLoadDataWithCache(forceRefresh),
+        this.getCpuTempDataWithCache(forceRefresh)
+      ]);
+
+      // Combine load and temperature data
+      const dynamicData = {
+        cpu: {
+          load: loadData.load,
+          cores: loadData.cores.map((core, index) => ({
+            number: core.number,
+            load: core.load,
+            temperature: tempData.cores[index] || null
+          }))
+        },
+        temperature: tempData.temperature
+      };
+
+      return dynamicData;
+
+    } catch (error) {
+      console.error('Error getting combined CPU dynamic data:', error);
       throw error;
     }
   }
@@ -390,20 +521,169 @@ class SystemLoadWebSocketManager {
 
 
   /**
-   * Cache static system data separately
+   * Cache static CPU data separately (long-term cache)
+   */
+  async cacheStaticCpuData() {
+    try {
+      const staticCpuInfo = await this.systemService.getCpuStaticInfo();
+
+      const staticCpuData = {
+        cpu: {
+          info: staticCpuInfo,
+          cores: staticCpuInfo.cores
+        }
+      };
+
+      this.staticDataCache.set('cpu-static-data', {
+        data: staticCpuData,
+        timestamp: Date.now()
+      });
+
+      return staticCpuData;
+    } catch (error) {
+      console.error('Error caching static CPU data:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get static CPU data (cached for long time)
+   */
+  getStaticCpuData() {
+    const cached = this.staticDataCache.get('cpu-static-data');
+    if (cached && (Date.now() - cached.timestamp) < this.cpuStaticCacheDuration) {
+      return cached.data;
+    }
+    return null; // Need to load fresh
+  }
+
+  /**
+   * Get combined CPU data (static + dynamic) for initial connection
+   */
+  async getCombinedCpuData(user = null) {
+    let staticData = this.getStaticCpuData();
+
+    // If no static data cached, load and cache it
+    if (!staticData) {
+      staticData = await this.cacheStaticCpuData();
+    }
+
+    // Get dynamic data
+    const dynamicData = await this.getCpuDynamicDataWithCache(false, user);
+
+    // Combine static and dynamic data properly
+    const combinedCpuData = {
+      cpu: {
+        info: staticData.cpu.info,
+        load: dynamicData.cpu.load,
+        cores: staticData.cpu.cores.map((staticCore, index) => ({
+          ...staticCore,
+          load: dynamicData.cpu.cores[index]?.load,
+          temperature: dynamicData.cpu.cores[index]?.temperature
+        }))
+      },
+      temperature: dynamicData.temperature
+    };
+
+    return combinedCpuData;
+  }
+
+  /**
+   * Cache static memory data (installed memory, services breakdown)
+   */
+  async cacheStaticMemoryData() {
+    try {
+      const staticMemoryInfo = await this.systemService.getMemoryStaticInfo();
+
+      this.staticDataCache.set('memory-static-data', {
+        data: staticMemoryInfo,
+        timestamp: Date.now()
+      });
+
+      return staticMemoryInfo;
+    } catch (error) {
+      console.error('Error caching static memory data:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get static memory data (cached for long time)
+   */
+  getStaticMemoryData() {
+    const cached = this.staticDataCache.get('memory-static-data');
+    if (cached && (Date.now() - cached.timestamp) < this.memoryStaticCacheDuration) {
+      return cached.data;
+    }
+    return null; // Need to load fresh
+  }
+
+  /**
+   * Get memory services data with 16-second cache
+   */
+  async getMemoryServicesData() {
+    const cacheKey = 'memory-services-data';
+    const cached = this.dataCache.get(cacheKey);
+
+    // Return cached data if valid
+    if (cached && (Date.now() - cached.timestamp) < this.memoryServicesCacheDuration) {
+      return cached.data;
+    }
+
+    try {
+      const servicesData = await this.systemService.getMemoryDynamicServices();
+
+      // Cache the result
+      this.dataCache.set(cacheKey, {
+        data: servicesData,
+        timestamp: Date.now()
+      });
+
+      return servicesData;
+
+    } catch (error) {
+      console.error('Error getting memory services data:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Cache static network data (interface details)
+   */
+  async cacheStaticNetworkData() {
+    try {
+      const staticNetworkInfo = await this.systemService.getNetworkStaticInterfaces();
+
+      this.staticDataCache.set('network-static-data', {
+        data: staticNetworkInfo,
+        timestamp: Date.now()
+      });
+
+      return staticNetworkInfo;
+    } catch (error) {
+      console.error('Error caching static network data:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get static network data (cached for long time)
+   */
+  getStaticNetworkData() {
+    const cached = this.staticDataCache.get('network-static-data');
+    if (cached && (Date.now() - cached.timestamp) < this.networkStaticCacheDuration) {
+      return cached.data;
+    }
+    return null; // Need to load fresh
+  }
+
+  /**
+   * Cache static system data separately (memory, network - CPU handled separately)
    */
   cacheStaticData(fullData) {
     const staticData = {
-      cpu: {
-        info: fullData.cpu.info,
-        cores: fullData.cpu.cores.map(core => ({
-          number: core.number,
-          isPhysical: core.isPhysical,
-          isHyperThreaded: core.isHyperThreaded,
-          physicalCoreNumber: core.physicalCoreNumber,
-          coreArchitecture: core.coreArchitecture
-        }))
-      }
+      memory: null, // Memory static data is minimal
+      network: null
     };
 
     // Only add memory data if it exists
@@ -476,11 +756,14 @@ class SystemLoadWebSocketManager {
       if (room && room.size > 0) {
         // Clear caches
         this.dataCache.delete('cpu-data');
+        this.dataCache.delete('cpu-load-data');
+        this.dataCache.delete('cpu-temp-data');
         this.dataCache.delete('memory-data');
+        this.dataCache.delete('memory-services-data');
         this.dataCache.delete('network-data');
         // Force immediate updates
         const [cpuData, memoryData, networkData] = await Promise.all([
-          this.getCpuDataWithCache(true),
+          this.getCombinedCpuData(),
           this.getMemoryDataWithCache(true),
           this.getNetworkDataWithCache(true)
         ]);
@@ -499,6 +782,53 @@ class SystemLoadWebSocketManager {
   cleanupDisconnectedClient() {
     // Check if monitoring should be stopped
     this.checkStopSystemLoadMonitoring();
+  }
+
+  /**
+   * Clean up expired cache entries
+   */
+  cleanupExpiredCaches() {
+    const now = Date.now();
+
+    // Clean auth cache
+    for (const [token, cached] of this.authCache) {
+      if (now - cached.timestamp > this.authCacheDuration) {
+        this.authCache.delete(token);
+      }
+    }
+
+    // Clean data cache
+    for (const [key, cached] of this.dataCache) {
+      let duration = this.cacheDuration;
+      if (key === 'cpu-load-data') {
+        duration = this.cpuLoadCacheDuration;
+    } else if (key === 'cpu-temp-data') {
+      duration = this.cpuTempCacheDuration;
+    } else if (key === 'memory-services-data') {
+      duration = this.memoryServicesCacheDuration;
+      }
+      if (now - cached.timestamp > duration) {
+        this.dataCache.delete(key);
+      }
+    }
+
+    // Clean static CPU data cache
+    const staticCpuCache = this.staticDataCache.get('cpu-static-data');
+    if (staticCpuCache && now - staticCpuCache.timestamp > this.cpuStaticCacheDuration) {
+      this.staticDataCache.delete('cpu-static-data');
+    }
+
+    // Clean static memory data cache
+    const staticMemoryCache = this.staticDataCache.get('memory-static-data');
+    if (staticMemoryCache && now - staticMemoryCache.timestamp > this.memoryStaticCacheDuration) {
+      this.staticDataCache.delete('memory-static-data');
+    }
+
+    // Clean static network data cache
+    const staticNetworkCache = this.staticDataCache.get('network-static-data');
+    if (staticNetworkCache && now - staticNetworkCache.timestamp > this.networkStaticCacheDuration) {
+      this.staticDataCache.delete('network-static-data');
+    }
   }
 
   /**
@@ -535,11 +865,17 @@ class SystemLoadWebSocketManager {
   }
 
   /**
-   * Authenticate user
+   * Authenticate user with caching
    */
   async authenticateUser(token) {
     if (!token) {
       return { success: false, message: 'Authentication token is required' };
+    }
+
+    // Check cache first
+    const cached = this.authCache.get(token);
+    if (cached && (Date.now() - cached.timestamp) < this.authCacheDuration) {
+      return cached.data;
     }
 
     try {
@@ -550,7 +886,7 @@ class SystemLoadWebSocketManager {
       // Check if it's the boot token
       const bootToken = await getBootToken();
       if (bootToken && token === bootToken) {
-        return {
+        const result = {
           success: true,
           user: {
             id: 'boot',
@@ -559,15 +895,31 @@ class SystemLoadWebSocketManager {
             isBootToken: true
           }
         };
+
+        // Cache boot token authentication
+        this.authCache.set(token, {
+          data: result,
+          timestamp: Date.now()
+        });
+
+        return result;
       }
 
       // Check if it's an admin API token
       const adminTokenData = await userService.validateAdminToken(token);
       if (adminTokenData) {
-        return {
+        const result = {
           success: true,
           user: adminTokenData
         };
+
+        // Cache admin token authentication
+        this.authCache.set(token, {
+          data: result,
+          timestamp: Date.now()
+        });
+
+        return result;
       }
 
       // Regular JWT verification
@@ -591,7 +943,7 @@ class SystemLoadWebSocketManager {
         return { success: false, message: 'Token invalid due to role change. Please login again' };
       }
 
-      return {
+      const result = {
         success: true,
         user: {
           id: currentUser.id,
@@ -601,8 +953,24 @@ class SystemLoadWebSocketManager {
         }
       };
 
+      // Cache successful authentication
+      this.authCache.set(token, {
+        data: result,
+        timestamp: Date.now()
+      });
+
+      return result;
+
     } catch (authError) {
-      return { success: false, message: 'Invalid authentication token' };
+      const errorResult = { success: false, message: 'Invalid authentication token' };
+
+      // Cache failed authentication for shorter time (1 minute)
+      this.authCache.set(token, {
+        data: errorResult,
+        timestamp: Date.now()
+      });
+
+      return errorResult;
     }
   }
 
