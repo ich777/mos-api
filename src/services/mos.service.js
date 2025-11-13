@@ -2347,7 +2347,7 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
   async rollbackOS(kernelRollback = true) {
     try {
       // Arguments for the command
-      const args = ['rollback_mos'];
+      const args = ['rollback'];
 
       // "not_kernel" argument only add if kernelRollback is explicitly false
       if (kernelRollback === false) {
