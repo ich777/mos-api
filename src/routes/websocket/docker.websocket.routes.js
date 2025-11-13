@@ -201,7 +201,7 @@ router.get('/websocket/events', (req, res) => {
             upgrade: {
               token: 'eyJ...',
               operation: 'upgrade',
-              params: { name: 'nginx', forceUpdate: false }
+              params: { name: 'nginx', force_update: false }
             },
             create: {
               token: 'eyJ...',

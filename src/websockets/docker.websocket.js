@@ -170,7 +170,7 @@ class DockerWebSocketManager extends EventEmitter {
    * Execute Docker upgrade operation with streaming output
    */
   async executeUpgrade(operationId, params) {
-    const { name, forceUpdate } = params || {};
+    const { name, force_update } = params || {};
 
     this.sendUpdate(null, operationId, 'started', {
       operation: 'upgrade',
@@ -182,7 +182,7 @@ class DockerWebSocketManager extends EventEmitter {
       const args = [];
 
       if (name) args.push(name);
-      if (forceUpdate) args.push('force_update');
+      if (force_update) args.push('force_update');
 
       await this.executeCommandWithStream(operationId, scriptPath, args, 'upgrade', params);
 
