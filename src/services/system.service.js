@@ -318,7 +318,9 @@ class SystemService {
       // Prepare core-specific load data only
       const coreData = currentLoad.cpus.map((core, index) => ({
         number: index + 1,
-        load: Math.round(core.load * 100) / 100
+        load: {
+          total: Math.round(core.load * 100) / 100
+        }
       }));
 
       return {
@@ -367,7 +369,9 @@ class SystemService {
       // Prepare core-specific load and temperature data
       const coreData = currentLoad.cpus.map((core, index) => ({
         number: index + 1,
-        load: Math.round(core.load * 100) / 100,
+        load: {
+          total: Math.round(core.load * 100) / 100
+        },
         temperature: temp.cores[index] !== undefined ? temp.cores[index] : null
       }));
 
@@ -400,7 +404,7 @@ class SystemService {
           info: staticInfo,
           cores: staticInfo.cores.map((staticCore, index) => ({
             ...staticCore,
-            load: dynamicData.cores[index].load,
+            load: dynamicData.cores[index].load, // Already an object with .total
             temperature: dynamicData.cores[index].temperature
           }))
         },
