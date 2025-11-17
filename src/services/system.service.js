@@ -1205,34 +1205,53 @@ class SystemService {
     const systemMemory = actuallyUsed - docker.bytes - lxc.bytes - vms.bytes;
 
     // Calculate percentages based on total memory
-    // Sum of all breakdown percentages should equal percentage.actuallyUsed
-    const breakdown = {
-      system: {
-        bytes: Math.max(0, systemMemory),
-        bytes_human: this.formatMemoryBytes(Math.max(0, systemMemory)),
-        percentage: Math.round((Math.max(0, systemMemory) / totalMem.total) * 100)
-      },
-      docker: {
-        bytes: docker.bytes,
-        bytes_human: this.formatMemoryBytes(docker.bytes),
-        percentage: Math.round((docker.bytes / totalMem.total) * 100)
-      },
-      lxc: {
-        bytes: lxc.bytes,
-        bytes_human: this.formatMemoryBytes(lxc.bytes),
-        percentage: Math.round((lxc.bytes / totalMem.total) * 100)
-      },
-      vms: {
-        bytes: vms.bytes,
-        bytes_human: this.formatMemoryBytes(vms.bytes),
-        percentage: Math.round((vms.bytes / totalMem.total) * 100)
+    // Round to ensure the sum equals 100%
+    const services = [
+      { key: 'system', bytes: Math.max(0, systemMemory) },
+      { key: 'docker', bytes: docker.bytes },
+      { key: 'lxc', bytes: lxc.bytes },
+      { key: 'vms', bytes: vms.bytes }
+    ];
+
+    // Calculate exact percentages
+    const exactPercentages = services.map(service => ({
+      ...service,
+      exactPercentage: (service.bytes / totalMem.total) * 100
+    }));
+
+    // Round down initially
+    let roundedPercentages = exactPercentages.map(service => ({
+      ...service,
+      percentage: Math.floor(service.exactPercentage),
+      remainder: service.exactPercentage - Math.floor(service.exactPercentage)
+    }));
+
+    // Calculate how many percent points we need to distribute
+    const sum = roundedPercentages.reduce((acc, s) => acc + s.percentage, 0);
+    let toDistribute = Math.round((actuallyUsed / totalMem.total) * 100) - sum;
+
+    // Sort by remainder (descending) and distribute the missing percent points,
+    // but only to services that have bytes > 0
+    roundedPercentages.sort((a, b) => b.remainder - a.remainder);
+    for (let i = 0; i < roundedPercentages.length && toDistribute > 0; i++) {
+      if (roundedPercentages[i].bytes > 0) {
+        roundedPercentages[i].percentage++;
+        toDistribute--;
       }
-    };
+    }
+
+    // Build the final breakdown object
+    const breakdown = {};
+    roundedPercentages.forEach(service => {
+      breakdown[service.key] = {
+        bytes: service.bytes,
+        bytes_human: this.formatMemoryBytes(service.bytes),
+        percentage: service.percentage
+      };
+    });
 
     return breakdown;
   }
-
-
 
   /**
    * Reboot system
