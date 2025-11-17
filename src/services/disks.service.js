@@ -8,8 +8,6 @@ const path = require('path');
 
 class DisksService {
   constructor() {
-    // Keine Caches mehr
-
   }
 
   /**
@@ -91,7 +89,16 @@ class DisksService {
         };
       }
 
-      // 3. USB-Device Erkennung über sysfs (SAFE)
+      // 3. md/nmd (Software RAID) Erkennung
+      if (deviceName.match(/^(n)?md\d+/)) {
+        return {
+          type: 'md',
+          rotational: null, // kann aus HDD oder SSD bestehen
+          removable: false
+        };
+      }
+
+      // 4. USB-Device Erkennung über sysfs (SAFE)
       const usbCheck = await this._checkIfUSBDeviceSafe(deviceName);
       if (usbCheck.isUSB) {
         return {
@@ -102,10 +109,10 @@ class DisksService {
         };
       }
 
-      // 4. SSD vs HDD Erkennung über /sys/block/{device}/queue/rotational (SAFE)
+      // 5. SSD vs HDD Erkennung über /sys/block/{device}/queue/rotational (SAFE)
       const rotationalInfo = await this._checkRotationalSafe(deviceName);
 
-      // 5. Removable-Status prüfen (SAFE)
+      // 6. Removable-Status prüfen (SAFE)
       const removableInfo = await this._checkRemovableSafe(deviceName);
 
       return {
@@ -350,9 +357,9 @@ class DisksService {
       // Hole erweiterte Typ-Informationen (nur für Typ-Bestimmung)
       const diskTypeInfo = await this._getEnhancedDiskType(device);
 
-      // Nur NVMe und eMMC sind wirklich immer aktiv (haben keinen Standby-Modus)
+      // Nur NVMe, eMMC, md und nmd sind wirklich immer aktiv (haben keinen Standby-Modus)
       // ALLE anderen Disks (HDDs, SSDs, USB mit mSATA) können in Standby gehen!
-      if (diskTypeInfo.type === 'nvme' || diskTypeInfo.type === 'emmc') {
+      if (diskTypeInfo.type === 'nvme' || diskTypeInfo.type === 'emmc' || diskTypeInfo.type === 'md') {
         return {
           status: 'active',
           active: true,
@@ -431,8 +438,8 @@ class DisksService {
       // Hole erweiterte Typ-Informationen
       const diskTypeInfo = await this._getEnhancedDiskType(device);
 
-      // NVMe, eMMC und SSDs sind immer aktiv
-      if (diskTypeInfo.type === 'nvme' || diskTypeInfo.type === 'emmc' ||
+      // NVMe, eMMC, md und SSDs sind immer aktiv
+      if (diskTypeInfo.type === 'nvme' || diskTypeInfo.type === 'emmc' || diskTypeInfo.type === 'md' ||
           (!diskTypeInfo.rotational && diskTypeInfo.type === 'ssd')) {
         return {
           status: 'active',
@@ -667,13 +674,19 @@ class DisksService {
 
   /**
    * Checks if a disk is already in use (mounted or in pool)
+   * @param {string} device - Device to check
+   * @param {Array} pools - Pre-loaded pools list (optional, will load if not provided)
+   * @param {Map} mounts - Pre-loaded mounts map (optional, will load if not provided)
    */
-  async _isDiskInUse(device) {
+  async _isDiskInUse(device, pools = null, mounts = null) {
     try {
       // Check pool membership using UUID-based approach
       try {
-        const baseService = new PoolsService();
-        const pools = await baseService.listPools({});
+        // Use provided pools or load them
+        if (!pools) {
+          const baseService = new PoolsService();
+          pools = await baseService.listPools({});
+        }
 
         // Get all UUIDs that belong to this device by reading /dev/disk/by-uuid/
         const deviceUuids = await this._getDeviceUuidsBySymlinks(device);
@@ -740,7 +753,10 @@ class DisksService {
       }
 
       // Erst NACH Pool-Prüfung: Mount-Prüfungen
-      const mounts = await this._getMountInfo();
+      // Use provided mounts or load them
+      if (!mounts) {
+        mounts = await this._getMountInfo();
+      }
 
       // Prüfe direkte Mounts der ganzen Disk
       if (mounts.has(device)) {
@@ -765,10 +781,66 @@ class DisksService {
         }
       }
 
-      // Prüfe BTRFS Multi-Device Detection
-      const btrfsUsage = await this._checkBtrfsUsage(device);
-      if (btrfsUsage.inUse) {
-        return btrfsUsage;
+      // Note: BTRFS multi-device detection is now handled in getUnassignedDisks via blkidCache
+
+      return { inUse: false };
+    } catch (error) {
+      return { inUse: false };
+    }
+  }
+
+  /**
+   * Check if a device is part of a mounted BTRFS multi-device filesystem
+   * @param {string} device - Device path to check
+   * @returns {Promise<Object>} Usage information
+   */
+  async _checkBtrfsUsage(device) {
+    try {
+      // Get device UUID and filesystem type
+      const { stdout: blkidOut } = await execPromise(`blkid ${device} 2>/dev/null || echo ""`);
+
+      if (!blkidOut.trim()) {
+        return { inUse: false };
+      }
+
+      const uuidMatch = blkidOut.match(/UUID="([^"]+)"/);
+      const typeMatch = blkidOut.match(/TYPE="([^"]+)"/);
+
+      // Not a BTRFS device
+      if (!typeMatch || typeMatch[1] !== 'btrfs') {
+        return { inUse: false };
+      }
+
+      if (!uuidMatch) {
+        return { inUse: false };
+      }
+
+      const deviceUuid = uuidMatch[1];
+
+      // Check if this BTRFS UUID is mounted somewhere
+      const mounts = await this._getMountInfo();
+
+      for (const [mountedDevice, mountInfo] of mounts) {
+        if (mountInfo.fstype === 'btrfs') {
+          try {
+            const { stdout: mountedBlkidOut } = await execPromise(`blkid ${mountedDevice} 2>/dev/null || echo ""`);
+            const mountedUuidMatch = mountedBlkidOut.match(/UUID="([^"]+)"/);
+
+            if (mountedUuidMatch && mountedUuidMatch[1] === deviceUuid) {
+              // Found a mounted device with the same BTRFS UUID
+              return {
+                inUse: true,
+                reason: 'btrfs_multi_device',
+                uuid: deviceUuid,
+                mountpoint: mountInfo.mountpoint,
+                primaryDevice: mountedDevice,
+                filesystem: 'btrfs'
+              };
+            }
+          } catch (error) {
+            // Ignore errors for individual devices
+          }
+        }
       }
 
       return { inUse: false };
@@ -974,8 +1046,8 @@ class DisksService {
       const disks = [];
 
       for (const disk of blockDevices) {
-        // Nur physische Disks, keine Partitionen oder Loop-Devices
-        if (disk.type !== 'disk' || disk.name.includes('loop')) {
+        // Nur physische Disks, keine Partitionen, Loop-Devices oder md-Partitionen
+        if (disk.type !== 'disk' || disk.name.includes('loop') || disk.name.match(/md\d+p\d+/)) {
           continue;
         }
 
@@ -1107,23 +1179,66 @@ class DisksService {
       const allDisks = await this.getAllDisks(diskOptions, user);
       const unassignedDisks = [];
 
-      // Collect all mounted BTRFS UUIDs
+      // Get all blkid data at once (single command, much faster than individual calls)
+      let blkidCache = new Map();
+      try {
+        const { stdout: allBlkidOut } = await execPromise(`blkid 2>/dev/null || echo ""`);
+        const lines = allBlkidOut.trim().split('\n');
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const deviceMatch = line.match(/^([^:]+):/);
+          if (deviceMatch) {
+            const device = deviceMatch[1];
+            const uuidMatch = line.match(/UUID="([^"]+)"/);
+            const typeMatch = line.match(/TYPE="([^"]+)"/);
+            if (uuidMatch || typeMatch) {
+              blkidCache.set(device, {
+                uuid: uuidMatch ? uuidMatch[1] : null,
+                type: typeMatch ? typeMatch[1] : null
+              });
+            }
+          }
+        }
+      } catch (error) {
+        // If blkid fails, continue without cache
+      }
+
+      // Collect all mounted BTRFS UUIDs using parallel promises
       const mountedBtrfsUuids = new Set();
       const mounts = await this._getMountInfo();
 
-      for (const [mountedDevice, mountInfo] of mounts) {
-        // Collect BTRFS UUIDs
-        if (mountInfo.fstype === 'btrfs') {
+      const btrfsMountPromises = Array.from(mounts)
+        .filter(([_, mountInfo]) => mountInfo.fstype === 'btrfs')
+        .map(async ([mountedDevice]) => {
           try {
+            // Use cache if available
+            if (blkidCache.has(mountedDevice)) {
+              const cached = blkidCache.get(mountedDevice);
+              if (cached.uuid) {
+                return cached.uuid;
+              }
+            }
+            // Fallback to individual blkid call
             const { stdout: blkidOut } = await execPromise(`blkid ${mountedDevice} 2>/dev/null || echo ""`);
             const uuidMatch = blkidOut.match(/UUID="([^"]+)"/);
-            if (uuidMatch) {
-              mountedBtrfsUuids.add(uuidMatch[1]);
-            }
+            return uuidMatch ? uuidMatch[1] : null;
           } catch (error) {
-            // Ignore errors for individual devices
+            return null;
           }
-        }
+        });
+
+      const btrfsUuids = await Promise.all(btrfsMountPromises);
+      btrfsUuids.forEach(uuid => {
+        if (uuid) mountedBtrfsUuids.add(uuid);
+      });
+
+      // Load pools and mounts once for all disks (major performance optimization)
+      let pools = [];
+      try {
+        const baseService = new PoolsService();
+        pools = await baseService.listPools({});
+      } catch (error) {
+        // Pools service not available, continue without pool info
       }
 
       for (const disk of allDisks) {
@@ -1134,7 +1249,8 @@ class DisksService {
         }
 
         // Check in detail if disk is in use (pools, all mounts, etc.)
-        const usageInfo = await this._isDiskInUse(disk.device);
+        // Pass pre-loaded pools and mounts to avoid repeated calls
+        const usageInfo = await this._isDiskInUse(disk.device, pools, mounts);
 
         if (!usageInfo.inUse) {
           // Additional BTRFS check: Is this disk or one of its partitions part of a mounted BTRFS?
@@ -1142,46 +1258,52 @@ class DisksService {
           let isPartOfMountedBtrfs = false;
 
           if (!disk.standbySkipped) {
-            // 1. Check the whole disk
-            try {
-              const devicePath = disk.device.startsWith('/dev/') ? disk.device : `/dev/${disk.device}`;
-              const { stdout: blkidOut } = await execPromise(`blkid ${devicePath} 2>/dev/null || echo ""`);
+            // 1. Check the whole disk using cache
+            const devicePath = disk.device.startsWith('/dev/') ? disk.device : `/dev/${disk.device}`;
 
-              if (blkidOut.trim()) {
-                const uuidMatch = blkidOut.match(/UUID="([^"]+)"/);
-                const fsTypeMatch = blkidOut.match(/TYPE="([^"]+)"/);
+            if (blkidCache.has(devicePath)) {
+              const cached = blkidCache.get(devicePath);
+              if (cached.type === 'btrfs' && cached.uuid && mountedBtrfsUuids.has(cached.uuid)) {
+                isPartOfMountedBtrfs = true;
+              }
+            }
 
-                if (uuidMatch && fsTypeMatch && fsTypeMatch[1] === 'btrfs') {
-                  const diskUuid = uuidMatch[1];
-                  if (mountedBtrfsUuids.has(diskUuid)) {
+            // 2. Check all partitions of the disk for BTRFS using cache and parallel calls
+            if (!isPartOfMountedBtrfs && disk.partitions && disk.partitions.length > 0) {
+              // Check cache first for all partitions
+              for (const partition of disk.partitions) {
+                if (blkidCache.has(partition.device)) {
+                  const cached = blkidCache.get(partition.device);
+                  if (cached.type === 'btrfs' && cached.uuid && mountedBtrfsUuids.has(cached.uuid)) {
                     isPartOfMountedBtrfs = true;
+                    break;
                   }
                 }
               }
-            } catch (error) {
-              // Ignore errors
-            }
 
-            // 2. Check all partitions of the disk for BTRFS
-            if (!isPartOfMountedBtrfs && disk.partitions) {
-              for (const partition of disk.partitions) {
-                try {
-                  const { stdout: partBlkidOut } = await execPromise(`blkid ${partition.device} 2>/dev/null || echo ""`);
+              // If not found in cache, do parallel blkid calls for partitions not in cache
+              if (!isPartOfMountedBtrfs) {
+                const partitionsToCheck = disk.partitions.filter(p => !blkidCache.has(p.device));
 
-                  if (partBlkidOut.trim()) {
-                    const uuidMatch = partBlkidOut.match(/UUID="([^"]+)"/);
-                    const fsTypeMatch = partBlkidOut.match(/TYPE="([^"]+)"/);
-
-                    if (uuidMatch && fsTypeMatch && fsTypeMatch[1] === 'btrfs') {
-                      const partitionUuid = uuidMatch[1];
-                      if (mountedBtrfsUuids.has(partitionUuid)) {
-                        isPartOfMountedBtrfs = true;
-                        break; // One partition is enough
+                if (partitionsToCheck.length > 0) {
+                  const partitionCheckPromises = partitionsToCheck.map(async (partition) => {
+                    try {
+                      const { stdout: partBlkidOut } = await execPromise(`blkid ${partition.device} 2>/dev/null || echo ""`);
+                      if (partBlkidOut.trim()) {
+                        const uuidMatch = partBlkidOut.match(/UUID="([^"]+)"/);
+                        const fsTypeMatch = partBlkidOut.match(/TYPE="([^"]+)"/);
+                        if (uuidMatch && fsTypeMatch && fsTypeMatch[1] === 'btrfs') {
+                          return mountedBtrfsUuids.has(uuidMatch[1]);
+                        }
                       }
+                      return false;
+                    } catch (error) {
+                      return false;
                     }
-                  }
-                } catch (error) {
-                  // Ignore errors for individual partitions
+                  });
+
+                  const partitionResults = await Promise.all(partitionCheckPromises);
+                  isPartOfMountedBtrfs = partitionResults.some(result => result === true);
                 }
               }
             }
@@ -1275,12 +1397,13 @@ class DisksService {
       const devicePath = device.startsWith('/dev/') ? device : `/dev/${device}`;
       const deviceName = device.replace('/dev/', '');
 
-      // Einfache Prüfung: Nur NVMe und eMMC überspringen (ohne komplexe Disk-Typ-Erkennung)
+      // Einfache Prüfung: Nur NVMe, eMMC, md und nmd überspringen (ohne komplexe Disk-Typ-Erkennung)
       // Diese einfache Prüfung weckt garantiert keine Disks auf
-      if (deviceName.includes('nvme') || deviceName.includes('mmc')) {
+      if (deviceName.includes('nvme') || deviceName.includes('mmc') ||
+          devicePath.includes('/dev/md') || devicePath.includes('/dev/nmd')) {
         return {
           success: true,
-          message: 'NVMe/eMMC device is always active',
+          message: 'NVMe/eMMC/md device is always active',
           device: device
         };
       }
@@ -1383,12 +1506,13 @@ class DisksService {
     try {
       const devicePath = device.startsWith('/dev/') ? device : `/dev/${device}`;
 
-      // NVMe devices don't reliably support power management via nvme-cli
+      // NVMe, md und nmd devices don't reliably support power management via nvme-cli
       // Many NVMe controllers don't implement the power management features properly
-      if (device.includes('nvme')) {
+      // md/nmd devices sind Software RAID und haben kein Power Management
+      if (device.includes('nvme') || device.includes('/dev/md') || device.includes('/dev/nmd')) {
         return {
           success: false,
-          message: 'NVMe devices do not reliably support standby mode',
+          message: 'NVMe/md/nmd devices do not reliably support standby mode',
           device: device
         };
       } else if (device.includes('ssd')) {
@@ -1518,6 +1642,20 @@ class DisksService {
         await execPromise(`parted -s ${devicePath} mklabel gpt`);
         await execPromise(`parted -s ${devicePath} mkpart primary 1MiB 100%`);
 
+        // Wait a moment for the partition to be recognized by the kernel
+        await new Promise(resolve => setTimeout(resolve, 1000));
+
+        // Inform kernel about partition table changes
+        try {
+          await execPromise(`partprobe ${devicePath}`);
+        } catch (error) {
+          // partprobe might fail on some systems, but that's usually not critical
+          console.warn(`partprobe failed: ${error.message}`);
+        }
+
+        // Wait again after partprobe (important for USB devices and slow controllers)
+        await new Promise(resolve => setTimeout(resolve, 1500));
+
         // Format first partition - handle NVMe naming convention
         const deviceName = device.replace('/dev/', '');
         let partitionPath;
@@ -1527,6 +1665,25 @@ class DisksService {
         } else {
           // Traditional devices (sda, sdb, etc.)
           partitionPath = `${devicePath}1`;
+        }
+
+        // Verify partition exists before formatting (retry mechanism for slow devices)
+        let partitionExists = false;
+        for (let retry = 0; retry < 5; retry++) {
+          try {
+            await fs.access(partitionPath);
+            partitionExists = true;
+            break;
+          } catch (error) {
+            if (retry < 4) {
+              // Wait before retry (exponential backoff)
+              await new Promise(resolve => setTimeout(resolve, 500 * (retry + 1)));
+            }
+          }
+        }
+
+        if (!partitionExists) {
+          throw new Error(`Partition ${partitionPath} was not created. This can happen with slow devices or controllers.`);
         }
 
         // Add force option for btrfs, xfs and ext4 to overwrite existing filesystems

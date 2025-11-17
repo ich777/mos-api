@@ -3327,6 +3327,11 @@ class PoolsService {
           return `/var/snapraid/${pool.name}/parity${device.slot}`;
         }
         return `/var/mergerfs/${pool.name}/disk${device.slot}`;
+      case 'nonraid':
+        if (deviceType === 'parity') {
+          return null;
+        }
+        return `/var/mergerfs/${pool.name}/disk${device.slot}`;
 
       case 'btrfs':
       case 'ext4':
@@ -5408,14 +5413,22 @@ class PoolsService {
 
       // Check power status with hdparm
       let powerStatus = 'active';
-      try {
-        const { stdout } = await execPromise(`hdparm -C ${disk.device} 2>/dev/null`);
-        if (stdout.includes('active/idle') || stdout.includes('idle')) powerStatus = 'active';
-        else if (stdout.includes('standby')) powerStatus = 'standby';
-        else if (stdout.includes('sleeping')) powerStatus = 'standby';
-      } catch (error) {
-        // If hdparm fails, assume it's wake for NVMe/SSD devices
-        powerStatus = (disk.device && (disk.device.includes('nvme') || disk.device.includes('ssd'))) ? 'wake' : 'unknown';
+
+      // Skip devices that don't support hdparm (nvme, md, nmd, partitions)
+      if (disk.device && (disk.device.includes('nvme') ||
+          disk.device.includes('/dev/md') ||
+          disk.device.includes('/dev/nmd') ||
+          disk.device.match(/p\d+$/))) {
+        powerStatus = 'active';
+      } else {
+        try {
+          const { stdout } = await execPromise(`hdparm -C ${disk.device} 2>/dev/null`);
+          if (stdout.includes('active/idle') || stdout.includes('idle')) powerStatus = 'active';
+          else if (stdout.includes('standby')) powerStatus = 'standby';
+          else if (stdout.includes('sleeping')) powerStatus = 'standby';
+        } catch (error) {
+          powerStatus = 'unknown';
+        }
       }
 
       return {
@@ -5555,16 +5568,25 @@ class PoolsService {
         continue;
       }
 
-      try {
-        // Check if this is a mapper device (LUKS encrypted)
-        let targetDevice = device.device;
-        if (device.device.startsWith('/dev/mapper/')) {
-          const underlying = await this._getPhysicalDeviceFromMapper(device.device);
-          if (underlying) {
-            targetDevice = underlying;
-          }
+      // Check if this is a mapper device (LUKS encrypted)
+      let targetDevice = device.device;
+      if (device.device.startsWith('/dev/mapper/')) {
+        const underlying = await this._getPhysicalDeviceFromMapper(device.device);
+        if (underlying) {
+          targetDevice = underlying;
         }
+      }
 
+      // Skip devices that don't support hdparm (nvme, md, nmd, partitions)
+      if (targetDevice && (targetDevice.includes('nvme') ||
+          targetDevice.includes('/dev/md') ||
+          targetDevice.includes('/dev/nmd') ||
+          targetDevice.match(/p\d+$/))) {
+        device.powerStatus = 'active';
+        continue;
+      }
+
+      try {
         const { stdout } = await execPromise(`hdparm -C ${targetDevice} 2>/dev/null`);
 
         let powerStatus = 'active';
@@ -5578,8 +5600,7 @@ class PoolsService {
 
         device.powerStatus = powerStatus;
       } catch (error) {
-        // If hdparm fails, assume it's active for NVMe/SSD devices (they don't support standby)
-        device.powerStatus = (device.device && (device.device.includes('nvme') || device.device.includes('ssd'))) ? 'active' : 'unknown';
+        device.powerStatus = 'unknown';
       }
     }
 
@@ -5590,16 +5611,25 @@ class PoolsService {
         continue;
       }
 
-      try {
-        // Check if this is a mapper device (LUKS encrypted)
-        let targetDevice = device.device;
-        if (device.device.startsWith('/dev/mapper/')) {
-          const underlying = await this._getPhysicalDeviceFromMapper(device.device);
-          if (underlying) {
-            targetDevice = underlying;
-          }
+      // Check if this is a mapper device (LUKS encrypted)
+      let targetDevice = device.device;
+      if (device.device.startsWith('/dev/mapper/')) {
+        const underlying = await this._getPhysicalDeviceFromMapper(device.device);
+        if (underlying) {
+          targetDevice = underlying;
         }
+      }
 
+      // Skip devices that don't support hdparm (nvme, md, nmd, partitions)
+      if (targetDevice && (targetDevice.includes('nvme') ||
+          targetDevice.includes('/dev/md') ||
+          targetDevice.includes('/dev/nmd') ||
+          targetDevice.match(/p\d+$/))) {
+        device.powerStatus = 'active';
+        continue;
+      }
+
+      try {
         const { stdout } = await execPromise(`hdparm -C ${targetDevice} 2>/dev/null`);
 
         let powerStatus = 'active';
@@ -5613,8 +5643,7 @@ class PoolsService {
 
         device.powerStatus = powerStatus;
       } catch (error) {
-        // If hdparm fails, assume it's active for NVMe/SSD devices (they don't support standby)
-        device.powerStatus = (device.device && (device.device.includes('nvme') || device.device.includes('ssd'))) ? 'active' : 'unknown';
+        device.powerStatus = 'unknown';
       }
     }
   }
@@ -5761,6 +5790,15 @@ class PoolsService {
       const powerStatuses = [];
 
       for (const disk of allDisks) {
+        // Skip devices that don't support hdparm (nvme, md, nmd, partitions)
+        if (disk.device && (disk.device.includes('nvme') ||
+            disk.device.includes('/dev/md') ||
+            disk.device.includes('/dev/nmd') ||
+            disk.device.match(/p\d+$/))) {
+          powerStatuses.push('active');
+          continue;
+        }
+
         try {
           const { stdout } = await execPromise(`hdparm -C ${disk.device} 2>/dev/null`);
 

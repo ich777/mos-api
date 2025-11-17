@@ -1762,6 +1762,122 @@ router.post('/mos/groups/:groupId/restart', async (req, res) => {
 
 /**
  * @swagger
+ * /docker/mos/groups/{groupId}/upgrade:
+ *   post:
+ *     summary: Upgrade all containers in a group
+ *     description: |
+ *       Upgrade all containers that belong to the specified group to their latest versions (sequential execution).
+ *       Note: Docker Compose groups are not supported - use the compose API endpoints instead.
+ *     tags: [Docker]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: groupId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Group ID
+ *         example: "1695384000123456789"
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               force_update:
+ *                 type: boolean
+ *                 default: false
+ *                 description: Force update even if no new version available
+ *                 example: false
+ *     responses:
+ *       200:
+ *         description: Group upgrade operation completed
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 groupId:
+ *                   type: string
+ *                   description: Group ID
+ *                   example: "1695384000123456789"
+ *                 groupName:
+ *                   type: string
+ *                   description: Group name
+ *                   example: "Web Services"
+ *                 totalContainers:
+ *                   type: integer
+ *                   description: Total number of containers in group
+ *                   example: 3
+ *                 successCount:
+ *                   type: integer
+ *                   description: Number of containers upgraded successfully
+ *                   example: 2
+ *                 failureCount:
+ *                   type: integer
+ *                   description: Number of containers that failed to upgrade
+ *                   example: 1
+ *                 results:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       container:
+ *                         type: string
+ *                         description: Container name
+ *                         example: "nginx"
+ *                       status:
+ *                         type: string
+ *                         enum: [success, error]
+ *                         description: Operation status
+ *                         example: "success"
+ *                       message:
+ *                         type: string
+ *                         description: Status message
+ *                         example: "Container upgraded successfully"
+ *                       details:
+ *                         type: object
+ *                         description: Detailed upgrade information
+ *       400:
+ *         description: Group is a Docker Compose stack
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *             example:
+ *               error: "Group 'mystack' is a Docker Compose stack. Use the compose API endpoints to manage compose stacks."
+ *       404:
+ *         description: Group not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+router.post('/mos/groups/:groupId/upgrade', async (req, res) => {
+  try {
+    const { groupId } = req.params;
+    const forceUpdate = req.body?.force_update || false;
+    const result = await dockerService.upgradeContainerGroup(groupId, forceUpdate);
+    res.json(result);
+  } catch (error) {
+    if (error.message.includes('not found')) {
+      res.status(404).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
+/**
+ * @swagger
  * /docker/mos/groups/order:
  *   put:
  *     summary: Update group order/index

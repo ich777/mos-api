@@ -1423,6 +1423,62 @@ class DockerService {
   }
 
   /**
+   * Upgrade all containers in a group (sequential execution)
+   * @param {string} groupId - Group ID
+   * @param {boolean} forceUpdate - Force update even if no new version available (default: false)
+   * @returns {Promise<Object>} Result with success/failure details
+   */
+  async upgradeContainerGroup(groupId, forceUpdate = false) {
+    try {
+      const groups = await this._readGroups();
+      const group = groups.find(g => g.id === groupId);
+
+      if (!group) {
+        throw new Error(`Group with ID '${groupId}' not found`);
+      }
+
+      // Check if this is a compose group
+      if (group.compose === true) {
+        throw new Error(`Group '${group.name}' is a Docker Compose stack. Use the compose API endpoints to manage compose stacks.`);
+      }
+
+      const results = {
+        groupId,
+        groupName: group.name,
+        totalContainers: group.containers.length,
+        results: [],
+        successCount: 0,
+        failureCount: 0
+      };
+
+      // Upgrade each container in the group sequentially
+      for (const containerName of group.containers) {
+        try {
+          const upgradeResult = await this.Upgrade(containerName, forceUpdate);
+          results.results.push({
+            container: containerName,
+            status: 'success',
+            message: upgradeResult.message || 'Container upgraded successfully',
+            details: upgradeResult
+          });
+          results.successCount++;
+        } catch (error) {
+          results.results.push({
+            container: containerName,
+            status: 'error',
+            message: error.message || 'Unknown error'
+          });
+          results.failureCount++;
+        }
+      }
+
+      return results;
+    } catch (error) {
+      throw new Error(`Failed to upgrade container group: ${error.message}`);
+    }
+  }
+
+  /**
    * Add containers to a group
    * @param {string} groupId - Group ID
    * @param {Array} containerNames - Array of container names to add

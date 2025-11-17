@@ -1079,7 +1079,6 @@ class SystemService {
 
       return { bytes: totalMemory, containers: containers.length };
     } catch (error) {
-      console.warn('Docker memory read failed:', error.message);
       return { bytes: 0, containers: 0 };
     }
   }
@@ -1129,7 +1128,6 @@ class SystemService {
 
       return { bytes: totalMemory, containers: containers.length };
     } catch (error) {
-      console.warn('LXC memory read failed:', error.message);
       return { bytes: 0, containers: 0 };
     }
   }
@@ -1158,7 +1156,6 @@ class SystemService {
           totalMemory += parseInt(match[1]) * 1024; // Convert KB to bytes
         }
       }
-
       return { bytes: totalMemory, vms: vmCount };
     } catch (error) {
       return { bytes: 0, vms: 0 };
