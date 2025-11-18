@@ -1,6 +1,13 @@
 const { spawn } = require('child_process');
 const EventEmitter = require('events');
 
+/**
+ * Docker WebSocket Manager - Handles real-time Docker operations with streaming output
+ * @class DockerWebSocketManager
+ * @extends EventEmitter
+ *
+ * For API documentation and usage examples, see: /routes/websocket/docker.websocket.routes.js
+ */
 class DockerWebSocketManager extends EventEmitter {
   constructor(io, dockerService) {
     super();
@@ -49,6 +56,9 @@ class DockerWebSocketManager extends EventEmitter {
         switch (operation) {
           case 'upgrade':
             await this.executeUpgrade(operationId, params);
+            break;
+          case 'upgrade-group':
+            await this.executeUpgradeGroup(operationId, params);
             break;
           case 'pull':
             await this.executePull(operationId, params);
@@ -189,6 +199,62 @@ class DockerWebSocketManager extends EventEmitter {
     } catch (error) {
       this.sendUpdate(null, operationId, 'error', {
         message: `Upgrade failed: ${error.message}`
+      });
+    }
+  }
+
+  /**
+   * Execute Docker group upgrade operation with streaming output for each container
+   */
+  async executeUpgradeGroup(operationId, params) {
+    const { groupId, force_update } = params || {};
+
+    this.sendUpdate(null, operationId, 'started', {
+      operation: 'upgrade-group',
+      groupId: groupId
+    });
+
+    try {
+      // Get group to find containers
+      const groups = await this.dockerService._readGroups();
+      const group = groups.find(g => g.id === groupId);
+
+      if (!group) {
+        throw new Error(`Group with ID '${groupId}' not found`);
+      }
+
+      // Process each container sequentially
+      for (let i = 0; i < group.containers.length; i++) {
+        const containerName = group.containers[i];
+
+        this.sendUpdate(null, operationId, 'running', {
+          output: `\n=== Upgrading container ${i + 1}/${group.containers.length}: ${containerName} ===\n`,
+          stream: 'stdout'
+        });
+
+        const scriptPath = '/usr/local/bin/mos-update_containers';
+        const args = [containerName];
+        if (force_update) args.push('force_update');
+
+        try {
+          await this.executeCommandWithStream(operationId, scriptPath, args, 'upgrade-group', params);
+        } catch (error) {
+          // Continue with next container even if one fails
+        }
+      }
+
+      // Remove from active operations and send completion
+      this.activeOperations.delete(operationId);
+
+      this.sendUpdate(null, operationId, 'completed', {
+        success: true,
+        message: 'Group upgrade completed'
+      });
+
+    } catch (error) {
+      this.activeOperations.delete(operationId);
+      this.sendUpdate(null, operationId, 'error', {
+        message: `Group upgrade failed: ${error.message}`
       });
     }
   }
@@ -361,8 +427,10 @@ class DockerWebSocketManager extends EventEmitter {
 
       // Handle process completion
       process.on('close', (code) => {
-        // Remove from active operations
-        this.activeOperations.delete(operationId);
+        // Remove from active operations (but not for group operations - they manage their own lifecycle)
+        if (operationType !== 'upgrade-group') {
+          this.activeOperations.delete(operationId);
+        }
 
         const success = code === 0;
         const duration = Date.now() - startTime;
@@ -377,14 +445,17 @@ class DockerWebSocketManager extends EventEmitter {
           }
         }
 
-        this.sendUpdate(null, operationId, 'completed', {
-          success,
-          exitCode: code,
-          result,
-          duration,
-          stdout: stdout.trim(),
-          stderr: stderr.trim()
-        });
+        // Only send 'completed' if not part of a group operation (group sends its own completed)
+        if (operationType !== 'upgrade-group') {
+          this.sendUpdate(null, operationId, 'completed', {
+            success,
+            exitCode: code,
+            result,
+            duration,
+            stdout: stdout.trim(),
+            stderr: stderr.trim()
+          });
+        }
 
         if (success) {
           resolve(result);
@@ -395,7 +466,10 @@ class DockerWebSocketManager extends EventEmitter {
 
       // Handle process errors
       process.on('error', (error) => {
-        this.activeOperations.delete(operationId);
+        // Remove from active operations (but not for group operations - they manage their own lifecycle)
+        if (operationType !== 'upgrade-group') {
+          this.activeOperations.delete(operationId);
+        }
 
         this.sendUpdate(null, operationId, 'error', {
           message: `Process error: ${error.message}`

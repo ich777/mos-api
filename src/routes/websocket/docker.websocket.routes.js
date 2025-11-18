@@ -64,7 +64,7 @@ const { authenticateToken } = require('../../middleware/auth.middleware');
  *       **Simplified Event System:**
  *
  *       **Events to emit (client → server):**
- *       - `docker` - Start a Docker operation (pull, upgrade, create, check-updates)
+ *       - `docker` - Start a Docker operation (pull, upgrade, upgrade-group, create, check-updates)
  *       - `docker-cancel` - Cancel an ongoing operation
  *       - `docker-get-operations` - Get list of active operations
  *
@@ -88,7 +88,7 @@ const { authenticateToken } = require('../../middleware/auth.middleware');
  *       });
  *       ```
  *
- *       Pull a Docker image:
+ *       Pull a Docker image (with live streaming):
  *       ```javascript
  *       socket.emit('docker', {
  *         token: 'your-jwt-token',
@@ -96,6 +96,7 @@ const { authenticateToken } = require('../../middleware/auth.middleware');
  *         params: { image: 'nginx:latest' }
  *       });
  *       ```
+ *       Note: Pull is only available via WebSocket (no REST alternative)
  *
  *       Listen for ALL updates with ONE event:
  *       ```javascript
@@ -122,7 +123,32 @@ const { authenticateToken } = require('../../middleware/auth.middleware');
  *       });
  *       ```
  *
- *       Create a container (same as REST /api/v1/docker/mos/create):
+ *       Upgrade all containers in a group (with live streaming):
+ *       ```javascript
+ *       socket.emit('docker', {
+ *         token: 'your-jwt-token',
+ *         operation: 'upgrade-group',
+ *         params: {
+ *           groupId: '1695384000123',
+ *           force_update: false
+ *         }
+ *       });
+ *       ```
+ *       REST Alternative: `POST /api/v1/docker/mos/groups/{groupId}/upgrade`
+ *       (waits for completion, no streaming)
+ *
+ *       Upgrade a single container (with live streaming):
+ *       ```javascript
+ *       socket.emit('docker', {
+ *         token: 'your-jwt-token',
+ *         operation: 'upgrade',
+ *         params: { name: 'nginx', force_update: false }
+ *       });
+ *       ```
+ *       REST Alternative: `POST /api/v1/docker/mos/upgrade`
+ *       (waits for completion, no streaming)
+ *
+ *       Create a container (with live streaming):
  *       ```javascript
  *       socket.emit('docker', {
  *         token: 'your-jwt-token',
@@ -137,6 +163,19 @@ const { authenticateToken } = require('../../middleware/auth.middleware');
  *         }
  *       });
  *       ```
+ *       REST Alternative: `POST /api/v1/docker/mos/create`
+ *       (waits for completion, no streaming)
+ *
+ *       Check for updates (with live streaming):
+ *       ```javascript
+ *       socket.emit('docker', {
+ *         token: 'your-jwt-token',
+ *         operation: 'check-updates',
+ *         params: { name: 'nginx' } // or omit for all containers
+ *       });
+ *       ```
+ *       REST Alternative: `POST /api/v1/docker/mos/update_check`
+ *       (waits for completion, no streaming)
  *
  *       Get active operations after reconnect:
  *       ```javascript
@@ -189,7 +228,7 @@ router.get('/websocket/events', (req, res) => {
           description: 'Start a Docker operation',
           payload: {
             token: 'JWT token (required)',
-            operation: 'pull | upgrade | create | check-updates',
+            operation: 'pull | upgrade | upgrade-group | create | check-updates',
             params: 'Operation-specific parameters'
           },
           examples: {
@@ -202,6 +241,11 @@ router.get('/websocket/events', (req, res) => {
               token: 'eyJ...',
               operation: 'upgrade',
               params: { name: 'nginx', force_update: false }
+            },
+            'upgrade-group': {
+              token: 'eyJ...',
+              operation: 'upgrade-group',
+              params: { groupId: '1695384000123', force_update: false }
             },
             create: {
               token: 'eyJ...',
