@@ -372,6 +372,137 @@ router.patch('/:id/comment', checkRole(['admin']), async (req, res) => {
 
 /**
  * @swagger
+ * /pools/{id}/config:
+ *   get:
+ *     summary: Get pool configuration
+ *     description: Retrieve the configuration settings for a specific pool
+ *     tags: [Pools]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Pool ID
+ *     responses:
+ *       200:
+ *         description: Pool configuration retrieved successfully (returns config object directly)
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               description: The pool's configuration object
+ *               example:
+ *                 unclean_check: true
+ *                 encrypted: false
+ *                 sync:
+ *                   enabled: true
+ *                   schedule: "0 4 * * *"
+ *       404:
+ *         description: Pool not found
+ *       500:
+ *         description: Server error
+ *   patch:
+ *     summary: Update pool configuration
+ *     description: |
+ *       Update configuration settings for a pool (works for all pool types - mergerfs, btrfs, xfs, etc.)
+ *       
+ *       **Supports dot-notation for nested properties:**
+ *       - Direct: `{ "unclean_check": false }`
+ *       - Nested: `{ "sync.enabled": true, "sync.schedule": "0 5 * * *" }`
+ *     tags: [Pools]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Pool ID
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               unclean_check:
+ *                 type: boolean
+ *                 description: Enable/disable unclean filesystem check on mount
+ *               encrypted:
+ *                 type: boolean
+ *                 description: Whether pool is encrypted
+ *               raid_level:
+ *                 type: string
+ *                 description: RAID level for BTRFS pools
+ *               sync.enabled:
+ *                 type: boolean
+ *                 description: Enable SnapRAID sync (dot-notation example)
+ *               sync.schedule:
+ *                 type: string
+ *                 description: SnapRAID sync cron schedule (dot-notation example)
+ *           examples:
+ *             direct:
+ *               summary: Direct property
+ *               value:
+ *                 unclean_check: false
+ *             dotNotation:
+ *               summary: Nested with dot-notation
+ *               value:
+ *                 sync.enabled: true
+ *                 sync.schedule: "0 5 * * *"
+ *     responses:
+ *       200:
+ *         description: Configuration updated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 message:
+ *                   type: string
+ *                 pool:
+ *                   type: object
+ *                 updatedConfig:
+ *                   type: object
+ *       404:
+ *         description: Pool not found
+ *       500:
+ *         description: Server error
+ */
+// Get pool configuration
+router.get('/:id/config', checkRole(['admin']), async (req, res) => {
+  try {
+    const result = await poolsService.getPoolConfig(req.params.id);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update pool configuration
+router.patch('/:id/config', checkRole(['admin']), async (req, res) => {
+  try {
+    const configUpdates = req.body;
+
+    if (!configUpdates || Object.keys(configUpdates).length === 0) {
+      return res.status(400).json({ error: 'No configuration updates provided' });
+    }
+
+    const result = await poolsService.updatePoolConfig(req.params.id, configUpdates);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
  * /pools/order:
  *   put:
  *     summary: Update order of all pools

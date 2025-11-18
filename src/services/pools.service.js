@@ -1303,7 +1303,8 @@ class PoolsService {
         parity_devices: [],
         config: {
           encrypted: options.config?.encrypted || false,
-          raid_level: raidLevel
+          raid_level: raidLevel,
+          unclean_check: true
         }
       };
 
@@ -3810,6 +3811,96 @@ class PoolsService {
   }
 
   /**
+   * Helper function to set a value using dot notation
+   * @param {Object} obj - Object to update
+   * @param {string} path - Dot-notation path (e.g., "sync.enabled")
+   * @param {*} value - Value to set
+   * @private
+   */
+  _setDotNotation(obj, path, value) {
+    const parts = path.split('.');
+    let current = obj;
+
+    // Navigate/create nested structure
+    for (let i = 0; i < parts.length - 1; i++) {
+      if (!current[parts[i]] || typeof current[parts[i]] !== 'object') {
+        current[parts[i]] = {};
+      }
+      current = current[parts[i]];
+    }
+
+    // Set the final value
+    current[parts[parts.length - 1]] = value;
+  }
+
+  /**
+   * Get a pool's configuration
+   * @param {string} poolId - Pool ID
+   * @returns {Object} Pool config object
+   */
+  async getPoolConfig(poolId) {
+    try {
+      const pools = await this._readPools();
+      const pool = pools.find(p => p.id === poolId);
+
+      if (!pool) {
+        throw new Error(`Pool with ID "${poolId}" not found`);
+      }
+
+      return pool.config || {};
+    } catch (error) {
+      throw new Error(`Error getting pool config: ${error.message}`);
+    }
+  }
+
+  /**
+   * Update a pool's configuration
+   * @param {string} poolId - Pool ID
+   * @param {Object} configUpdates - Configuration updates to apply (supports dot-notation)
+   * @returns {Object} Result object with success status and updated pool
+   */
+  async updatePoolConfig(poolId, configUpdates) {
+    try {
+      const pools = await this._readPools();
+      const poolIndex = pools.findIndex(p => p.id === poolId);
+
+      if (poolIndex === -1) {
+        throw new Error(`Pool with ID "${poolId}" not found`);
+      }
+
+      const pool = pools[poolIndex];
+
+      // Ensure config object exists
+      if (!pool.config) {
+        pool.config = {};
+      }
+
+      // Update config with provided values
+      // Supports both direct properties and dot-notation (e.g., "sync.enabled")
+      Object.keys(configUpdates).forEach(key => {
+        if (key.includes('.')) {
+          // Use dot-notation for nested properties
+          this._setDotNotation(pool.config, key, configUpdates[key]);
+        } else {
+          // Direct property assignment
+          pool.config[key] = configUpdates[key];
+        }
+      });
+
+      await this._writePools(pools);
+
+      return {
+        success: true,
+        message: `Configuration updated for pool "${pool.name}" (ID: ${poolId})`,
+        pool: pool,
+        updatedConfig: pool.config
+      };
+    } catch (error) {
+      throw new Error(`Error updating pool config: ${error.message}`);
+    }
+  }
+
+  /**
    * Update the order of all pools
    * @param {Array} order - Array of objects with {id, index}
    * @returns {Object} Result object with success status
@@ -4867,7 +4958,8 @@ class PoolsService {
 
         config: {
           ...mergerfsConfig,
-          encrypted: options.config?.encrypted || false
+          encrypted: options.config?.encrypted || false,
+          unclean_check: true
         }
       };
 
