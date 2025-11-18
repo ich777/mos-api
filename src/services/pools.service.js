@@ -791,6 +791,31 @@ class PoolsService {
   }
 
   /**
+   * Get real device path from ID for display purposes (may wake up disks)
+   * @param {string} id - Device ID
+   * @returns {Promise<string|null>} - Real device path or null if not found
+   */
+  async getRealDevicePathFromId(id) {
+    try {
+      if (!id) return null;
+
+      // First try /dev/disk/by-id/ (device ID)
+      const idPath = `/dev/disk/by-id/${id}`;
+      try {
+        await fs.access(idPath);
+        const { stdout } = await execPromise(`readlink -f ${idPath}`);
+        const devicePath = stdout.trim();
+        return devicePath || null;
+      } catch (error) {
+        return null;
+      }
+    } catch (error) {
+      // Other error
+      return null;
+    }
+  }
+
+  /**
    * Clean up SnapRAID configuration file for a pool
    * @param {string} poolName - Name of the pool
    * @returns {Promise<boolean>} - Whether cleanup was successful
@@ -3424,7 +3449,11 @@ class PoolsService {
     // Inject real device paths into parity devices (for API display)
     for (const device of pool.parity_devices || []) {
       if (device.id) {
-        device.device = await this.getRealDevicePathFromUuid(device.id);
+        if ( pool.type === 'nonraid') {
+          device.device = await this.getRealDevicePathFromId(device.id);
+        } else {
+          device.device = await this.getRealDevicePathFromUuid(device.id);
+        }
       }
     }
   }
