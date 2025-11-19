@@ -273,6 +273,7 @@ async function startServer() {
   const terminalService = require('./services/terminal.service');
   const systemService = require('./services/system.service');
   const dockerService = require('./services/docker.service');
+  const dockerComposeService = require('./services/dockercompose.service');
   const PoolWebSocketManager = require('./websockets/pools.websocket');
   const SystemLoadWebSocketManager = require('./websockets/system.websocket');
   const TerminalWebSocketManager = require('./websockets/terminal.websocket');
@@ -325,7 +326,7 @@ async function startServer() {
   const terminalWebSocketManager = new TerminalWebSocketManager(terminalNamespace, terminalService);
 
   // Initialize Docker WebSocket manager with docker namespace
-  const dockerWebSocketManager = new DockerWebSocketManager(dockerNamespace, dockerService);
+  const dockerWebSocketManager = new DockerWebSocketManager(dockerNamespace, dockerService, dockerComposeService);
 
   // Make WebSocket managers available to routes
   app.locals.poolWebSocketManager = poolWebSocketManager;

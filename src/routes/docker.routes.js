@@ -1767,10 +1767,10 @@ router.post('/mos/groups/:groupId/restart', async (req, res) => {
  *     summary: Upgrade all containers in a group
  *     description: |
  *       Upgrade all containers that belong to the specified group to their latest versions (sequential execution).
- *       
+ *
  *       **Note:** This endpoint waits for all upgrades to complete before returning. For live streaming output
  *       during the upgrade process, use the WebSocket API with operation: 'upgrade-group'.
- *       
+ *
  *       **WebSocket Alternative:**
  *       ```javascript
  *       socket.emit('docker', {
@@ -1779,7 +1779,7 @@ router.post('/mos/groups/:groupId/restart', async (req, res) => {
  *         params: { groupId: '123', force_update: false }
  *       });
  *       ```
- *       
+ *
  *       **Docker Compose:** Compose groups are not supported - use the compose API endpoints instead.
  *     tags: [Docker]
  *     security:

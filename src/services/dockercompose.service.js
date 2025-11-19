@@ -4,13 +4,14 @@ const util = require('util');
 const path = require('path');
 const axios = require('axios');
 const dockerService = require('./docker.service');
+const mosService = require('./mos.service');
 
 const execPromise = util.promisify(exec);
 
 class DockerComposeService {
 
   /**
-   * Get the base path for compose stacks
+   * Get the base path for compose stacks (boot directory - master copy)
    * @returns {string} Base path
    */
   _getBasePath() {
@@ -18,12 +19,81 @@ class DockerComposeService {
   }
 
   /**
-   * Get the path for a specific stack
+   * Get the path for a specific stack in boot (master copy)
    * @param {string} stackName - Stack name
    * @returns {string} Stack path
    */
   _getStackPath(stackName) {
     return path.join(this._getBasePath(), stackName);
+  }
+
+  /**
+   * Get the Docker AppData path from settings
+   * @returns {Promise<string>} AppData path
+   */
+  async _getDockerAppDataPath() {
+    try {
+      const dockerSettings = await mosService.getDockerSettings();
+      if (!dockerSettings.appdata) {
+        throw new Error('Docker AppData path not configured');
+      }
+      return dockerSettings.appdata;
+    } catch (error) {
+      throw new Error(`Failed to get Docker AppData path: ${error.message}`);
+    }
+  }
+
+  /**
+   * Get the working directory path for a specific stack (in Docker AppData)
+   * @param {string} stackName - Stack name
+   * @returns {Promise<string>} Working directory path
+   */
+  async _getWorkingPath(stackName) {
+    const appDataPath = await this._getDockerAppDataPath();
+    return path.join(appDataPath, `compose_${stackName}`);
+  }
+
+  /**
+   * Copy stack files from boot to working directory
+   * @param {string} stackName - Stack name
+   * @returns {Promise<void>}
+   */
+  async _copyStackToWorking(stackName) {
+    try {
+      const bootPath = this._getStackPath(stackName);
+      const workingPath = await this._getWorkingPath(stackName);
+
+      // Create working directory if it doesn't exist
+      await fs.mkdir(workingPath, { recursive: true });
+
+      // Copy compose.yaml
+      const composeBootPath = path.join(bootPath, 'compose.yaml');
+      const composeWorkingPath = path.join(workingPath, 'compose.yaml');
+      await fs.copyFile(composeBootPath, composeWorkingPath);
+
+      // Copy .env if it exists
+      const envBootPath = path.join(bootPath, '.env');
+      const envWorkingPath = path.join(workingPath, '.env');
+      try {
+        await fs.access(envBootPath);
+        await fs.copyFile(envBootPath, envWorkingPath);
+      } catch (err) {
+        // .env doesn't exist, that's ok
+        // But remove it from working directory if it exists there
+        try {
+          await fs.unlink(envWorkingPath);
+        } catch (unlinkErr) {
+          // Doesn't exist, that's ok
+        }
+      }
+
+      // Copy mos.override.yaml
+      const mosOverrideBootPath = path.join(bootPath, 'mos.override.yaml');
+      const mosOverrideWorkingPath = path.join(workingPath, 'mos.override.yaml');
+      await fs.copyFile(mosOverrideBootPath, mosOverrideWorkingPath);
+    } catch (error) {
+      throw new Error(`Failed to copy stack to working directory: ${error.message}`);
+    }
   }
 
   /**
@@ -149,6 +219,9 @@ class DockerComposeService {
   async _downloadIcon(iconUrl, stackName) {
     if (!iconUrl) return null;
 
+    const iconDir = '/var/lib/docker/mos/icons/compose';
+    const iconPath = path.join(iconDir, `${stackName}.png`);
+
     try {
       // Download icon
       const response = await axios.get(iconUrl, {
@@ -164,29 +237,50 @@ class DockerComposeService {
       }
 
       // Save icon
-      const iconDir = '/var/lib/docker/mos/icons/compose';
       await fs.mkdir(iconDir, { recursive: true });
-      const iconPath = path.join(iconDir, `${stackName}.png`);
       await fs.writeFile(iconPath, response.data);
 
       return iconPath;
     } catch (error) {
       // Icon download failure is not critical
-      console.warn(`Failed to download icon for stack '${stackName}': ${error.message}`);
-      return null;
+      // If download failed, check if old icon exists and keep it
+      try {
+        await fs.access(iconPath);
+        return iconPath;
+      } catch (accessError) {
+        // No existing icon either
+        return null;
+      }
     }
   }
 
   /**
    * Get actual container names after stack deployment (including stopped containers)
-   * @param {string} stackPath - Path to stack directory
+   * @param {string} stackName - Stack name
    * @returns {Promise<Array<string>>} Array of container names
    */
-  async _getStackContainers(stackPath) {
+  async _getStackContainers(stackName) {
     try {
+      const workingPath = await this._getWorkingPath(stackName);
+
+      // Check if working directory exists, if not try to get containers by label
+      try {
+        await fs.access(workingPath);
+      } catch (err) {
+        // Working directory doesn't exist, try using Docker labels as fallback
+        try {
+          const { stdout } = await execPromise(`docker ps -a --filter "label=mos.stack.name=${stackName}" --format "{{.Names}}"`);
+          const containerNames = stdout.trim().split('\n').filter(s => s);
+          return containerNames;
+        } catch (labelError) {
+          console.warn(`Failed to get stack containers by label: ${labelError.message}`);
+          return [];
+        }
+      }
+
       // Use -a to get ALL containers (running AND stopped)
       const { stdout } = await execPromise("docker-compose ps -aq", {
-        cwd: stackPath
+        cwd: workingPath
       });
 
       const containerIds = stdout.trim().split('\n').filter(s => s);
@@ -219,36 +313,67 @@ class DockerComposeService {
 
   /**
    * Deploy a compose stack
-   * @param {string} stackPath - Path to stack directory
-   * @returns {Promise<void>}
+   * @param {string} stackName - Stack name
+   * @returns {Promise<Object>} Object with stdout and stderr
    */
-  async _deployStack(stackPath) {
+  async _deployStack(stackName) {
     try {
-      await execPromise('docker-compose -f compose.yaml -f mos.override.yaml up -d', {
-        cwd: stackPath
+      const workingPath = await this._getWorkingPath(stackName);
+      const { stdout, stderr } = await execPromise('docker-compose -f compose.yaml -f mos.override.yaml up -d', {
+        cwd: workingPath
       });
+      return { stdout: stdout || '', stderr: stderr || '' };
     } catch (error) {
-      throw new Error(`Failed to deploy stack: ${error.message}`);
+      // Include output even on error
+      throw new Error(`Failed to deploy stack: ${error.message}${error.stderr ? '\n' + error.stderr : ''}`);
     }
   }
 
   /**
    * Stop and remove a compose stack
-   * @param {string} stackPath - Path to stack directory
+   * @param {string} stackName - Stack name
    * @param {boolean} removeImages - Whether to remove images (default: true)
-   * @returns {Promise<void>}
+   * @returns {Promise<Object>} Object with stdout and stderr
    */
-  async _removeStack(stackPath, removeImages = true) {
+  async _removeStack(stackName, removeImages = true) {
     try {
+      const workingPath = await this._getWorkingPath(stackName);
+
+      // Check if working directory exists
+      let workingDirExists = false;
+      try {
+        await fs.access(workingPath);
+        workingDirExists = true;
+      } catch (err) {
+        console.warn(`Working directory not found for stack '${stackName}', will recreate it`);
+      }
+
+      // If working directory doesn't exist, copy it from boot first
+      // This way we can use docker-compose down properly
+      if (!workingDirExists) {
+        try {
+          await this._copyStackToWorking(stackName);
+          console.log(`Recreated working directory for stack '${stackName}'`);
+        } catch (copyError) {
+          console.warn(`Failed to recreate working directory: ${copyError.message}`);
+          // If we can't copy, there's nothing to remove
+          return { stdout: '', stderr: '' };
+        }
+      }
+
+      // Now use docker-compose down - it handles everything correctly
       // --rmi all removes all images used by this stack
       // -v removes named volumes declared in the `volumes` section
       const rmiFlag = removeImages ? ' --rmi all' : '';
-      await execPromise(`docker-compose -f compose.yaml -f mos.override.yaml down${rmiFlag} -v`, {
-        cwd: stackPath
+      const { stdout, stderr } = await execPromise(`docker-compose -f compose.yaml -f mos.override.yaml down${rmiFlag} -v`, {
+        cwd: workingPath
       });
+
+      return { stdout: stdout || '', stderr: stderr || '' };
     } catch (error) {
       // Don't throw if stack is already down
       console.warn(`Warning during stack removal: ${error.message}`);
+      return { stdout: '', stderr: error.message || '' };
     }
   }
 
@@ -286,13 +411,12 @@ class DockerComposeService {
       const removedStackPath = path.join(removedBasePath, name);
       try {
         await fs.access(removedStackPath);
-        console.log(`[DockerCompose] Deleting existing removed stack: ${name}`);
         await fs.rm(removedStackPath, { recursive: true, force: true });
       } catch (err) {
         // Removed stack doesn't exist, that's fine
       }
 
-      // Create stack directory
+      // Step 1-2: Create stack directory in boot and save files
       await fs.mkdir(stackPath, { recursive: true });
 
       // Save compose.yaml
@@ -305,7 +429,7 @@ class DockerComposeService {
         await fs.writeFile(envPath, envContent);
       }
 
-      // Get service names
+      // Get service names (from boot path)
       const services = await this._getComposeServices(stackPath);
 
       if (!services || services.length === 0) {
@@ -323,6 +447,9 @@ class DockerComposeService {
         iconPath = await this._downloadIcon(iconUrl, name);
       }
 
+      // Step 3-4: Copy files from boot to working directory (compose_STACKNAME)
+      await this._copyStackToWorking(name);
+
       // Create Docker group BEFORE deployment so it exists even if deployment fails
       // Icon field is only the stack name (not full path), or null if no icon
       await dockerService.createContainerGroup(name, [], {
@@ -330,32 +457,30 @@ class DockerComposeService {
         icon: iconPath ? name : null
       });
 
-      // Try to deploy stack (this might fail due to invalid YAML, network issues, etc.)
+      // Step 5: Try to deploy stack from working directory (this might fail due to invalid YAML, network issues, etc.)
       let containerNames = [];
       let deploymentError = null;
+      let stdout = '';
+      let stderr = '';
+
       try {
-        console.log(`[DockerCompose] Deploying stack: ${name}`);
-        await this._deployStack(stackPath);
-        console.log(`[DockerCompose] Stack deployed successfully: ${name}`);
+        const output = await this._deployStack(name);
+        stdout = output.stdout;
+        stderr = output.stderr;
       } catch (deployError) {
-        console.error(`[DockerCompose] Deployment failed for ${name}:`, deployError.message);
         deploymentError = deployError;
       }
 
       // Get containers REGARDLESS of deployment success (containers might be created but not started)
-      containerNames = await this._getStackContainers(stackPath);
-      console.log(`[DockerCompose] Found ${containerNames.length} containers:`, containerNames);
+      containerNames = await this._getStackContainers(name);
 
       // Update group with actual containers (even if deployment failed)
       const groups = await dockerService.getContainerGroups();
       const group = groups.find(g => g.name === name && g.compose === true);
       if (group) {
-        console.log(`[DockerCompose] Updating group ${group.id} with containers`);
         await dockerService.updateGroup(group.id, {
           containers: containerNames
         });
-      } else {
-        console.warn(`[DockerCompose] Group not found for stack: ${name}`);
       }
 
       // Return result (even if deployment failed, files and group were created)
@@ -364,7 +489,8 @@ class DockerComposeService {
         stack: name,
         services: services,
         containers: containerNames,
-        iconPath: iconPath
+        iconPath: iconPath,
+        output: stdout || stderr || ''
       };
 
       if (deploymentError) {
@@ -414,7 +540,7 @@ class DockerComposeService {
         throw err;
       }
 
-      // Read all stack directories
+      // Read all stack directories from boot
       const entries = await fs.readdir(basePath, { withFileTypes: true });
       const stacks = [];
 
@@ -432,11 +558,11 @@ class DockerComposeService {
               continue; // Skip if no compose.yaml
             }
 
-            // Get services
+            // Get services from boot path
             const services = await this._getComposeServices(stackPath);
 
-            // Get containers
-            const containers = await this._getStackContainers(stackPath);
+            // Get containers from working directory
+            const containers = await this._getStackContainers(entry.name);
 
             // Get icon URL from mos.override.yaml
             let iconUrl = null;
@@ -480,17 +606,17 @@ class DockerComposeService {
       const mosOverridePath = path.join(stackPath, 'mos.override.yaml');
       const envPath = path.join(stackPath, '.env');
 
-      // Check if stack exists
+      // Check if stack exists in boot
       try {
         await fs.access(composePath);
       } catch (err) {
         throw new Error(`Stack '${name}' not found`);
       }
 
-      // Read compose.yaml
+      // Read compose.yaml from boot
       const composeContent = await fs.readFile(composePath, 'utf8');
 
-      // Read .env if exists
+      // Read .env from boot if exists
       let envContent = null;
       try {
         envContent = await fs.readFile(envPath, 'utf8');
@@ -507,9 +633,11 @@ class DockerComposeService {
         // No mos.override.yaml
       }
 
-      // Get services and containers
+      // Get services from boot path
       const services = await this._getComposeServices(stackPath);
-      const containers = await this._getStackContainers(stackPath);
+
+      // Get containers from working directory
+      const containers = await this._getStackContainers(name);
 
       return {
         name: name,
@@ -552,10 +680,10 @@ class DockerComposeService {
         throw new Error('compose.yaml content is required');
       }
 
-      // Stop current stack
-      await this._removeStack(stackPath);
+      // Stop current stack (from working directory)
+      const removeOutput = await this._removeStack(name);
 
-      // Update compose.yaml
+      // Step 1-2: Update files in boot directory
       await fs.writeFile(composePath, yamlContent);
 
       // Update .env
@@ -571,7 +699,7 @@ class DockerComposeService {
         }
       }
 
-      // Get new service names
+      // Get new service names (from boot path)
       const services = await this._getComposeServices(stackPath);
 
       if (!services || services.length === 0) {
@@ -589,11 +717,14 @@ class DockerComposeService {
         iconPath = await this._downloadIcon(iconUrl, name);
       }
 
-      // Redeploy stack
-      await this._deployStack(stackPath);
+      // Step 3-4: Copy updated files from boot to working directory
+      await this._copyStackToWorking(name);
+
+      // Step 5: Redeploy stack from working directory
+      const output = await this._deployStack(name);
 
       // Get new container names
-      const containerNames = await this._getStackContainers(stackPath);
+      const containerNames = await this._getStackContainers(name);
 
       // Update Docker group
       const groups = await dockerService.getContainerGroups();
@@ -606,12 +737,22 @@ class DockerComposeService {
         });
       }
 
+      // Combine output from down and up operations
+      let combinedOutput = '';
+      if (removeOutput.stdout || removeOutput.stderr) {
+        combinedOutput += '=== Stopping stack ===\n' + (removeOutput.stdout || removeOutput.stderr) + '\n\n';
+      }
+      if (output.stdout || output.stderr) {
+        combinedOutput += '=== Starting stack ===\n' + (output.stdout || output.stderr);
+      }
+
       return {
         success: true,
         stack: name,
         services: services,
         containers: containerNames,
-        iconPath: iconPath
+        iconPath: iconPath,
+        output: combinedOutput || ''
       };
     } catch (error) {
       throw new Error(`Failed to update stack: ${error.message}`);
@@ -638,7 +779,7 @@ class DockerComposeService {
       }
 
       // Stop and remove stack
-      await this._removeStack(stackPath);
+      const removeOutput = await this._removeStack(name);
 
       // Move stack directory to removed instead of deleting
       await this._moveStackToRemoved(name);
@@ -661,7 +802,8 @@ class DockerComposeService {
 
       return {
         success: true,
-        message: `Stack '${name}' deleted successfully`
+        message: `Stack '${name}' deleted successfully`,
+        output: removeOutput.stdout || removeOutput.stderr || ''
       };
     } catch (error) {
       throw new Error(`Failed to delete stack: ${error.message}`);
@@ -679,25 +821,37 @@ class DockerComposeService {
 
       const stackPath = this._getStackPath(name);
 
-      // Check if stack exists
+      // Check if stack exists in boot
       try {
         await fs.access(path.join(stackPath, 'compose.yaml'));
       } catch (err) {
         throw new Error(`Stack '${name}' not found`);
       }
 
-      // Start stack
-      await execPromise('docker-compose -f compose.yaml -f mos.override.yaml start', {
-        cwd: stackPath
+      // Get working path
+      const workingPath = await this._getWorkingPath(name);
+
+      // Check if working directory exists, if not recreate it
+      try {
+        await fs.access(workingPath);
+      } catch (err) {
+        // Working directory doesn't exist, copy from boot
+        await this._copyStackToWorking(name);
+      }
+
+      // Start stack from working directory
+      const { stdout, stderr } = await execPromise('docker-compose -f compose.yaml -f mos.override.yaml start', {
+        cwd: workingPath
       });
 
       // Get containers
-      const containers = await this._getStackContainers(stackPath);
+      const containers = await this._getStackContainers(name);
 
       return {
         success: true,
         stack: name,
-        containers: containers
+        containers: containers,
+        output: stdout || stderr || ''
       };
     } catch (error) {
       throw new Error(`Failed to start stack: ${error.message}`);
@@ -715,22 +869,34 @@ class DockerComposeService {
 
       const stackPath = this._getStackPath(name);
 
-      // Check if stack exists
+      // Check if stack exists in boot
       try {
         await fs.access(path.join(stackPath, 'compose.yaml'));
       } catch (err) {
         throw new Error(`Stack '${name}' not found`);
       }
 
-      // Stop stack
-      await execPromise('docker-compose -f compose.yaml -f mos.override.yaml stop', {
-        cwd: stackPath
+      // Get working path
+      const workingPath = await this._getWorkingPath(name);
+
+      // Check if working directory exists, if not recreate it
+      try {
+        await fs.access(workingPath);
+      } catch (err) {
+        // Working directory doesn't exist, copy from boot
+        await this._copyStackToWorking(name);
+      }
+
+      // Stop stack from working directory
+      const { stdout, stderr } = await execPromise('docker-compose -f compose.yaml -f mos.override.yaml stop', {
+        cwd: workingPath
       });
 
       return {
         success: true,
         stack: name,
-        message: 'Stack stopped successfully'
+        message: 'Stack stopped successfully',
+        output: stdout || stderr || ''
       };
     } catch (error) {
       throw new Error(`Failed to stop stack: ${error.message}`);
@@ -748,25 +914,37 @@ class DockerComposeService {
 
       const stackPath = this._getStackPath(name);
 
-      // Check if stack exists
+      // Check if stack exists in boot
       try {
         await fs.access(path.join(stackPath, 'compose.yaml'));
       } catch (err) {
         throw new Error(`Stack '${name}' not found`);
       }
 
-      // Restart stack
-      await execPromise('docker-compose -f compose.yaml -f mos.override.yaml restart', {
-        cwd: stackPath
+      // Get working path
+      const workingPath = await this._getWorkingPath(name);
+
+      // Check if working directory exists, if not recreate it
+      try {
+        await fs.access(workingPath);
+      } catch (err) {
+        // Working directory doesn't exist, copy from boot
+        await this._copyStackToWorking(name);
+      }
+
+      // Restart stack from working directory
+      const { stdout, stderr } = await execPromise('docker-compose -f compose.yaml -f mos.override.yaml restart', {
+        cwd: workingPath
       });
 
       // Get containers
-      const containers = await this._getStackContainers(stackPath);
+      const containers = await this._getStackContainers(name);
 
       return {
         success: true,
         stack: name,
-        containers: containers
+        containers: containers,
+        output: stdout || stderr || ''
       };
     } catch (error) {
       throw new Error(`Failed to restart stack: ${error.message}`);
@@ -784,16 +962,27 @@ class DockerComposeService {
 
       const stackPath = this._getStackPath(name);
 
-      // Check if stack exists
+      // Check if stack exists in boot
       try {
         await fs.access(path.join(stackPath, 'compose.yaml'));
       } catch (err) {
         throw new Error(`Stack '${name}' not found`);
       }
 
-      // Pull images
+      // Get working path
+      const workingPath = await this._getWorkingPath(name);
+
+      // Check if working directory exists, if not recreate it
+      try {
+        await fs.access(workingPath);
+      } catch (err) {
+        // Working directory doesn't exist, copy from boot
+        await this._copyStackToWorking(name);
+      }
+
+      // Pull images from working directory
       const { stdout, stderr } = await execPromise('docker-compose -f compose.yaml -f mos.override.yaml pull', {
-        cwd: stackPath
+        cwd: workingPath
       });
 
       return {

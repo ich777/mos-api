@@ -64,7 +64,7 @@ const { authenticateToken } = require('../../middleware/auth.middleware');
  *       **Simplified Event System:**
  *
  *       **Events to emit (client → server):**
- *       - `docker` - Start a Docker operation (pull, upgrade, upgrade-group, create, check-updates)
+ *       - `docker` - Start a Docker operation (pull, upgrade, upgrade-group, create, check-updates, compose-create, compose-update, compose-pull, compose-delete)
  *       - `docker-cancel` - Cancel an ongoing operation
  *       - `docker-get-operations` - Get list of active operations
  *
@@ -177,6 +177,62 @@ const { authenticateToken } = require('../../middleware/auth.middleware');
  *       REST Alternative: `POST /api/v1/docker/mos/update_check`
  *       (waits for completion, no streaming)
  *
+ *       **Docker Compose Operations:**
+ *
+ *       Create a compose stack (with live streaming):
+ *       ```javascript
+ *       socket.emit('docker', {
+ *         token: 'your-jwt-token',
+ *         operation: 'compose-create',
+ *         params: {
+ *           name: 'my-stack',
+ *           yamlContent: 'version: "3"\\nservices:\\n  ...',
+ *           envContent: 'ENV_VAR=value', // optional
+ *           iconUrl: 'https://example.com/icon.png' // optional
+ *         }
+ *       });
+ *       ```
+ *       REST Alternative: `POST /api/v1/docker/mos/compose/stacks`
+ *       (waits for completion, no streaming)
+ *
+ *       Update a compose stack (with live streaming):
+ *       ```javascript
+ *       socket.emit('docker', {
+ *         token: 'your-jwt-token',
+ *         operation: 'compose-update',
+ *         params: {
+ *           name: 'my-stack',
+ *           yamlContent: 'version: "3"\\nservices:\\n  ...',
+ *           envContent: 'ENV_VAR=new_value', // optional
+ *           iconUrl: 'https://example.com/new-icon.png' // optional
+ *         }
+ *       });
+ *       ```
+ *       REST Alternative: `PUT /api/v1/docker/mos/compose/stacks/{name}`
+ *       (waits for completion, no streaming)
+ *
+ *       Pull images for a compose stack (with live streaming):
+ *       ```javascript
+ *       socket.emit('docker', {
+ *         token: 'your-jwt-token',
+ *         operation: 'compose-pull',
+ *         params: { name: 'my-stack' }
+ *       });
+ *       ```
+ *       REST Alternative: `POST /api/v1/docker/mos/compose/stacks/{name}/pull`
+ *       (waits for completion, no streaming)
+ *
+ *       Delete a compose stack (with live streaming):
+ *       ```javascript
+ *       socket.emit('docker', {
+ *         token: 'your-jwt-token',
+ *         operation: 'compose-delete',
+ *         params: { name: 'my-stack' }
+ *       });
+ *       ```
+ *       REST Alternative: `DELETE /api/v1/docker/mos/compose/stacks/{name}`
+ *       (waits for completion, no streaming)
+ *
  *       Get active operations after reconnect:
  *       ```javascript
  *       socket.emit('docker-get-operations', { token: 'your-jwt-token' });
@@ -225,10 +281,10 @@ router.get('/websocket/events', (req, res) => {
       client_to_server: [
         {
           event: 'docker',
-          description: 'Start a Docker operation',
+          description: 'Start a Docker or Docker Compose operation',
           payload: {
             token: 'JWT token (required)',
-            operation: 'pull | upgrade | upgrade-group | create | check-updates',
+            operation: 'pull | upgrade | upgrade-group | create | check-updates | compose-create | compose-update | compose-pull | compose-delete',
             params: 'Operation-specific parameters'
           },
           examples: {
@@ -258,6 +314,35 @@ router.get('/websocket/events', (req, res) => {
                   // ... full template
                 }
               }
+            },
+            'compose-create': {
+              token: 'eyJ...',
+              operation: 'compose-create',
+              params: {
+                name: 'my-stack',
+                yamlContent: 'version: "3"\\nservices:\\n  web:\\n    image: nginx',
+                envContent: 'PORT=8080',
+                iconUrl: 'https://example.com/icon.png'
+              }
+            },
+            'compose-update': {
+              token: 'eyJ...',
+              operation: 'compose-update',
+              params: {
+                name: 'my-stack',
+                yamlContent: 'version: "3"\\nservices:\\n  web:\\n    image: nginx:alpine',
+                envContent: 'PORT=8081'
+              }
+            },
+            'compose-pull': {
+              token: 'eyJ...',
+              operation: 'compose-pull',
+              params: { name: 'my-stack' }
+            },
+            'compose-delete': {
+              token: 'eyJ...',
+              operation: 'compose-delete',
+              params: { name: 'my-stack' }
             }
           }
         },
@@ -327,16 +412,20 @@ router.get('/websocket/events', (req, res) => {
       ]
     },
     comparison: {
-      rest_endpoint: '/api/v1/docker/mos/*',
+      rest_endpoints: [
+        '/api/v1/docker/mos/*',
+        '/api/v1/docker/mos/compose/*'
+      ],
       websocket_advantages: [
         'Real-time output streaming',
-        'No timeouts for large images',
+        'No timeouts for large images or stack deployments',
         'Background execution (dialog close doesn\'t kill process)',
         'Cancel operations anytime',
         'Reconnect and resume',
-        'Multiple clients can watch same operation'
+        'Multiple clients can watch same operation',
+        'Live streaming of docker-compose operations'
       ],
-      note: 'Both REST and WebSocket use the same internal functions (dockerService)'
+      note: 'Both REST and WebSocket use the same internal functions (dockerService, dockerComposeService)'
     }
   });
 });
