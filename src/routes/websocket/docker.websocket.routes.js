@@ -186,9 +186,9 @@ const { authenticateToken } = require('../../middleware/auth.middleware');
  *         operation: 'compose-create',
  *         params: {
  *           name: 'my-stack',
- *           yamlContent: 'version: "3"\\nservices:\\n  ...',
- *           envContent: 'ENV_VAR=value', // optional
- *           iconUrl: 'https://example.com/icon.png' // optional
+ *           yaml: 'version: "3"\\nservices:\\n  ...',
+ *           env: 'ENV_VAR=value', // optional
+ *           icon: 'https://example.com/icon.png' // optional
  *         }
  *       });
  *       ```
@@ -202,9 +202,9 @@ const { authenticateToken } = require('../../middleware/auth.middleware');
  *         operation: 'compose-update',
  *         params: {
  *           name: 'my-stack',
- *           yamlContent: 'version: "3"\\nservices:\\n  ...',
- *           envContent: 'ENV_VAR=new_value', // optional
- *           iconUrl: 'https://example.com/new-icon.png' // optional
+ *           yaml: 'version: "3"\\nservices:\\n  ...',
+ *           env: 'ENV_VAR=new_value', // optional
+ *           icon: 'https://example.com/new-icon.png' // optional
  *         }
  *       });
  *       ```
@@ -320,9 +320,9 @@ router.get('/websocket/events', (req, res) => {
               operation: 'compose-create',
               params: {
                 name: 'my-stack',
-                yamlContent: 'version: "3"\\nservices:\\n  web:\\n    image: nginx',
-                envContent: 'PORT=8080',
-                iconUrl: 'https://example.com/icon.png'
+                yaml: 'version: "3"\\nservices:\\n  web:\\n    image: nginx',
+                env: 'PORT=8080',
+                icon: 'https://example.com/icon.png'
               }
             },
             'compose-update': {
@@ -330,8 +330,8 @@ router.get('/websocket/events', (req, res) => {
               operation: 'compose-update',
               params: {
                 name: 'my-stack',
-                yamlContent: 'version: "3"\\nservices:\\n  web:\\n    image: nginx:alpine',
-                envContent: 'PORT=8081'
+                yaml: 'version: "3"\\nservices:\\n  web:\\n    image: nginx:alpine',
+                env: 'PORT=8081'
               }
             },
             'compose-pull': {

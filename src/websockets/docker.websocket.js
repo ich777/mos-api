@@ -639,11 +639,11 @@ class DockerWebSocketManager extends EventEmitter {
    * Execute Docker Compose stack creation with streaming output
    */
   async executeComposeCreate(operationId, params) {
-    const { name, yamlContent, envContent, iconUrl } = params || {};
+    const { name, yaml, env, icon } = params || {};
 
-    if (!name || !yamlContent) {
+    if (!name || !yaml) {
       this.sendUpdate(null, operationId, 'error', {
-        message: 'Stack name and yamlContent are required for compose-create operation'
+        message: 'Stack name and yaml are required for compose-create operation'
       });
       return;
     }
@@ -683,7 +683,7 @@ class DockerWebSocketManager extends EventEmitter {
 
       // Save compose.yaml
       const composePath = path.join(stackPath, 'compose.yaml');
-      await fs.writeFile(composePath, yamlContent);
+      await fs.writeFile(composePath, yaml);
 
       this.sendUpdate(null, operationId, 'running', {
         output: `Saved compose.yaml\n`,
@@ -691,9 +691,9 @@ class DockerWebSocketManager extends EventEmitter {
       });
 
       // Save .env if provided
-      if (envContent) {
+      if (env) {
         const envPath = path.join(stackPath, '.env');
-        await fs.writeFile(envPath, envContent);
+        await fs.writeFile(envPath, env);
         this.sendUpdate(null, operationId, 'running', {
           output: `Saved .env file\n`,
           stream: 'stdout'
@@ -713,7 +713,7 @@ class DockerWebSocketManager extends EventEmitter {
       });
 
       // Generate mos.override.yaml
-      const mosOverride = this.dockerComposeService._generateMosOverride(services, name, iconUrl);
+      const mosOverride = this.dockerComposeService._generateMosOverride(services, name, icon);
       const mosOverridePath = path.join(stackPath, 'mos.override.yaml');
       await fs.writeFile(mosOverridePath, mosOverride);
 
@@ -724,8 +724,8 @@ class DockerWebSocketManager extends EventEmitter {
 
       // Download icon (non-critical)
       let iconPath = null;
-      if (iconUrl) {
-        iconPath = await this.dockerComposeService._downloadIcon(iconUrl, name);
+      if (icon) {
+        iconPath = await this.dockerComposeService._downloadIcon(icon, name);
         if (iconPath) {
           this.sendUpdate(null, operationId, 'running', {
             output: `Icon downloaded\n`,
@@ -828,11 +828,11 @@ class DockerWebSocketManager extends EventEmitter {
    * Execute Docker Compose stack update with streaming output
    */
   async executeComposeUpdate(operationId, params) {
-    const { name, yamlContent, envContent, iconUrl } = params || {};
+    const { name, yaml, env, icon } = params || {};
 
-    if (!name || !yamlContent) {
+    if (!name || !yaml) {
       this.sendUpdate(null, operationId, 'error', {
-        message: 'Stack name and yamlContent are required for compose-update operation'
+        message: 'Stack name and yaml are required for compose-update operation'
       });
       return;
     }
@@ -901,7 +901,7 @@ class DockerWebSocketManager extends EventEmitter {
       );
 
       // Update compose.yaml
-      await fs.writeFile(composePath, yamlContent);
+      await fs.writeFile(composePath, yaml);
 
       this.sendUpdate(null, operationId, 'running', {
         output: `Updated compose.yaml\n`,
@@ -910,8 +910,8 @@ class DockerWebSocketManager extends EventEmitter {
 
       // Update .env
       const envPath = path.join(stackPath, '.env');
-      if (envContent) {
-        await fs.writeFile(envPath, envContent);
+      if (env) {
+        await fs.writeFile(envPath, env);
         this.sendUpdate(null, operationId, 'running', {
           output: `Updated .env file\n`,
           stream: 'stdout'
@@ -941,14 +941,14 @@ class DockerWebSocketManager extends EventEmitter {
       });
 
       // Regenerate mos.override.yaml
-      const mosOverride = this.dockerComposeService._generateMosOverride(services, name, iconUrl);
+      const mosOverride = this.dockerComposeService._generateMosOverride(services, name, icon);
       const mosOverridePath = path.join(stackPath, 'mos.override.yaml');
       await fs.writeFile(mosOverridePath, mosOverride);
 
       // Update icon if provided
       let iconPath = null;
-      if (iconUrl) {
-        iconPath = await this.dockerComposeService._downloadIcon(iconUrl, name);
+      if (icon) {
+        iconPath = await this.dockerComposeService._downloadIcon(icon, name);
         if (iconPath) {
           this.sendUpdate(null, operationId, 'running', {
             output: `Icon updated\n`,
