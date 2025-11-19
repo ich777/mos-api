@@ -116,7 +116,7 @@ router.get('/stacks', async (req, res) => {
  *               properties:
  *                 name:
  *                   type: string
- *                 composeYaml:
+ *                 yaml:
  *                   type: string
  *                   description: Content of compose.yaml
  *                 env:

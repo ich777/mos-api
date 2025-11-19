@@ -513,7 +513,7 @@ class DockerComposeService {
 
       return {
         name: name,
-        composeYaml: composeContent,
+        yaml: composeContent,
         env: envContent,
         services: services,
         containers: containers,
@@ -855,9 +855,9 @@ class DockerComposeService {
 
       // Read compose.yaml
       const composePath = path.join(stackPath, 'compose.yaml');
-      let composeYaml = null;
+      let yaml = null;
       try {
-        composeYaml = await fs.readFile(composePath, 'utf8');
+        yaml = await fs.readFile(composePath, 'utf8');
       } catch (err) {
         // File doesn't exist
       }
@@ -883,7 +883,7 @@ class DockerComposeService {
 
       return {
         name: name,
-        yaml: composeYaml,
+        yaml: yaml,
         env: envContent,
         iconUrl: iconUrl
       };
