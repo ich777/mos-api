@@ -1022,7 +1022,35 @@ class PoolsService {
       const { stdout } = await execPromise('cat /proc/nmdstat');
       const actionMatch = stdout.match(/mdResyncAction=(.+)/);
 
-      return actionMatch && actionMatch[1] && actionMatch[1].trim() !== '';
+      // No action set = not running
+      if (!actionMatch || !actionMatch[1] || actionMatch[1].trim() === '') {
+        return false;
+      }
+
+      // Parse exit status, timestamps and resync position to determine if check is finished
+      const syncExitMatch = stdout.match(/sbSyncExit=(-?\d+)/);
+      const synced2Match = stdout.match(/sbSynced2=(\d+)/);
+      const resyncPosMatch = stdout.match(/mdResyncPos=(\d+)/);
+
+      const syncExit = syncExitMatch ? parseInt(syncExitMatch[1]) : null;
+      const sbSynced2 = synced2Match ? parseInt(synced2Match[1]) : null;
+      const mdResyncPos = resyncPosMatch ? parseInt(resyncPosMatch[1]) : null;
+
+      // Check if operation is finished:
+      // 1. sbSyncExit = 0 AND sbSynced2 > 0: successfully completed
+      // 2. sbSyncExit = -4 AND mdResyncPos = 0: cancelled (aborted, not paused)
+      // 3. sbSyncExit < 0 AND sbSyncExit ≠ -4: error exit
+      const isFinishedSuccessfully = syncExit === 0 && sbSynced2 !== null && sbSynced2 > 0;
+      const isCancelled = syncExit === -4 && mdResyncPos === 0;
+      const isFinishedWithError = syncExit !== null && syncExit < 0 && syncExit !== -4;
+
+      if (isFinishedSuccessfully || isCancelled || isFinishedWithError) {
+        // Operation is finished, not running anymore
+        return false;
+      }
+
+      // Operation is still running or paused
+      return true;
     } catch (error) {
       return false;
     }
@@ -3931,6 +3959,32 @@ class PoolsService {
 
       const action = actionMatch[1].trim();
 
+      // Parse exit status, timestamps and resync position to determine if check is finished
+      const syncExitMatch = stdout.match(/sbSyncExit=(-?\d+)/);
+      const syncedMatch = stdout.match(/sbSynced=(\d+)/);
+      const synced2Match = stdout.match(/sbSynced2=(\d+)/);
+      const resyncPosMatch = stdout.match(/mdResyncPos=(\d+)/);
+
+      const syncExit = syncExitMatch ? parseInt(syncExitMatch[1]) : null;
+      const sbSynced = syncedMatch ? parseInt(syncedMatch[1]) : null;
+      const sbSynced2 = synced2Match ? parseInt(synced2Match[1]) : null;
+      const mdResyncPos = resyncPosMatch ? parseInt(resyncPosMatch[1]) : null;
+
+      // Check if operation is finished:
+      // 1. sbSyncExit = 0 AND sbSynced2 > 0: successfully completed
+      // 2. sbSyncExit = -4 AND mdResyncPos = 0: cancelled (aborted, not paused)
+      // 3. sbSyncExit < 0 AND sbSyncExit ≠ -4: error exit
+      const isFinishedSuccessfully = syncExit === 0 && sbSynced2 !== null && sbSynced2 > 0;
+      const isCancelled = syncExit === -4 && mdResyncPos === 0;
+      const isFinishedWithError = syncExit !== null && syncExit < 0 && syncExit !== -4;
+
+      if (isFinishedSuccessfully || isCancelled || isFinishedWithError) {
+        // Operation is finished, not running anymore
+        pool.status.parity_operation = false;
+        pool.status.parity_progress = null;
+        return;
+      }
+
       // Operation is running (or paused)
       pool.status.parity_operation = true;
 
@@ -3959,15 +4013,14 @@ class PoolsService {
         description = `Unknown operation: ${action}`;
       }
 
-      // Parse resync statistics
+      // Parse resync statistics (resyncPos already parsed above as mdResyncPos)
       const resyncSizeMatch = stdout.match(/mdResyncSize=(\d+)/);
-      const resyncPosMatch = stdout.match(/mdResyncPos=(\d+)/);
       const resyncDtMatch = stdout.match(/mdResyncDt=(\d+)/);
       const resyncDbMatch = stdout.match(/mdResyncDb=(\d+)/);
       const resyncCorrMatch = stdout.match(/mdResyncCorr=(\d+)/);
 
       const resyncSize = resyncSizeMatch ? parseInt(resyncSizeMatch[1]) : null;
-      const resyncPos = resyncPosMatch ? parseInt(resyncPosMatch[1]) : null;
+      const resyncPos = mdResyncPos; // Use already parsed value
       const resyncDt = resyncDtMatch ? parseInt(resyncDtMatch[1]) : null;
       const resyncDb = resyncDbMatch ? parseInt(resyncDbMatch[1]) : null;
       const resyncCorr = resyncCorrMatch ? parseInt(resyncCorrMatch[1]) : null;
@@ -4013,21 +4066,12 @@ class PoolsService {
       }
 
       // Parse error statistics
-      const syncExitMatch = stdout.match(/sbSyncExit=(-?\d+)/);
       const syncErrsMatch = stdout.match(/sbSyncErrs=(\d+)/);
-
-      const syncExit = syncExitMatch ? parseInt(syncExitMatch[1]) : null;
       const syncErrs = syncErrsMatch ? parseInt(syncErrsMatch[1]) : null;
 
-      // Determine if paused: sbSyncExit = -4 indicates paused state
-      const isPaused = syncExit === -4;
-
-      // Parse start/end times
-      const stimeMatch = stdout.match(/stime=(\d+)/);
-      const stime2Match = stdout.match(/stime2=(\d+)/);
-
-      const stime = stimeMatch ? parseInt(stimeMatch[1]) : null;
-      const stime2 = stime2Match ? parseInt(stime2Match[1]) : null;
+      // Determine if paused: sbSyncExit = -4 AND resyncPos > 0 indicates paused state
+      // If sbSyncExit = -4 AND resyncPos = 0, it was cancelled (already handled above)
+      const isPaused = syncExit === -4 && resyncPos !== null && resyncPos > 0;
 
       // Build progress object similar to SnapRAID
       pool.status.parity_progress = {
@@ -4046,11 +4090,11 @@ class PoolsService {
       }
 
       // Add timing information if available
-      if (stime !== null) {
-        pool.status.parity_progress.start_time = stime;
+      if (sbSynced !== null) {
+        pool.status.parity_progress.start_time = sbSynced;
       }
-      if (stime2 !== null) {
-        pool.status.parity_progress.end_time = stime2;
+      if (sbSynced2 !== null) {
+        pool.status.parity_progress.end_time = sbSynced2;
       }
 
       // Add error information if available
