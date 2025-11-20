@@ -62,6 +62,75 @@ const poolsService = new PoolsService();
  *               type: boolean
  *               description: Whether pool is encrypted
  *               example: false
+ *         status:
+ *           type: object
+ *           description: Pool status information
+ *           properties:
+ *             parity_operation:
+ *               type: boolean
+ *               description: Whether a parity operation is currently running (MergerFS/NonRAID)
+ *               example: true
+ *             parity_valid:
+ *               type: boolean
+ *               description: Whether parity is valid (all disks OK or NP) - NonRAID only, null if unmounted or no parity
+ *               example: true
+ *             parity_progress:
+ *               type: object
+ *               description: Progress information for running parity operation
+ *               properties:
+ *                 operation:
+ *                   type: string
+ *                   description: Current operation (NonRAID only)
+ *                   example: "check P Q"
+ *                 description:
+ *                   type: string
+ *                   description: Human-readable description of the operation (NonRAID only)
+ *                   example: "Checking both parities"
+ *                 status:
+ *                   type: string
+ *                   description: Operation status
+ *                   enum: [running, paused, preparing]
+ *                   example: "running"
+ *                 percent:
+ *                   type: integer
+ *                   description: Progress percentage
+ *                   example: 52
+ *                 height:
+ *                   type: string
+ *                   description: Data processed
+ *                   example: "27.5 GB"
+ *                 speed:
+ *                   type: string
+ *                   description: Current speed
+ *                   example: "519 MB/s"
+ *                 eta:
+ *                   type: string
+ *                   description: Estimated time to completion
+ *                   example: "11:04"
+ *                 correction_enabled:
+ *                   type: boolean
+ *                   description: Whether correction is enabled (NonRAID only)
+ *                   example: false
+ *                 start_time:
+ *                   type: integer
+ *                   description: Start time in seconds (NonRAID only)
+ *                   example: 1732099200
+ *                 end_time:
+ *                   type: integer
+ *                   description: End time in seconds (NonRAID only)
+ *                   example: 1732102800
+ *                 last_exit_code:
+ *                   type: integer
+ *                   description: Last sync exit code (0 = OK, < 0 = error) (NonRAID only)
+ *                   example: 0
+ *                 parity_errors:
+ *                   type: integer
+ *                   description: Number of parity errors detected (NonRAID only)
+ *                   example: 0
+ *                 stripes:
+ *                   type: string
+ *                   description: Stripes per second (SnapRAID only)
+ *                   example: "495 stripe/s"
  */
 
 /**
@@ -408,7 +477,7 @@ router.patch('/:id/comment', checkRole(['admin']), async (req, res) => {
  *     summary: Update pool configuration
  *     description: |
  *       Update configuration settings for a pool (works for all pool types - mergerfs, btrfs, xfs, etc.)
- *       
+ *
  *       **Supports dot-notation for nested properties:**
  *       - Direct: `{ "unclean_check": false }`
  *       - Nested: `{ "sync.enabled": true, "sync.schedule": "0 5 * * *" }`
@@ -1013,6 +1082,578 @@ router.post('/mergerfs', checkRole(['admin']), async (req, res) => {
 
 /**
  * @swagger
+ * /pools/nonraid:
+ *   post:
+ *     summary: Create NonRAID pool
+ *     description: |
+ *       Create a new NonRAID pool with optional parity devices (max 2).
+ *
+ *       **Important:**
+ *       - Only one NonRAID pool per system
+ *       - Parity check runs automatically after creation unless parity_valid is true
+ *       - When parity_valid is true, parity is marked as valid and no check runs
+ *     tags: [Pools]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - name
+ *               - devices
+ *             properties:
+ *               name:
+ *                 type: string
+ *                 description: Name for the new pool (only one NonRAID pool allowed per system)
+ *                 example: "nonraid_pool"
+ *               devices:
+ *                 type: array
+ *                 description: Array of device paths to use in the pool (max 28 devices)
+ *                 items:
+ *                   type: string
+ *                 example: ["/dev/sdb", "/dev/sdc", "/dev/sdd"]
+ *               filesystem:
+ *                 type: string
+ *                 description: Filesystem to format individual devices with
+ *                 enum: [ext4, xfs, btrfs]
+ *                 default: xfs
+ *                 example: xfs
+ *               format:
+ *                 type: boolean
+ *                 description: Whether to force format the devices
+ *                 example: true
+ *               parity:
+ *                 type: array
+ *                 description: Array of parity device paths (max 2 devices)
+ *                 items:
+ *                   type: string
+ *                 example: ["/dev/sde", "/dev/sdf"]
+ *               parity_valid:
+ *                 type: boolean
+ *                 description: Whether existing parity is valid (for importing existing arrays)
+ *                 default: false
+ *                 example: false
+ *               config:
+ *                 type: object
+ *                 properties:
+ *                   encrypted:
+ *                     type: boolean
+ *                     description: Enable LUKS encryption (only for data devices, not parity)
+ *                     default: false
+ *                     example: false
+ *                   create_keyfile:
+ *                     type: boolean
+ *                     description: Create keyfile for automatic mounting
+ *                     default: false
+ *                     example: false
+ *                   md_writemode:
+ *                     type: string
+ *                     description: Write mode for NonRAID (normal or turbo)
+ *                     enum: [normal, turbo]
+ *                     default: normal
+ *                     example: normal
+ *               passphrase:
+ *                 type: string
+ *                 description: Encryption passphrase (required if encrypted=true)
+ *                 example: "my_secure_password"
+ *               options:
+ *                 type: object
+ *                 properties:
+ *                   automount:
+ *                     type: boolean
+ *                     description: Whether to automatically mount the pool
+ *                     default: false
+ *                     example: true
+ *                   comment:
+ *                     type: string
+ *                     description: Optional comment for the pool
+ *                     example: "My NonRAID pool"
+ *                   policies:
+ *                     type: object
+ *                     properties:
+ *                       create:
+ *                         type: string
+ *                         description: MergerFS create policy
+ *                         default: epmfs
+ *                         example: epmfs
+ *                       read:
+ *                         type: string
+ *                         description: MergerFS read policy
+ *                         default: ff
+ *                         example: ff
+ *                       search:
+ *                         type: string
+ *                         description: MergerFS search policy
+ *                         default: ff
+ *                         example: ff
+ *     responses:
+ *       201:
+ *         description: Pool created successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "Successfully created NonRAID pool 'nonraid_pool' with 2 parity device(s). Parity check started"
+ *                 pool:
+ *                   type: object
+ *                   description: Created pool object
+ *       400:
+ *         description: Bad request
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+// Create NonRAID pool (admin only)
+router.post('/nonraid', checkRole(['admin']), async (req, res) => {
+  try {
+    const {
+      name,
+      devices,
+      filesystem = 'xfs',
+      format,
+      parity = [],
+      parity_valid = false,
+      options = {},
+      config = {},
+      passphrase
+    } = req.body;
+
+    if (!name) {
+      return res.status(400).json({ error: 'Pool name is required' });
+    }
+
+    if (!Array.isArray(devices) || devices.length === 0) {
+      return res.status(400).json({ error: 'At least one data device is required' });
+    }
+
+    if (devices.length > 28) {
+      return res.status(400).json({ error: 'NonRAID pools support a maximum of 28 data devices' });
+    }
+
+    if (Array.isArray(parity) && parity.length > 2) {
+      return res.status(400).json({ error: 'NonRAID pools support a maximum of 2 parity devices' });
+    }
+
+    // Prepare pool options
+    const poolOptions = { ...options };
+    if (config && Object.keys(config).length > 0) {
+      poolOptions.config = config;
+    }
+    if (config.encrypted) {
+      poolOptions.passphrase = passphrase || '';
+    }
+
+    // Add parity devices if provided
+    if (Array.isArray(parity) && parity.length > 0) {
+      poolOptions.parity = parity;
+    }
+
+    // Add parity_valid flag if provided
+    if (parity_valid === true) {
+      poolOptions.parity_valid = true;
+    }
+
+    // Create the NonRAID pool
+    const result = await poolsService.createNonRaidPool(
+      name,
+      devices,
+      filesystem,
+      { ...poolOptions, format: format }
+    );
+
+    return res.status(201).json(result);
+  } catch (error) {
+    console.error(error);
+    return res.status(400).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /pools/nonraid/replace:
+ *   post:
+ *     summary: Replace devices in a NonRAID pool
+ *     description: |
+ *       Replace one or more devices in the NonRAID pool with parity reconstruction (admin only).
+ *
+ *       **Important:**
+ *       - Only one NonRAID pool can exist per system
+ *       - Pool must be unmounted before replacement
+ *       - Maximum replacements: 1 device with 1 parity, 2 devices with 2 parities
+ *       - Data and parity devices can be replaced simultaneously
+ *       - Parity reconstruction starts automatically after replacement
+ *
+ *       **Size Requirements:**
+ *       - New data devices must be <= smallest parity device
+ *       - New parity devices must be >= largest data device
+ *
+ *       **Encryption:**
+ *       - Passphrase required when replacing data devices in encrypted pools
+ *       - New data devices will be encrypted with the existing key
+ *     tags: [Pools]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - replacements
+ *               - format
+ *             properties:
+ *               replacements:
+ *                 type: array
+ *                 description: Array of device replacements (slot and new device path)
+ *                 items:
+ *                   type: object
+ *                   required:
+ *                     - slot
+ *                     - newDevice
+ *                   properties:
+ *                     slot:
+ *                       type: string
+ *                       description: Slot number to replace (data slots 1-28, parity slots 1-2)
+ *                       example: "2"
+ *                     newDevice:
+ *                       type: string
+ *                       description: Path to new device
+ *                       example: "/dev/sdg"
+ *                 example:
+ *                   - slot: "2"
+ *                     newDevice: "/dev/sdg"
+ *                   - slot: "3"
+ *                     newDevice: "/dev/sdh"
+ *               format:
+ *                 type: boolean
+ *                 description: Must be true (devices will be formatted)
+ *                 example: true
+ *               passphrase:
+ *                 type: string
+ *                 description: Encryption passphrase (required for encrypted pools with data replacements)
+ *                 example: "my_secure_password"
+ *     responses:
+ *       200:
+ *         description: Devices replaced successfully, parity reconstruction started
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "Successfully replaced 2 device(s) in NonRAID pool 'media'. Parity reconstruction started."
+ *                 pool:
+ *                   type: object
+ *                   description: Updated pool object
+ *                 replacements:
+ *                   type: object
+ *                   properties:
+ *                     data:
+ *                       type: integer
+ *                       description: Number of data devices replaced
+ *                       example: 1
+ *                     parity:
+ *                       type: integer
+ *                       description: Number of parity devices replaced
+ *                       example: 1
+ *       400:
+ *         description: Bad request
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *             examples:
+ *               pool_mounted:
+ *                 value:
+ *                   error: "Pool must be unmounted before replacing devices. Please unmount the pool first."
+ *               too_many_replacements:
+ *                 value:
+ *                   error: "Cannot replace 2 data device(s) with only 1 parity device(s). Maximum 1 device(s) can be replaced at once."
+ *               size_mismatch:
+ *                 value:
+ *                   error: "New data device /dev/sdg (500.00 GB) is larger than smallest parity device (250.00 GB)"
+ *               missing_passphrase:
+ *                 value:
+ *                   error: "Passphrase is required for replacing devices in encrypted pools"
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: NonRAID pool not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *             example:
+ *               error: "No NonRAID pool found on this system"
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+// Replace devices in NonRAID pool (admin only)
+router.post('/nonraid/replace', checkRole(['admin']), async (req, res) => {
+  try {
+    const { replacements, format = false, passphrase } = req.body;
+
+    if (!Array.isArray(replacements) || replacements.length === 0) {
+      return res.status(400).json({ error: 'At least one replacement is required' });
+    }
+
+    if (format !== true) {
+      return res.status(400).json({ error: 'format must be true for device replacement' });
+    }
+
+    // Validate replacement structure
+    for (const replacement of replacements) {
+      if (!replacement.slot) {
+        return res.status(400).json({ error: 'slot is required for each replacement' });
+      }
+      if (!replacement.newDevice) {
+        return res.status(400).json({ error: 'newDevice is required for each replacement' });
+      }
+    }
+
+    // Find the NonRAID pool (only one can exist)
+    const pools = await poolsService.listPools({}, req.user);
+    const pool = pools.find(p => p.type === 'nonraid');
+
+    if (!pool) {
+      return res.status(404).json({ error: 'No NonRAID pool found on this system' });
+    }
+
+    // Replace devices
+    const result = await poolsService.replaceDevicesInNonRaidPool(
+      pool.id,
+      replacements,
+      { format, passphrase }
+    );
+
+    res.json(result);
+  } catch (error) {
+    console.error(error);
+    if (error.message.includes('not found')) {
+      return res.status(404).json({ error: error.message });
+    }
+    res.status(400).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /pools/nonraid/adddevice:
+ *   post:
+ *     summary: Add data device to NonRAID pool
+ *     description: |
+ *       Add a new data device to the NonRAID pool (admin only).
+ *       Device will be assigned the next available slot (1-28) automatically.
+ *
+ *       **Modes:**
+ *       - format: true - Create partition and format device with specified filesystem
+ *       - format: false - Import existing partition/filesystem (device must have usable filesystem)
+ *
+ *       **Important:**
+ *       - Pool must be unmounted before adding device
+ *       - Parity check runs automatically unless parity_valid is true
+ *       - Passphrase required for encrypted pools
+ *
+ *       **Size Requirements:**
+ *       - New data device must be <= smallest parity device
+ *     tags: [Pools]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - device
+ *             properties:
+ *               device:
+ *                 type: string
+ *                 description: Path to new data device
+ *                 example: "/dev/sdg"
+ *               format:
+ *                 type: boolean
+ *                 description: Format mode - true to create partition and format, false to import existing filesystem
+ *                 default: false
+ *                 example: true
+ *               filesystem:
+ *                 type: string
+ *                 description: Filesystem type (defaults to pool's existing filesystem)
+ *                 enum: [xfs, ext4, btrfs]
+ *                 example: xfs
+ *               passphrase:
+ *                 type: string
+ *                 description: Encryption passphrase (required for encrypted pools)
+ *                 example: "my_secure_password"
+ *               parity_valid:
+ *                 type: boolean
+ *                 description: If true, skip parity check (parity is already valid)
+ *                 default: false
+ *                 example: false
+ *     responses:
+ *       200:
+ *         description: Device added successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "Successfully added data device to NonRAID pool 'media' at slot 5. Parity check started."
+ *                 pool:
+ *                   type: object
+ *                 slot:
+ *                   type: integer
+ *                   description: Assigned slot number
+ *                   example: 5
+ *       400:
+ *         description: Bad request
+ *       404:
+ *         description: NonRAID pool not found
+ *       500:
+ *         description: Server error
+ */
+router.post('/nonraid/adddevice', checkRole(['admin']), async (req, res) => {
+  try {
+    const { device, format = false, filesystem, passphrase, parity_valid = false } = req.body;
+
+    if (!device) {
+      return res.status(400).json({ error: 'device path is required' });
+    }
+
+    const result = await poolsService.addDataDeviceToNonRaidPool(device, {
+      format,
+      filesystem,
+      passphrase,
+      parity_valid
+    });
+
+    res.json(result);
+  } catch (error) {
+    console.error(error);
+    if (error.message.includes('not found')) {
+      return res.status(404).json({ error: error.message });
+    }
+    res.status(400).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /pools/nonraid/addparity:
+ *   post:
+ *     summary: Add parity device to NonRAID pool
+ *     description: |
+ *       Add a new parity device to the NonRAID pool (admin only).
+ *       Device will be assigned the next available parity slot (1 or 2) automatically.
+ *
+ *       **Important:**
+ *       - Pool must be unmounted before adding parity
+ *       - Maximum 2 parity devices allowed
+ *       - Parity check ALWAYS runs when adding parity
+ *       - Parity device is NOT formatted
+ *
+ *       **Size Requirements:**
+ *       - Parity device must be >= largest data device
+ *     tags: [Pools]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - device
+ *             properties:
+ *               device:
+ *                 type: string
+ *                 description: Path to new parity device (whole disk, not partition)
+ *                 example: "/dev/sdg"
+ *     responses:
+ *       200:
+ *         description: Parity device added successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "Successfully added parity device to NonRAID pool 'media' at slot 2. Parity check started."
+ *                 pool:
+ *                   type: object
+ *                 slot:
+ *                   type: integer
+ *                   description: Assigned parity slot number (1 or 2)
+ *                   example: 2
+ *       400:
+ *         description: Bad request
+ *       404:
+ *         description: NonRAID pool not found
+ *       500:
+ *         description: Server error
+ */
+router.post('/nonraid/addparity', checkRole(['admin']), async (req, res) => {
+  try {
+    const { device } = req.body;
+
+    if (!device) {
+      return res.status(400).json({ error: 'device path is required' });
+    }
+
+    const result = await poolsService.addParityDeviceToNonRaidPool(device);
+
+    res.json(result);
+  } catch (error) {
+    console.error(error);
+    if (error.message.includes('not found')) {
+      return res.status(404).json({ error: error.message });
+    }
+    res.status(400).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
  * /pools/{id}/mount:
  *   post:
  *     summary: Mount pool by ID
@@ -1041,6 +1682,11 @@ router.post('/mergerfs', checkRole(['admin']), async (req, res) => {
  *                 type: string
  *                 description: Additional mount options
  *                 example: "noatime"
+ *               mount_missing:
+ *                 type: boolean
+ *                 description: Allow mounting NonRAID pools in degraded mode with missing devices (requires sufficient parity)
+ *                 default: false
+ *                 example: false
  *     responses:
  *       200:
  *         description: Pool mounted successfully
@@ -1879,8 +2525,17 @@ router.post('/:id/devices/add', checkRole(['admin']), async (req, res) => {
  * @swagger
  * /pools/{id}/parity:
  *   post:
- *     summary: Execute SnapRAID operation on a MergerFS pool
- *     description: Execute SnapRAID operations (sync, check, scrub, fix, status) on a MergerFS pool with parity devices (admin only). Validates that the pool is MergerFS type, has parity devices, and no operation is currently running.
+ *     summary: Execute parity operation on a MergerFS or NonRAID pool
+ *     description: |
+ *       Execute parity operations on pools with parity devices (admin only).
+ *
+ *       **MergerFS Pools (SnapRAID):**
+ *       - Operations: sync, check, scrub, fix, status, force_stop
+ *
+ *       **NonRAID Pools:**
+ *       - Operations: check, pause, resume, cancel, auto
+ *       - For 'check': use 'option' parameter (CORRECT or NOCORRECT)
+ *       - 'auto': Automatically starts check (NOCORRECT) if not running, or cancels if running
  *     tags: [Pools]
  *     security:
  *       - bearerAuth: []
@@ -1902,9 +2557,14 @@ router.post('/:id/devices/add', checkRole(['admin']), async (req, res) => {
  *             properties:
  *               operation:
  *                 type: string
- *                 description: SnapRAID operation to execute
- *                 enum: [sync, check, scrub, fix, status, force_stop]
- *                 example: "sync"
+ *                 description: Operation to execute
+ *                 enum: [sync, check, scrub, fix, status, force_stop, pause, resume, cancel, auto]
+ *                 example: "check"
+ *               option:
+ *                 type: string
+ *                 description: Check option for NonRAID pools (CORRECT or NOCORRECT)
+ *                 enum: [CORRECT, NOCORRECT]
+ *                 example: "NOCORRECT"
  *     responses:
  *       200:
  *         description: SnapRAID operation executed successfully
@@ -1918,21 +2578,19 @@ router.post('/:id/devices/add', checkRole(['admin']), async (req, res) => {
  *                   example: true
  *                 message:
  *                   type: string
- *                   example: "SnapRAID sync operation started for pool 'data_mergerfs'"
+ *                   example: "Parity check without correction started"
  *                 operation:
  *                   type: string
- *                   example: "sync"
- *                 pool:
- *                   type: object
- *                   properties:
- *                     id:
- *                       type: string
- *                     name:
- *                       type: string
- *                     parity_devices:
- *                       type: array
- *                       items:
- *                         type: object
+ *                   example: "check"
+ *                 option:
+ *                   type: string
+ *                   example: "NOCORRECT"
+ *                 poolName:
+ *                   type: string
+ *                   example: "media"
+ *                 timestamp:
+ *                   type: string
+ *                   example: "2025-11-20T12:34:56.789Z"
  *       400:
  *         description: Invalid request parameters or operation requirements not met
  *         content:
@@ -1943,14 +2601,20 @@ router.post('/:id/devices/add', checkRole(['admin']), async (req, res) => {
  *                 error:
  *                   type: string
  *                   examples:
- *                     invalid_operation:
+ *                     invalid_operation_snapraid:
  *                       value: "Invalid operation. Supported operations: sync, check, scrub, fix, status, force_stop"
+ *                     invalid_operation_nonraid:
+ *                       value: "Invalid operation. Supported operations: check, pause, resume, cancel, auto"
  *                     operation_running:
- *                       value: "SnapRAID operation is already running for pool 'data_mergerfs'. Socket file exists: /run/snapraid/data_mergerfs.socket"
+ *                       value: "A parity operation is already running. Use 'cancel' to stop it first."
  *                     no_parity:
- *                       value: "Pool does not have any SnapRAID parity devices configured"
+ *                       value: "Pool does not have any parity devices configured"
  *                     wrong_type:
- *                       value: "SnapRAID operations are only supported for MergerFS pools"
+ *                       value: "Parity operations are not supported for pool type 'btrfs'. Only 'mergerfs' and 'nonraid' pools support parity operations."
+ *                     not_mounted:
+ *                       value: "NonRAID pool is not mounted. Please mount the pool first."
+ *                     no_operation_running:
+ *                       value: "No parity operation is currently running"
  *       404:
  *         description: Pool not found
  *         content:
@@ -1965,10 +2629,10 @@ router.post('/:id/devices/add', checkRole(['admin']), async (req, res) => {
  *               $ref: '#/components/schemas/Error'
  */
 
-// Execute SnapRAID operation on a MergerFS pool (admin only)
+// Execute parity operation on a MergerFS or NonRAID pool (admin only)
 router.post('/:id/parity', checkRole(['admin']), async (req, res) => {
   try {
-    const { operation } = req.body;
+    const { operation, option } = req.body;
 
     if (!operation) {
       return res.status(400).json({ error: 'Operation is required' });
@@ -1982,12 +2646,20 @@ router.post('/:id/parity', checkRole(['admin']), async (req, res) => {
       return res.status(404).json({ error: `Pool with ID "${req.params.id}" not found` });
     }
 
-    if (pool.type !== 'mergerfs') {
-      return res.status(400).json({ error: 'SnapRAID operations are only supported for MergerFS pools' });
-    }
+    let result;
 
-    // Get the appropriate service and execute SnapRAID operation
-    const result = await poolsService.executeSnapRAIDOperation(req.params.id, operation);
+    // Route to appropriate handler based on pool type
+    if (pool.type === 'mergerfs') {
+      // SnapRAID operations for MergerFS pools
+      result = await poolsService.executeSnapRAIDOperation(req.params.id, operation);
+    } else if (pool.type === 'nonraid') {
+      // NonRAID operations
+      result = await poolsService.executeNonRaidParityOperation(req.params.id, operation, { option });
+    } else {
+      return res.status(400).json({
+        error: `Parity operations are not supported for pool type '${pool.type}'. Only 'mergerfs' and 'nonraid' pools support parity operations.`
+      });
+    }
 
     res.json(result);
   } catch (error) {
@@ -1997,9 +2669,12 @@ router.post('/:id/parity', checkRole(['admin']), async (req, res) => {
     }
     if (error.message.includes('already running') ||
         error.message.includes('Invalid operation') ||
-        error.message.includes('only supported for MergerFS') ||
-        error.message.includes('does not have any SnapRAID') ||
-        error.message.includes('No SnapRAID operation is currently running')) {
+        error.message.includes('Invalid check option') ||
+        error.message.includes('only supported for') ||
+        error.message.includes('does not have any') ||
+        error.message.includes('No') ||
+        error.message.includes('not mounted') ||
+        error.message.includes('not available')) {
       return res.status(400).json({ error: error.message });
     }
     res.status(500).json({ error: error.message });

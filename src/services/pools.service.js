@@ -846,11 +846,188 @@ class PoolsService {
   }
 
   /**
+   * Clean up NonRAID configuration file
+   * @returns {Promise<boolean>} - True if cleanup was successful
+   */
+  async cleanupNonRAIDConfig() {
+    try {
+      const nonraidDatPath = '/boot/config/system/nonraid.dat';
+
+      // Check if config file exists
+      try {
+        await fs.access(nonraidDatPath);
+        await fs.unlink(nonraidDatPath);
+        console.log(`NonRAID config file removed: ${nonraidDatPath}`);
+        return true;
+      } catch (error) {
+        if (error.code === 'ENOENT') {
+          // File doesn't exist, that's fine
+          console.log('NonRAID config file does not exist, nothing to clean up');
+          return true;
+        }
+        console.warn(`Warning: Could not remove NonRAID config file: ${error.message}`);
+        return false;
+      }
+    } catch (error) {
+      console.error(`Error during NonRAID cleanup: ${error.message}`);
+      return false;
+    }
+  }
+
+  /**
    * Execute SnapRAID operation on a pool
    * @param {string} poolId - Pool ID
    * @param {string} operation - Operation to perform (sync, check, scrub, fix, status)
    * @returns {Promise<Object>} - Operation result
    */
+  /**
+   * Execute NonRAID parity operation
+   * @param {string} poolId - Pool ID
+   * @param {string} operation - Operation to execute (check, pause, resume, cancel, auto)
+   * @param {Object} options - Operation options
+   * @returns {Promise<Object>} - Operation result
+   */
+  async executeNonRaidParityOperation(poolId, operation, options = {}) {
+    const pool = await this.getPoolById(poolId);
+
+    // Validate pool type
+    if (pool.type !== 'nonraid') {
+      throw new Error('NonRAID operations are only supported for NonRAID pools');
+    }
+
+    // Validate that pool has parity devices
+    if (!pool.parity_devices || pool.parity_devices.length === 0) {
+      throw new Error('Pool does not have any parity devices configured');
+    }
+
+    // Check if module is loaded
+    try {
+      const moduleCheck = await execPromise('lsmod | grep -qE "md.nonraid" && echo "loaded" || echo "not_loaded"');
+      if (moduleCheck.stdout.trim() !== 'loaded') {
+        throw new Error('NonRAID pool is not mounted. Please mount the pool first.');
+      }
+    } catch (error) {
+      throw new Error('NonRAID pool is not mounted. Please mount the pool first.');
+    }
+
+    // Check if /proc/nmdcmd exists
+    try {
+      await fs.access('/proc/nmdcmd');
+    } catch (error) {
+      throw new Error('NonRAID control interface not available (/proc/nmdcmd not found)');
+    }
+
+    // Get current operation status
+    const currentlyRunning = await this._isNonRaidParityOperationRunning();
+
+    // Handle 'auto' operation - toggle between start and cancel
+    if (operation === 'auto') {
+      if (currentlyRunning) {
+        // Cancel running operation
+        operation = 'cancel';
+      } else {
+        // Start new check without correction
+        operation = 'check';
+        if (!options.option) {
+          options.option = 'NOCORRECT';
+        }
+      }
+    }
+
+    // Validate operation
+    const validOperations = ['check', 'pause', 'resume', 'cancel'];
+    if (!validOperations.includes(operation)) {
+      throw new Error(`Invalid operation. Supported operations: ${validOperations.join(', ')}, auto`);
+    }
+
+    // Build command based on operation
+    let command;
+    let description;
+
+    switch (operation) {
+      case 'check':
+        const checkOption = options.option || 'NOCORRECT';
+        const validCheckOptions = ['CORRECT', 'NOCORRECT'];
+        if (!validCheckOptions.includes(checkOption)) {
+          throw new Error(`Invalid check option. Supported options: ${validCheckOptions.join(', ')}`);
+        }
+
+        // Check if already running
+        if (currentlyRunning) {
+          throw new Error('A parity operation is already running. Use "cancel" to stop it first.');
+        }
+
+        command = `echo "check ${checkOption}" > /proc/nmdcmd`;
+        description = checkOption === 'CORRECT'
+          ? 'Parity check with correction started'
+          : 'Parity check without correction started';
+        break;
+
+      case 'pause':
+        if (!currentlyRunning) {
+          throw new Error('No parity operation is currently running');
+        }
+        command = 'echo "nocheck PAUSE" > /proc/nmdcmd';
+        description = 'Parity check paused';
+        break;
+
+      case 'resume':
+        // For resume, we don't necessarily check if something is running
+        // as the kernel module will handle that
+        command = 'echo "check RESUME" > /proc/nmdcmd';
+        description = 'Parity check resumed';
+        break;
+
+      case 'cancel':
+        if (!currentlyRunning) {
+          throw new Error('No parity operation is currently running');
+        }
+        command = 'echo "nocheck CANCEL" > /proc/nmdcmd';
+        description = 'Parity check cancelled';
+        break;
+
+      default:
+        throw new Error(`Unknown operation: ${operation}`);
+    }
+
+    // Execute the command
+    try {
+      console.log(`Executing NonRAID parity operation: ${command}`);
+      await execPromise(command);
+
+      return {
+        success: true,
+        message: description,
+        operation,
+        option: options.option || null,
+        poolName: pool.name,
+        timestamp: new Date().toISOString()
+      };
+    } catch (error) {
+      throw new Error(`NonRAID parity operation failed: ${error.message}`);
+    }
+  }
+
+  /**
+   * Check if NonRAID parity operation is currently running
+   * @returns {Promise<boolean>} - True if operation is running
+   * @private
+   */
+  async _isNonRaidParityOperationRunning() {
+    try {
+      // Check if /proc/nmdstat exists
+      await fs.access('/proc/nmdstat');
+
+      // Read /proc/nmdstat and check mdResyncAction
+      const { stdout } = await execPromise('cat /proc/nmdstat');
+      const actionMatch = stdout.match(/mdResyncAction=(.+)/);
+
+      return actionMatch && actionMatch[1] && actionMatch[1].trim() !== '';
+    } catch (error) {
+      return false;
+    }
+  }
+
   async executeSnapRAIDOperation(poolId, operation) {
     const pool = await this.getPoolById(poolId);
 
@@ -988,6 +1165,12 @@ class PoolsService {
       // Ensure status object exists
       if (!pool.status) {
         pool.status = {};
+      }
+
+      // Handle NonRAID pools
+      if (pool.type === 'nonraid') {
+        await this._injectNonRaidParityStatus(pool, user);
+        return;
       }
 
       // Only MergerFS pools can have parity operations
@@ -2614,6 +2797,11 @@ class PoolsService {
         return await this._mountMergerFSPool(pool, options);
       }
 
+      // For NonRAID pools
+      else if (pool.type === 'nonraid') {
+        return await this._mountNonRaidPool(pool, options);
+      }
+
       else {
         throw new Error(`Mounting for pool type "${pool.type}" is not implemented yet`);
       }
@@ -2883,6 +3071,11 @@ class PoolsService {
         return await this._unmountMergerFSPool(pool, options.force);
       }
 
+      // For NonRAID pools
+      else if (pool.type === 'nonraid') {
+        return await this._unmountNonRaidPool(pool, options.force);
+      }
+
       else {
         throw new Error(`Unmounting for pool type "${pool.type}" is not implemented yet`);
       }
@@ -2933,6 +3126,11 @@ class PoolsService {
         await this.cleanupSnapRAIDConfig(removedPool.name);
       }
 
+      // Clean up NonRAID config if it was a NonRAID pool
+      if (removedPool.type === 'nonraid') {
+        await this.cleanupNonRAIDConfig();
+      }
+
       return {
         success: true,
         message: `Pool "${removedPool.name}" (ID: ${poolId}) removed successfully`,
@@ -2952,6 +3150,8 @@ class PoolsService {
 
     if (pool.type === 'mergerfs') {
       await this._unmountMergerFSPool(pool, force);
+    } else if (pool.type === 'nonraid') {
+      await this._unmountNonRaidPool(pool, force);
     } else if (pool.type === 'btrfs' && pool.data_devices && pool.data_devices.length > 1) {
       await this._unmountMultiDeviceBtrfsPool(pool, force);
     } else if (['btrfs', 'ext4', 'xfs'].includes(pool.type)) {
@@ -3104,6 +3304,176 @@ class PoolsService {
     // Report warnings if force was used and errors occurred
     if (force && unmountErrors.length > 0) {
       console.warn(`Warning: Some unmount operations failed during forced removal:\n${unmountErrors.join('\n')}`);
+    }
+  }
+
+  /**
+   * Unmount a NonRAID pool completely
+   * @param {Object} pool - Pool object
+   * @param {boolean} force - Force unmount even if busy
+   * @private
+   */
+  async _unmountNonRaidPool(pool, force = false) {
+    const mountPoint = path.join(this.mountBasePath, pool.name);
+    const nonraidBasePath = path.join(this.mergerfsBasePath, pool.name);
+    const unmountErrors = [];
+
+    try {
+      // Check if pool is mounted at all
+      const isMainMounted = await this._isMounted(mountPoint);
+
+      // Check if module is loaded (indicates array is running)
+      let moduleLoaded = false;
+      try {
+        const { stdout } = await execPromise('lsmod | grep -E "md.nonraid"');
+        moduleLoaded = stdout.trim().length > 0;
+      } catch (error) {
+        // grep returns non-zero if no match
+        moduleLoaded = false;
+      }
+
+      // If nothing is mounted and module not loaded, pool is already unmounted
+      if (!isMainMounted && !moduleLoaded) {
+        console.log(`NonRAID pool "${pool.name}" is already unmounted`);
+        return {
+          success: true,
+          message: `NonRAID pool "${pool.name}" is already unmounted`,
+          pool: {
+            id: pool.id,
+            name: pool.name,
+            status: {
+              mounted: false
+            }
+          }
+        };
+      }
+
+      // Step 1: Unmount main MergerFS mount point
+      console.log(`Unmounting main NonRAID mount point: ${mountPoint}`);
+      if (isMainMounted) {
+        try {
+          await this.unmountDevice(mountPoint, { force, removeDirectory: true });
+        } catch (error) {
+          unmountErrors.push(`Main mount point: ${error.message}`);
+          if (!force) {
+            throw new Error(`Failed to unmount main mount point: ${error.message}`);
+          }
+        }
+      }
+
+      // Step 2: Unmount individual data device mount points
+      console.log('Unmounting individual data device mount points...');
+      for (const device of pool.data_devices || []) {
+        const deviceMountPoint = path.join(nonraidBasePath, `disk${device.slot}`);
+
+        if (await this._isMounted(deviceMountPoint)) {
+          try {
+            await this.unmountDevice(deviceMountPoint, { force, removeDirectory: true });
+            console.log(`Unmounted ${deviceMountPoint}`);
+          } catch (error) {
+            unmountErrors.push(`Device mount ${deviceMountPoint}: ${error.message}`);
+            if (!force) {
+              throw new Error(`Failed to unmount device mount point ${deviceMountPoint}: ${error.message}`);
+            }
+          }
+        }
+      }
+
+      // Step 3: Stop the NonRAID array (only if module is loaded)
+      let arrayStopped = false;
+
+      if (moduleLoaded) {
+        console.log('Stopping NonRAID array...');
+
+        // Cancel any running checks first (ignore errors if no check is running)
+        try {
+          await execPromise('echo "check CANCEL" > /proc/nmdcmd');
+          console.log('Cancelled running check');
+        } catch (error) {
+          // Ignore error - no check was running
+          console.log('No check running to cancel');
+        }
+
+        // Stop the array
+        try {
+          await execPromise('echo "stop" > /proc/nmdcmd');
+          console.log('NonRAID array stopped');
+          arrayStopped = true;
+        } catch (error) {
+          unmountErrors.push(`Stop array: ${error.message}`);
+          if (!force) {
+            throw new Error(`Failed to stop NonRAID array: ${error.message}`);
+          }
+        }
+      } else {
+        console.log('NonRAID module not loaded, skipping array stop');
+      }
+
+      // Step 4: Close LUKS devices if pool is encrypted (only data devices)
+      if (pool.config?.encrypted) {
+        try {
+          console.log(`Closing LUKS devices for encrypted NonRAID pool '${pool.name}'`);
+
+          // Ensure device paths are available before closing LUKS
+          await this._ensureDevicePaths(pool);
+
+          // Use original physical devices for closing with correct slot numbers
+          const physicalDevices = pool.devices || pool.data_devices.map(d => d.device);
+          const dataSlots = pool.data_devices.map(d => parseInt(d.slot));
+          await this._closeLuksDevicesWithSlots(physicalDevices, pool.name, dataSlots);
+        } catch (error) {
+          unmountErrors.push(`Close LUKS devices: ${error.message}`);
+          if (!force) {
+            throw new Error(`Failed to close LUKS devices: ${error.message}`);
+          }
+        }
+      }
+
+      // Step 5: Unload the md-nonraid module (ONLY if array was stopped successfully)
+      if (arrayStopped) {
+        console.log('Unloading md-nonraid kernel module...');
+        try {
+          await execPromise('modprobe -r md-nonraid');
+          console.log('md-nonraid module unloaded');
+        } catch (error) {
+          unmountErrors.push(`Unload module: ${error.message}`);
+          if (!force) {
+            throw new Error(`Failed to unload md-nonraid module: ${error.message}`);
+          }
+        }
+      } else {
+        console.warn('Skipping module unload because array stop failed');
+      }
+
+      // Step 6: Remove the nonraid base directory
+      try {
+        const stats = await fs.stat(nonraidBasePath);
+        if (stats.isDirectory()) {
+          const dirContents = await fs.readdir(nonraidBasePath);
+          if (dirContents.length === 0) {
+            await fs.rmdir(nonraidBasePath);
+          } else if (force) {
+            await execPromise(`rm -rf ${nonraidBasePath}`);
+          } else {
+            unmountErrors.push(`NonRAID base directory ${nonraidBasePath} is not empty`);
+          }
+        }
+      } catch (error) {
+        if (error.code !== 'ENOENT') {
+          unmountErrors.push(`Cleanup of base directory ${nonraidBasePath}: ${error.message}`);
+          if (!force) {
+            throw new Error(`Failed to cleanup base directory: ${error.message}`);
+          }
+        }
+      }
+
+      // Report warnings if force was used and errors occurred
+      if (force && unmountErrors.length > 0) {
+        console.warn(`Warning: Some unmount operations failed during forced removal:\n${unmountErrors.join('\n')}`);
+      }
+    } catch (error) {
+      console.error(`Error unmounting NonRAID pool: ${error.message}`);
+      throw error;
     }
   }
 
@@ -3456,6 +3826,248 @@ class PoolsService {
           device.device = await this.getRealDevicePathFromUuid(device.id);
         }
       }
+    }
+  }
+
+  /**
+   * Check if NonRAID parity is valid (all disks OK or NP)
+   * @returns {Promise<boolean>} - True if parity is valid
+   * @private
+   */
+  async _getNonRaidParityValid() {
+    try {
+      // Check if /proc/nmdstat exists
+      await fs.access('/proc/nmdstat');
+
+      // Read /proc/nmdstat and parse all disk statuses
+      const { stdout } = await execPromise('cat /proc/nmdstat');
+
+      // Find all rdevStatus entries
+      const statusMatches = stdout.matchAll(/rdevStatus\.(\d+)=(\w+)/g);
+
+      for (const match of statusMatches) {
+        const status = match[2];
+        // Valid statuses: DISK_OK or DISK_NP (not present)
+        // Invalid statuses: DISK_INVALID, DISK_WRONG, DISK_DSBL_NEW, etc.
+        if (status !== 'DISK_OK' && status !== 'DISK_NP') {
+          return false;
+        }
+      }
+
+      return true;
+    } catch (error) {
+      // If we can't read the status, assume invalid
+      return false;
+    }
+  }
+
+  /**
+   * Inject parity operation status for NonRAID pools into pool.status object
+   * @param {Object} pool - Pool object to inject status into
+   * @param {Object} user - User object with byte_format preference
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _injectNonRaidParityStatus(pool, user = null) {
+    try {
+      // Ensure status object exists
+      if (!pool.status) {
+        pool.status = {};
+      }
+
+      // Only NonRAID pools can have parity operations
+      if (pool.type !== 'nonraid') {
+        return;
+      }
+
+      // Only check if parity devices exist
+      if (!pool.parity_devices || pool.parity_devices.length === 0) {
+        pool.status.parity_operation = false;
+        pool.status.parity_progress = null;
+        pool.status.parity_valid = null; // No parity devices
+        return;
+      }
+
+      // Check if module is loaded (pool must be mounted)
+      try {
+        const moduleCheck = await execPromise('lsmod | grep -qE "md.nonraid" && echo "loaded" || echo "not_loaded"');
+        if (moduleCheck.stdout.trim() !== 'loaded') {
+          // Module not loaded, pool not mounted
+          pool.status.parity_operation = false;
+          pool.status.parity_progress = null;
+          pool.status.parity_valid = null; // Can't determine when unmounted
+          return;
+        }
+      } catch (error) {
+        pool.status.parity_operation = false;
+        pool.status.parity_progress = null;
+        pool.status.parity_valid = null;
+        return;
+      }
+
+      // Check if /proc/nmdstat exists
+      try {
+        await fs.access('/proc/nmdstat');
+      } catch (error) {
+        pool.status.parity_operation = false;
+        pool.status.parity_progress = null;
+        pool.status.parity_valid = null;
+        return;
+      }
+
+      // Check parity validity (all disks OK or NP)
+      pool.status.parity_valid = await this._getNonRaidParityValid();
+
+      // Read /proc/nmdstat and parse all values
+      const { stdout } = await execPromise('cat /proc/nmdstat');
+      const actionMatch = stdout.match(/mdResyncAction=(.+)/);
+
+      if (!actionMatch || !actionMatch[1] || actionMatch[1].trim() === '') {
+        // No operation running
+        pool.status.parity_operation = false;
+        pool.status.parity_progress = null;
+        return;
+      }
+
+      const action = actionMatch[1].trim();
+
+      // Operation is running (or paused)
+      pool.status.parity_operation = true;
+
+      // Map actions to descriptions
+      let description = '';
+      if (action === 'recon P') {
+        description = 'Reconstructing first parity (P-Disk)';
+      } else if (action === 'recon Q') {
+        description = 'Reconstructing second parity (Q-Disk)';
+      } else if (action === 'recon P Q') {
+        description = 'Full parity sync (reconstructing both parities)';
+      } else if (action.startsWith('recon D')) {
+        const diskNum = action.replace('recon D', '');
+        description = `Reconstructing data disk ${diskNum}`;
+      } else if (action === 'check P') {
+        description = 'Checking first parity (P-Disk)';
+      } else if (action === 'check Q') {
+        description = 'Checking second parity (Q-Disk)';
+      } else if (action === 'check P Q') {
+        description = 'Checking both parities';
+      } else if (action === 'clear') {
+        description = 'Clearing new data device (filling with zeros)';
+      } else if (action === 'check') {
+        description = 'General array check (re-verify)';
+      } else {
+        description = `Unknown operation: ${action}`;
+      }
+
+      // Parse resync statistics
+      const resyncSizeMatch = stdout.match(/mdResyncSize=(\d+)/);
+      const resyncPosMatch = stdout.match(/mdResyncPos=(\d+)/);
+      const resyncDtMatch = stdout.match(/mdResyncDt=(\d+)/);
+      const resyncDbMatch = stdout.match(/mdResyncDb=(\d+)/);
+      const resyncCorrMatch = stdout.match(/mdResyncCorr=(\d+)/);
+
+      const resyncSize = resyncSizeMatch ? parseInt(resyncSizeMatch[1]) : null;
+      const resyncPos = resyncPosMatch ? parseInt(resyncPosMatch[1]) : null;
+      const resyncDt = resyncDtMatch ? parseInt(resyncDtMatch[1]) : null;
+      const resyncDb = resyncDbMatch ? parseInt(resyncDbMatch[1]) : null;
+      const resyncCorr = resyncCorrMatch ? parseInt(resyncCorrMatch[1]) : null;
+
+      // Calculate percent
+      let percent = 0;
+      if (resyncSize && resyncPos && resyncSize > 0) {
+        percent = Math.floor((resyncPos / resyncSize) * 100);
+      }
+
+      // Calculate speed (KB/s -> bytes/s for formatting)
+      let speed = null;
+      if (resyncDt && resyncDb && resyncDt > 0) {
+        const kbPerSecond = resyncDb / resyncDt;
+        const bytesPerSecond = kbPerSecond * 1024;
+        speed = this.formatSpeed(bytesPerSecond, user);
+      }
+
+      // Calculate ETA (format as MM:SS or HH:MM:SS)
+      let eta = null;
+      if (resyncSize && resyncPos && resyncDt && resyncDb && resyncDt > 0 && resyncDb > 0) {
+        const remainingBlocks = resyncSize - resyncPos;
+        const kbPerSecond = resyncDb / resyncDt;
+        if (kbPerSecond > 0) {
+          const remainingSeconds = Math.floor(remainingBlocks / kbPerSecond);
+          const hours = Math.floor(remainingSeconds / 3600);
+          const minutes = Math.floor((remainingSeconds % 3600) / 60);
+          const seconds = remainingSeconds % 60;
+
+          if (hours > 0) {
+            eta = `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+          } else {
+            eta = `${minutes}:${String(seconds).padStart(2, '0')}`;
+          }
+        }
+      }
+
+      // Calculate processed amount (height)
+      let height = null;
+      if (resyncPos) {
+        const bytesProcessed = resyncPos * 1024;
+        height = this.formatBytes(bytesProcessed, user);
+      }
+
+      // Parse error statistics
+      const syncExitMatch = stdout.match(/sbSyncExit=(-?\d+)/);
+      const syncErrsMatch = stdout.match(/sbSyncErrs=(\d+)/);
+
+      const syncExit = syncExitMatch ? parseInt(syncExitMatch[1]) : null;
+      const syncErrs = syncErrsMatch ? parseInt(syncErrsMatch[1]) : null;
+
+      // Determine if paused: sbSyncExit = -4 indicates paused state
+      const isPaused = syncExit === -4;
+
+      // Parse start/end times
+      const stimeMatch = stdout.match(/stime=(\d+)/);
+      const stime2Match = stdout.match(/stime2=(\d+)/);
+
+      const stime = stimeMatch ? parseInt(stimeMatch[1]) : null;
+      const stime2 = stime2Match ? parseInt(stime2Match[1]) : null;
+
+      // Build progress object similar to SnapRAID
+      pool.status.parity_progress = {
+        operation: action,
+        description: description,
+        status: isPaused ? 'paused' : 'running',
+        percent: percent,
+        height: height,
+        speed: isPaused ? null : speed, // No speed when paused
+        eta: isPaused ? null : eta // No ETA when paused
+      };
+
+      // Add check mode information if available
+      if (resyncCorr !== null) {
+        pool.status.parity_progress.correction_enabled = resyncCorr === 1;
+      }
+
+      // Add timing information if available
+      if (stime !== null) {
+        pool.status.parity_progress.start_time = stime;
+      }
+      if (stime2 !== null) {
+        pool.status.parity_progress.end_time = stime2;
+      }
+
+      // Add error information if available
+      if (syncExit !== null) {
+        pool.status.parity_progress.last_exit_code = syncExit;
+      }
+      if (syncErrs !== null) {
+        pool.status.parity_progress.parity_errors = syncErrs;
+      }
+
+    } catch (error) {
+      // On any error, default to false
+      if (!pool.status) {
+        pool.status = {};
+      }
+      pool.status.parity_operation = false;
+      pool.status.parity_progress = null;
     }
   }
 
@@ -5072,6 +5684,1342 @@ class PoolsService {
   }
 
   /**
+   * Create a NonRAID pool with optional parity support
+   * @param {string} name - Pool name
+   * @param {string[]} devices - Array of device paths for data
+   * @param {string} filesystem - Filesystem to use for formatting (if needed)
+   * @param {Object} options - Additional options including parity devices and parity_valid flag
+   */
+  async createNonRaidPool(name, devices, filesystem = 'xfs', options = {}) {
+    const poolConfig = { name, config: options.config };
+    const strategy = this._getDeviceStrategy(poolConfig);
+    let preparedDataDevices = [];
+    let mountedDataDevices = [];
+    let openedLuksDevices = [];
+
+    try {
+      // Validate inputs
+      if (!name) throw new Error('Pool name is required');
+      if (!Array.isArray(devices) || devices.length === 0) {
+        throw new Error('At least one data device is required for a NonRAID pool');
+      }
+      if (devices.length > 28) {
+        throw new Error('NonRAID pools support a maximum of 28 data devices');
+      }
+
+      // Check if kernel module is available
+      try {
+        await execPromise('modinfo md-nonraid');
+      } catch (error) {
+        throw new Error('NonRAID kernel module md-nonraid is not available on this system');
+      }
+
+      // Check if module is already loaded
+      try {
+        const { stdout } = await execPromise('lsmod | grep -E "md.nonraid"');
+        if (stdout.trim()) {
+          // Module is loaded - check if a NonRAID pool already exists
+          const pools = await this._readPools();
+          const existingNonRaidPool = pools.find(p => p.type === 'nonraid');
+          if (existingNonRaidPool) {
+            throw new Error(`Only one NonRAID pool is allowed per system. Pool "${existingNonRaidPool.name}" already exists.`);
+          }
+        }
+      } catch (error) {
+        // grep returns non-zero if no match - that's fine, module not loaded
+        if (!error.message.includes('nonraid')) {
+          // Some other error occurred
+          console.warn(`Warning checking for loaded md-nonraid module: ${error.message}`);
+        }
+      }
+
+      // Auto-generate passphrase if needed
+      if (options.config?.encrypted) {
+        if (!options.passphrase || options.passphrase.trim() === '') {
+          if (options.config?.create_keyfile) {
+            options.passphrase = this._generateSecurePassphrase();
+            console.log(`Generated secure passphrase for encrypted pool '${name}'`);
+          } else {
+            throw new Error('Passphrase is required for encrypted pools');
+          }
+        }
+        if (options.passphrase.length < 8) {
+          throw new Error('Passphrase must be at least 8 characters long for LUKS encryption');
+        }
+      }
+
+      // Read current pools data
+      const pools = await this._readPools();
+
+      // Check if pool exists
+      if (pools.some(p => p.name === name)) {
+        throw new Error(`Pool with name "${name}" already exists`);
+      }
+
+      // Handle parity devices if provided
+      let parityDevices = [];
+      if (options.parity && Array.isArray(options.parity) && options.parity.length > 0) {
+        if (options.parity.length > 2) {
+          throw new Error('NonRAID pools support a maximum of 2 parity devices');
+        }
+        parityDevices = options.parity;
+      }
+
+      // Validate parity devices are not in data devices
+      for (const parityDevice of parityDevices) {
+        if (devices.includes(parityDevice)) {
+          throw new Error('Parity device cannot also be used as a data device');
+        }
+      }
+
+      // Verify parity device size is larger or equal to the largest data device
+      for (const parityDevice of parityDevices) {
+        const paritySize = await this.getDeviceSize(parityDevice);
+        let largestDataDevice = 0;
+        for (const device of devices) {
+          const deviceSize = await this.getDeviceSize(device);
+          if (deviceSize > largestDataDevice) {
+            largestDataDevice = deviceSize;
+          }
+        }
+        if (paritySize < largestDataDevice) {
+          throw new Error('Parity device must be at least as large as the largest data device');
+        }
+      }
+
+      const mountPoint = path.join(this.mountBasePath, name);
+      const nonraidBasePath = path.join(this.mergerfsBasePath, name);
+
+      // Delete existing nonraid.dat if it exists (only during pool creation)
+      const nonraidDatPath = '/boot/config/system/nonraid.dat';
+      try {
+        await fs.access(nonraidDatPath);
+        await fs.unlink(nonraidDatPath);
+        console.log('Deleted existing nonraid.dat');
+      } catch (error) {
+        // File doesn't exist - that's fine
+      }
+
+      // Load the md-nonraid module
+      console.log('Loading md-nonraid kernel module...');
+      await execPromise(`modprobe md-nonraid super=${nonraidDatPath}`);
+
+      // Prepare devices
+      console.log('Preparing devices...');
+      const preparedDevices = [];
+
+      if (options.format === true) {
+        // format=true: Create partitions and format
+        for (const device of devices) {
+          const preparedDevice = await this._ensurePartition(device);
+          preparedDevices.push(preparedDevice);
+        }
+      } else {
+        // format=false: Import mode - use existing filesystems as-is
+        for (const device of devices) {
+          const isPartition = this._isPartitionPath(device);
+          if (!isPartition) {
+            // Whole disk - check what's on it
+            const deviceInfo = await this.checkDeviceFilesystem(device);
+            if (deviceInfo.actualDevice) {
+              // Has partition with filesystem - use the partition
+              preparedDevices.push(deviceInfo.actualDevice);
+            } else if (deviceInfo.isFormatted && !['dos', 'gpt', 'mbr'].includes(deviceInfo.filesystem)) {
+              // Whole disk has filesystem directly (no partition) - use whole disk
+              preparedDevices.push(device);
+            } else {
+              // No usable filesystem found
+              throw new Error(`Device ${device} has no usable filesystem. Use format: true to create partition and format.`);
+            }
+          } else {
+            // Already a partition - use as-is
+            preparedDevices.push(device);
+          }
+        }
+      }
+
+      // Prepare data devices with Strategy Pattern (handles encryption)
+      preparedDataDevices = await strategy.prepareDevices(
+        preparedDevices,
+        poolConfig,
+        options
+      );
+
+      // Get operational devices for formatting/mounting
+      const actualDevices = preparedDataDevices.map(d =>
+        strategy.getOperationalDevicePath(d)
+      );
+
+      // Format devices if format=true (AFTER encryption setup)
+      if (options.format === true) {
+        for (let i = 0; i < devices.length; i++) {
+          const actualDevice = actualDevices[i];
+
+          // Check if device is already mounted
+          const mountStatus = await this._isDeviceMounted(actualDevice);
+          if (mountStatus.isMounted) {
+            throw new Error(`Device ${actualDevice} is already mounted at ${mountStatus.mountPoint}. Please unmount it first before creating a pool.`);
+          }
+
+          // Format the device (LUKS device if encrypted, partition if not)
+          await this.formatDevice(actualDevice, filesystem);
+        }
+      }
+
+      // Refresh device symlinks after formatting
+      await this._refreshDeviceSymlinks();
+
+      // Create nonraid base directory with proper ownership
+      const ownershipOptions = {
+        uid: this.defaultOwnership.uid,
+        gid: this.defaultOwnership.gid
+      };
+      await this._createDirectoryWithOwnership(nonraidBasePath, ownershipOptions);
+
+      // Prepare parity devices (get by-id paths)
+      const preparedParityDevices = [];
+      for (let i = 0; i < parityDevices.length; i++) {
+        const parityDevice = parityDevices[i];
+
+        // Get the by-id path for parity device
+        const byIdPath = await this._getDeviceByIdPath(parityDevice);
+        if (!byIdPath) {
+          throw new Error(`Could not find /dev/disk/by-id/ path for parity device ${parityDevice}`);
+        }
+
+        // Get device size from physical device (not partition)
+        const deviceSize = await this._getDeviceSizeInKB(parityDevice);
+
+        preparedParityDevices.push({
+          originalDevice: parityDevice,
+          byIdPath: byIdPath,
+          size: deviceSize,
+          slot: i === 0 ? 0 : 29  // First parity = slot 0, second = slot 29
+        });
+      }
+
+      // Import data devices into NonRAID array
+      console.log('Importing data devices into NonRAID array...');
+      const dataDevices = [];
+
+      for (let i = 0; i < devices.length; i++) {
+        const slot = i + 1;  // Slots 1-28 for data
+        const originalDevice = devices[i];
+        const physicalPartition = preparedDevices[i];  // Physical partition (for size calculation)
+        const actualDevice = actualDevices[i];  // LUKS mapper or physical partition
+
+        // Get device UUID using Strategy (handles physical vs operational)
+        const deviceInfo = preparedDataDevices[i];
+        const deviceUuid = await strategy.getDeviceUuid(deviceInfo, poolConfig);
+
+        // Get device size from physical partition (not mapper)
+        const deviceSize = await this._getDeviceSizeInKB(physicalPartition);
+
+        // Get basename for import command
+        const deviceBasename = path.basename(physicalPartition);
+
+        // Import device into NonRAID array
+        const importCmd = `echo "import ${slot} ${deviceBasename} 0 ${deviceSize} 0 ${deviceUuid}" > /proc/nmdcmd`;
+        console.log(`Importing data device slot ${slot}: ${importCmd}`);
+        await execPromise(importCmd);
+
+        dataDevices.push({
+          slot: slot.toString(),
+          id: deviceUuid,
+          filesystem,
+          spindown: null
+        });
+      }
+
+      // Import parity devices if provided
+      const parityDevicesList = [];
+      for (const parityInfo of preparedParityDevices) {
+        const deviceBasename = path.basename(parityInfo.originalDevice);
+
+        // Import parity device (slot 0 or 29, using by-id path as ID)
+        const importCmd = `echo "import ${parityInfo.slot} ${deviceBasename} 0 ${parityInfo.size} 0 ${parityInfo.byIdPath}" > /proc/nmdcmd`;
+        console.log(`Importing parity device slot ${parityInfo.slot}: ${importCmd}`);
+        await execPromise(importCmd);
+
+        // In JSON, parity slot 1 = array slot 0, parity slot 2 = array slot 29
+        const jsonSlot = parityInfo.slot === 0 ? "1" : "2";
+        parityDevicesList.push({
+          slot: jsonSlot,
+          id: parityInfo.byIdPath,
+          filesystem: filesystem,
+          spindown: null
+        });
+      }
+
+      // Start the NonRAID array
+      console.log('Starting NonRAID array...');
+      if (options.parity_valid === true && parityDevicesList.length > 0) {
+        // If parity is already valid, set invalidslot first
+        await execPromise('echo "set invalidslot 99 99" > /proc/nmdcmd');
+        console.log('Set parity as valid');
+      }
+      await execPromise('echo "start NEW_ARRAY" > /proc/nmdcmd');
+      console.log('NonRAID array started');
+
+      // Set write mode based on config
+      const writeMode = options.config?.md_writemode || 'normal';
+      await this._setNonRaidWriteMode(writeMode);
+
+      // Run parity check if parity devices exist and parity_valid is not true
+      const shouldRunCheck = options.parity_valid !== true && parityDevicesList.length > 0;
+      if (shouldRunCheck) {
+        await this._startNonRaidParityCheck();
+      }
+
+      // Mount data devices
+      console.log('Mounting data devices...');
+      for (let i = 0; i < dataDevices.length; i++) {
+        const slot = dataDevices[i].slot;
+        const nmdDevice = `/dev/nmd${slot}p1`;
+        const diskMountPoint = path.join(nonraidBasePath, `disk${slot}`);
+
+        await this._createDirectoryWithOwnership(diskMountPoint, ownershipOptions);
+        await execPromise(`mount -t ${filesystem} ${nmdDevice} ${diskMountPoint}`);
+        mountedDataDevices.push(diskMountPoint);
+        console.log(`Mounted ${nmdDevice} to ${diskMountPoint}`);
+      }
+
+      // Create the main mount point with proper ownership
+      await this._createDirectoryWithOwnership(mountPoint, ownershipOptions);
+
+      // Build the mergerfs command for main pool mount
+      const mountPoints = dataDevices.map(device => path.join(nonraidBasePath, `disk${device.slot}`)).join(':');
+
+      // Extract policies from options or use defaults
+      const createPolicy = options.policies?.create || 'epmfs';
+      const readPolicy = options.policies?.read || 'ff';
+      const searchPolicy = options.policies?.search || 'ff';
+
+      // Build MergerFS options with custom policies
+      const mergerfsOptions = options.mergerfsOptions ||
+        `defaults,allow_other,use_ino,cache.files=partial,dropcacheonclose=true,category.create=${createPolicy}`;
+
+      // Mount the mergerfs pool
+      await execPromise(`mergerfs -o ${mergerfsOptions} ${mountPoints} ${mountPoint}`);
+
+      // Create pool configuration for NonRAID with provided policies
+      const nonraidConfig = {
+        policies: {
+          create: createPolicy,
+          read: readPolicy,
+          search: searchPolicy
+        },
+        minfreespace: options.minfreespace || "20G",
+        moveonenospc: options.moveonenospc !== undefined ? options.moveonenospc : true,
+        category: {
+          create: createPolicy
+        },
+        global_options: options.global_options || [
+          "cache.files=off",
+          "dropcacheonclose=true",
+          `category.search=${searchPolicy}`
+        ],
+        encrypted: options.config?.encrypted || false,
+        unclean_check: true,
+        md_writemode: options.config?.md_writemode || 'normal' // normal or turbo
+      };
+
+      // Add check config if parity devices exist
+      if (parityDevicesList.length > 0) {
+        nonraidConfig.check = {
+          enabled: false,
+          schedule: "0 5 * * SUN"
+        };
+      }
+
+      // Create a pool entry
+      const pool = {
+        id: generateId(),
+        name,
+        type: 'nonraid',
+        automount: options.automount !== false,
+        comment: options.comment || '',
+        index: this._getNextPoolIndex(pools),
+        data_devices: dataDevices,
+        parity_devices: parityDevicesList,
+        config: nonraidConfig,
+        path_rules: []
+      };
+
+      // Store original physical devices array for encrypted pools (needed for size checks, etc.)
+      if (options.config?.encrypted) {
+        pool.devices = preparedDevices;
+      }
+
+      // Save the pool
+      pools.push(pool);
+      await this._writePools(pools);
+
+      // Build success message
+      let message = `Successfully created NonRAID pool "${name}"`;
+      if (parityDevicesList.length > 0) {
+        message += ` with ${parityDevicesList.length} parity device(s)`;
+        if (options.parity_valid !== true) {
+          message += '. Parity check started';
+        }
+      }
+
+      return {
+        success: true,
+        message,
+        pool
+      };
+    } catch (error) {
+      console.error(`Error creating NonRAID pool: ${error.message}`);
+
+      // Cleanup on error
+      try {
+        // Unmount data devices
+        for (const mountPoint of mountedDataDevices) {
+          try {
+            await execPromise(`umount ${mountPoint}`);
+          } catch (e) {
+            console.warn(`Failed to unmount ${mountPoint}: ${e.message}`);
+          }
+        }
+
+        // Close LUKS devices if encrypted
+        if (options.config?.encrypted && preparedDataDevices.length > 0) {
+          try {
+            await strategy.cleanup(preparedDataDevices, poolConfig);
+          } catch (cleanupError) {
+            console.warn(`LUKS cleanup failed: ${cleanupError.message}`);
+          }
+        }
+
+        // Stop NonRAID array
+        // Cancel any running checks first (ignore errors if no check is running)
+        try {
+          await execPromise('echo "check CANCEL" > /proc/nmdcmd');
+        } catch (e) {
+          // Ignore error - no check was running
+        }
+
+        // Stop the array
+        try {
+          await execPromise('echo "stop" > /proc/nmdcmd');
+
+          // Unload module ONLY if stop was successful
+          try {
+            await execPromise('modprobe -r md-nonraid');
+          } catch (e) {
+            console.warn(`Failed to unload md-nonraid module: ${e.message}`);
+          }
+        } catch (e) {
+          console.warn(`Failed to stop NonRAID array: ${e.message}`);
+        }
+
+      } catch (cleanupError) {
+        console.error(`Cleanup error: ${cleanupError.message}`);
+      }
+
+      throw new Error(`Error creating NonRAID pool: ${error.message}`);
+    }
+  }
+
+  /**
+   * Get device path from /dev/disk/by-id/ (excluding wwn- and scsi- entries)
+   * @param {string} device - Device path (e.g., /dev/sda)
+   * @returns {Promise<string|null>} - by-id path or null if not found
+   * @private
+   */
+  async _getDeviceByIdPath(device) {
+    try {
+      const deviceBasename = path.basename(device);
+      const { stdout } = await execPromise(`ls -l /dev/disk/by-id/ | grep "${deviceBasename}$"`);
+
+      const lines = stdout.trim().split('\n');
+      for (const line of lines) {
+        const match = line.match(/([^\s]+)\s+->\s+/);
+        if (match) {
+          const byIdName = match[1];
+          // Exclude wwn- and scsi- entries
+          if (!byIdName.startsWith('wwn-') && !byIdName.startsWith('scsi-')) {
+            return byIdName;
+          }
+        }
+      }
+
+      return null;
+    } catch (error) {
+      console.error(`Error getting by-id path for ${device}: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Set NonRAID write mode with retries
+   * @param {string} mode - Write mode (normal or turbo)
+   * @param {number} maxAttempts - Maximum number of attempts (default: 30)
+   * @param {number} delayMs - Delay between attempts in milliseconds (default: 2000)
+   * @returns {Promise<boolean>} - True if mode set successfully, false otherwise
+   * @private
+   */
+  async _setNonRaidWriteMode(mode = 'normal', maxAttempts = 30, delayMs = 2000) {
+    const modeValue = mode === 'turbo' ? 1 : 0;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        console.log(`Attempting to set write mode to ${mode} (${modeValue}) (attempt ${attempt}/${maxAttempts})...`);
+        await execPromise(`echo "set md_write_method ${modeValue}" > /proc/nmdcmd`);
+        console.log(`Write mode set to ${mode} successfully`);
+        return true;
+      } catch (error) {
+        if (attempt < maxAttempts) {
+          console.log(`Array not ready yet, waiting ${delayMs}ms before retry...`);
+          await new Promise(resolve => setTimeout(resolve, delayMs));
+        } else {
+          console.warn(`Warning: Could not set write mode after ${maxAttempts} attempts: ${error.message}`);
+          console.warn('Continuing with default write mode...');
+          return false;
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Try to start NonRAID parity check with retries
+   * @param {number} maxAttempts - Maximum number of attempts (default: 30)
+   * @param {number} delayMs - Delay between attempts in milliseconds (default: 2000)
+   * @returns {Promise<boolean>} - True if check started successfully, false otherwise
+   * @private
+   */
+  async _startNonRaidParityCheck(maxAttempts = 30, delayMs = 2000) {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        console.log(`Attempting to start parity check (attempt ${attempt}/${maxAttempts})...`);
+        await execPromise('echo "check CORRECT" > /proc/nmdcmd');
+        console.log('Parity check started successfully');
+        return true;
+      } catch (error) {
+        if (attempt < maxAttempts) {
+          console.log(`Check not ready yet, waiting ${delayMs}ms before retry...`);
+          await new Promise(resolve => setTimeout(resolve, delayMs));
+        } else {
+          console.warn(`Warning: Could not start parity check after ${maxAttempts} attempts: ${error.message}`);
+          return false;
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Get device size in KB (using blockdev --getsz divided by 2)
+   * @param {string} device - Device path
+   * @returns {Promise<number>} - Size in KB
+   * @private
+   */
+  async _getDeviceSizeInKB(device) {
+    try {
+      const { stdout } = await execPromise(`blockdev --getsz ${device}`);
+      const sizeInSectors = parseInt(stdout.trim());
+      return Math.floor(sizeInSectors / 2);  // Convert to KB
+    } catch (error) {
+      throw new Error(`Failed to get device size for ${device}: ${error.message}`);
+    }
+  }
+
+  /**
+   * Replace devices in a NonRAID pool
+   * @param {string} poolId - Pool ID
+   * @param {Array} replacements - Array of {slot, newDevice} objects
+   * @param {Object} options - Options including format and passphrase
+   * @returns {Promise<Object>} - Result object
+   */
+  async replaceDevicesInNonRaidPool(poolId, replacements, options = {}) {
+    const poolConfig = { name: null, config: {} };
+    let strategy = null;
+    let preparedNewDevices = [];
+
+    try {
+      // Validate inputs
+      if (!poolId) throw new Error('Pool ID is required');
+      if (!Array.isArray(replacements) || replacements.length === 0) {
+        throw new Error('At least one replacement is required');
+      }
+
+      // Read pools
+      const pools = await this._readPools();
+      const poolIndex = pools.findIndex(p => p.id === poolId);
+
+      if (poolIndex === -1) {
+        throw new Error(`Pool with ID ${poolId} not found`);
+      }
+
+      const pool = pools[poolIndex];
+
+      if (pool.type !== 'nonraid') {
+        throw new Error('Device replacement is only supported for NonRAID pools');
+      }
+
+      // Set pool config for strategy
+      poolConfig.name = pool.name;
+      poolConfig.config = pool.config;
+      strategy = this._getDeviceStrategy(poolConfig);
+
+      // Check if pool is mounted
+      const mountPoint = path.join(this.mountBasePath, pool.name);
+      const isMounted = await this._isMounted(mountPoint);
+
+      if (isMounted) {
+        throw new Error('Pool must be unmounted before replacing devices. Please unmount the pool first.');
+      }
+
+      // Validate replacements
+      const dataReplacements = [];
+      const parityReplacements = [];
+
+      for (const replacement of replacements) {
+        const { slot, newDevice } = replacement;
+
+        if (!slot) throw new Error('Slot is required for each replacement');
+        if (!newDevice) throw new Error('New device path is required for each replacement');
+
+        // Check if it's a data device or parity device
+        const dataDevice = pool.data_devices.find(d => d.slot === slot.toString());
+        const parityDevice = pool.parity_devices?.find(d => d.slot === slot.toString());
+
+        if (dataDevice) {
+          dataReplacements.push({ slot, newDevice, oldDevice: dataDevice });
+        } else if (parityDevice) {
+          parityReplacements.push({ slot, newDevice, oldDevice: parityDevice });
+        } else {
+          throw new Error(`Slot ${slot} not found in pool`);
+        }
+      }
+
+      // Validate replacement count against parity count
+      const totalParityCount = (pool.parity_devices || []).length;
+      const totalReplacements = dataReplacements.length + parityReplacements.length;
+
+      if (dataReplacements.length > totalParityCount) {
+        throw new Error(
+          `Cannot replace ${dataReplacements.length} data device(s) with only ${totalParityCount} parity device(s). ` +
+          `Maximum ${totalParityCount} device(s) can be replaced at once.`
+        );
+      }
+
+      // Check passphrase for encrypted pools with data replacements
+      if (pool.config?.encrypted && dataReplacements.length > 0) {
+        if (!options.passphrase || options.passphrase.trim() === '') {
+          throw new Error('Passphrase is required for replacing devices in encrypted pools');
+        }
+      }
+
+      // Get smallest parity size and largest data size for validation
+      let smallestParitySize = Infinity;
+      let largestDataSize = 0;
+
+      // Calculate parity sizes (exclude devices being replaced)
+      for (const parityDev of pool.parity_devices || []) {
+        if (!parityReplacements.some(r => r.slot.toString() === parityDev.slot)) {
+          const byIdPath = `/dev/disk/by-id/${parityDev.id}`;
+          try {
+            const { stdout } = await execPromise(`readlink -f ${byIdPath}`);
+            const actualDevice = stdout.trim();
+            const size = await this.getDeviceSize(actualDevice);
+            if (size < smallestParitySize) smallestParitySize = size;
+          } catch (error) {
+            console.warn(`Could not get size for parity device ${parityDev.id}: ${error.message}`);
+          }
+        }
+      }
+
+      // Calculate data sizes (exclude devices being replaced)
+      for (const dataDev of pool.data_devices) {
+        if (!dataReplacements.some(r => r.slot.toString() === dataDev.slot)) {
+          try {
+            const device = await this.getRealDevicePathFromUuid(dataDev.id);
+            const size = await this.getDeviceSize(device);
+            if (size > largestDataSize) largestDataSize = size;
+          } catch (error) {
+            console.warn(`Could not get size for data device ${dataDev.id}: ${error.message}`);
+          }
+        }
+      }
+
+      // Prepare new data devices
+      const preparedDataReplacements = [];
+      for (const replacement of dataReplacements) {
+        const { slot, newDevice } = replacement;
+
+        // Validate new data device size against smallest parity
+        if (smallestParitySize !== Infinity) {
+          const newDeviceSize = await this.getDeviceSize(newDevice);
+          if (newDeviceSize > smallestParitySize) {
+            throw new Error(
+              `New data device ${newDevice} (${(newDeviceSize / 1024 / 1024 / 1024).toFixed(2)} GB) ` +
+              `is larger than smallest parity device (${(smallestParitySize / 1024 / 1024 / 1024).toFixed(2)} GB)`
+            );
+          }
+        }
+
+        // Prepare device (partition if needed)
+        let preparedDevice;
+        if (options.format === true) {
+          preparedDevice = await this._ensurePartition(newDevice);
+        } else {
+          throw new Error('format: true is required when replacing devices in NonRAID pools');
+        }
+
+        preparedDataReplacements.push({
+          slot,
+          originalDevice: newDevice,
+          preparedDevice,
+          oldDeviceInfo: replacement.oldDevice
+        });
+      }
+
+      // Prepare devices with Strategy Pattern (handles encryption)
+      if (preparedDataReplacements.length > 0) {
+        const devicesToEncrypt = preparedDataReplacements.map(r => r.preparedDevice);
+        const deviceSlots = preparedDataReplacements.map(r => parseInt(r.slot));
+
+        preparedNewDevices = await strategy.prepareDevices(
+          devicesToEncrypt,
+          poolConfig,
+          { ...options, slots: deviceSlots }
+        );
+
+        // Update prepared replacements with encrypted devices
+        for (let i = 0; i < preparedDataReplacements.length; i++) {
+          preparedDataReplacements[i].encryptedDevice = preparedNewDevices[i];
+          preparedDataReplacements[i].actualDevice = strategy.getOperationalDevicePath(preparedNewDevices[i]);
+        }
+
+        // Format new data devices
+        for (const replacement of preparedDataReplacements) {
+          const filesystem = replacement.oldDeviceInfo.filesystem || 'xfs';
+          await this.formatDevice(replacement.actualDevice, filesystem);
+        }
+      }
+
+      // Refresh device symlinks
+      await this._refreshDeviceSymlinks();
+
+      // Prepare new parity devices
+      const preparedParityReplacements = [];
+      for (const replacement of parityReplacements) {
+        const { slot, newDevice } = replacement;
+
+        // Validate new parity device size against largest data device
+        const newParitySize = await this.getDeviceSize(newDevice);
+        if (largestDataSize > 0 && newParitySize < largestDataSize) {
+          throw new Error(
+            `New parity device ${newDevice} (${(newParitySize / 1024 / 1024 / 1024).toFixed(2)} GB) ` +
+            `is smaller than largest data device (${(largestDataSize / 1024 / 1024 / 1024).toFixed(2)} GB)`
+          );
+        }
+
+        // Get by-id path for parity device
+        const byIdPath = await this._getDeviceByIdPath(newDevice);
+        if (!byIdPath) {
+          throw new Error(`Could not find /dev/disk/by-id/ path for new parity device ${newDevice}`);
+        }
+
+        preparedParityReplacements.push({
+          slot,
+          originalDevice: newDevice,
+          byIdPath,
+          oldDeviceInfo: replacement.oldDevice
+        });
+      }
+
+      // Load md-nonraid module
+      console.log('Loading md-nonraid kernel module...');
+      const nonraidDatPath = '/boot/config/system/nonraid.dat';
+      await execPromise(`modprobe md-nonraid super=${nonraidDatPath}`);
+
+      // Import all devices (with replacements)
+      console.log('Importing devices into NonRAID array...');
+
+      // Import data devices
+      for (const device of pool.data_devices) {
+        const replacement = preparedDataReplacements.find(r => r.slot.toString() === device.slot);
+        const slot = parseInt(device.slot);
+
+        if (replacement) {
+          // Import new device
+          const deviceSize = await this._getDeviceSizeInKB(replacement.preparedDevice);
+          const deviceBasename = path.basename(replacement.preparedDevice);
+          const deviceUuid = await strategy.getDeviceUuid(replacement.encryptedDevice, poolConfig);
+
+          const importCmd = `echo "import ${slot} ${deviceBasename} 0 ${deviceSize} 0 ${deviceUuid}" > /proc/nmdcmd`;
+          console.log(`Importing NEW data device slot ${slot}: ${importCmd}`);
+          await execPromise(importCmd);
+
+          // Update pool config
+          device.id = deviceUuid;
+        } else {
+          // Import existing device
+          const physicalDevice = pool.devices?.[pool.data_devices.indexOf(device)] ||
+                                 await this.getRealDevicePathFromUuid(device.id);
+          const deviceSize = await this._getDeviceSizeInKB(physicalDevice);
+          const deviceBasename = path.basename(physicalDevice);
+
+          const importCmd = `echo "import ${slot} ${deviceBasename} 0 ${deviceSize} 0 ${device.id}" > /proc/nmdcmd`;
+          console.log(`Importing existing data device slot ${slot}: ${importCmd}`);
+          await execPromise(importCmd);
+        }
+      }
+
+      // Import parity devices
+      if (pool.parity_devices && pool.parity_devices.length > 0) {
+        for (const parityDevice of pool.parity_devices) {
+          const replacement = preparedParityReplacements.find(r => r.slot.toString() === parityDevice.slot);
+          const jsonSlot = parseInt(parityDevice.slot);
+          const arraySlot = jsonSlot === 1 ? 0 : 29;
+
+          if (replacement) {
+            // Import new parity device
+            const deviceSize = await this._getDeviceSizeInKB(replacement.originalDevice);
+            const deviceBasename = path.basename(replacement.originalDevice);
+
+            const importCmd = `echo "import ${arraySlot} ${deviceBasename} 0 ${deviceSize} 0 ${replacement.byIdPath}" > /proc/nmdcmd`;
+            console.log(`Importing NEW parity device slot ${arraySlot}: ${importCmd}`);
+            await execPromise(importCmd);
+
+            // Update pool config
+            parityDevice.id = replacement.byIdPath;
+          } else {
+            // Import existing parity device
+            const byIdPath = `/dev/disk/by-id/${parityDevice.id}`;
+            const { stdout } = await execPromise(`readlink -f ${byIdPath}`);
+            const actualDevice = stdout.trim();
+            const deviceSize = await this._getDeviceSizeInKB(actualDevice);
+            const deviceBasename = path.basename(actualDevice);
+
+            const importCmd = `echo "import ${arraySlot} ${deviceBasename} 0 ${deviceSize} 0 ${parityDevice.id}" > /proc/nmdcmd`;
+            console.log(`Importing existing parity device slot ${arraySlot}: ${importCmd}`);
+            await execPromise(importCmd);
+          }
+        }
+      }
+
+      // Start array with RECON_DISK for parity reconstruction
+      console.log('Starting NonRAID array with parity reconstruction...');
+      await execPromise('echo "start RECON_DISK" > /proc/nmdcmd');
+      console.log('NonRAID array started with RECON_DISK');
+
+      // Set write mode based on config
+      const writeMode = pool.config?.md_writemode || 'normal';
+      await this._setNonRaidWriteMode(writeMode);
+
+      // Update pool in pools.json
+      pools[poolIndex] = pool;
+      await this._writePools(pools);
+
+      return {
+        success: true,
+        message: `Successfully replaced ${totalReplacements} device(s) in NonRAID pool "${pool.name}". Parity reconstruction started.`,
+        pool,
+        replacements: {
+          data: dataReplacements.length,
+          parity: parityReplacements.length
+        }
+      };
+    } catch (error) {
+      console.error(`Error replacing devices in NonRAID pool: ${error.message}`);
+
+      // Cleanup on error
+      if (preparedNewDevices.length > 0 && strategy) {
+        try {
+          await strategy.cleanup(preparedNewDevices, poolConfig);
+        } catch (cleanupError) {
+          console.warn(`LUKS cleanup failed: ${cleanupError.message}`);
+        }
+      }
+
+      // Try to unload module
+      // Cancel any running checks first (ignore errors)
+      try {
+        await execPromise('echo "check CANCEL" > /proc/nmdcmd');
+      } catch (e) {
+        // Ignore - no check running
+      }
+
+      try {
+        await execPromise('echo "stop" > /proc/nmdcmd');
+        await execPromise('modprobe -r md-nonraid');
+      } catch (e) {
+        console.warn(`Failed to cleanup md-nonraid module: ${e.message}`);
+      }
+
+      throw new Error(`Error replacing devices in NonRAID pool: ${error.message}`);
+    }
+  }
+
+  /**
+   * Add data device to NonRAID pool
+   * @param {string} newDevice - New device path
+   * @param {Object} options - Options including format, passphrase, and parity_valid
+   * @returns {Promise<Object>} - Result object
+   */
+  async addDataDeviceToNonRaidPool(newDevice, options = {}) {
+    const poolConfig = { name: null, config: {} };
+    let strategy = null;
+    let preparedNewDevice = null;
+
+    try {
+      // Validate inputs
+      if (!newDevice) throw new Error('Device path is required');
+
+      // Find the NonRAID pool (only one can exist)
+      const pools = await this._readPools();
+      const poolIndex = pools.findIndex(p => p.type === 'nonraid');
+
+      if (poolIndex === -1) {
+        throw new Error('No NonRAID pool found on this system');
+      }
+
+      const pool = pools[poolIndex];
+
+      // Set pool config for strategy
+      poolConfig.name = pool.name;
+      poolConfig.config = pool.config;
+      strategy = this._getDeviceStrategy(poolConfig);
+
+      // Check if pool is mounted
+      const mountPoint = path.join(this.mountBasePath, pool.name);
+      const isMounted = await this._isMounted(mountPoint);
+
+      if (isMounted) {
+        throw new Error('Pool must be unmounted before adding devices. Please unmount the pool first.');
+      }
+
+      // Check passphrase for encrypted pools
+      if (pool.config?.encrypted) {
+        if (!options.passphrase || options.passphrase.trim() === '') {
+          throw new Error('Passphrase is required for adding devices to encrypted pools');
+        }
+      }
+
+      // Find next available data slot (1-28)
+      const usedSlots = pool.data_devices.map(d => parseInt(d.slot));
+      let nextSlot = null;
+      for (let i = 1; i <= 28; i++) {
+        if (!usedSlots.includes(i)) {
+          nextSlot = i;
+          break;
+        }
+      }
+
+      if (!nextSlot) {
+        throw new Error('No available data slots (maximum 28 data devices)');
+      }
+
+      // Validate new device size against smallest parity (if exists)
+      if (pool.parity_devices && pool.parity_devices.length > 0) {
+        let smallestParitySize = Infinity;
+        for (const parityDev of pool.parity_devices) {
+          const byIdPath = `/dev/disk/by-id/${parityDev.id}`;
+          try {
+            const { stdout } = await execPromise(`readlink -f ${byIdPath}`);
+            const actualDevice = stdout.trim();
+            const size = await this.getDeviceSize(actualDevice);
+            if (size < smallestParitySize) smallestParitySize = size;
+          } catch (error) {
+            console.warn(`Could not get size for parity device ${parityDev.id}: ${error.message}`);
+          }
+        }
+
+        const newDeviceSize = await this.getDeviceSize(newDevice);
+        if (smallestParitySize !== Infinity && newDeviceSize > smallestParitySize) {
+          throw new Error(
+            `New data device ${newDevice} (${(newDeviceSize / 1024 / 1024 / 1024).toFixed(2)} GB) ` +
+            `is larger than smallest parity device (${(smallestParitySize / 1024 / 1024 / 1024).toFixed(2)} GB)`
+          );
+        }
+      }
+
+      // Prepare device (partition if needed)
+      let preparedDevice;
+      if (options.format === true) {
+        // format=true: Create partition and format
+        preparedDevice = await this._ensurePartition(newDevice);
+      } else {
+        // format=false: Import mode - use existing filesystem as-is
+        const isPartition = this._isPartitionPath(newDevice);
+        if (!isPartition) {
+          // Whole disk - check what's on it
+          const deviceInfo = await this.checkDeviceFilesystem(newDevice);
+          if (deviceInfo.actualDevice) {
+            // Has partition with filesystem - use the partition
+            preparedDevice = deviceInfo.actualDevice;
+          } else if (deviceInfo.isFormatted && !['dos', 'gpt', 'mbr'].includes(deviceInfo.filesystem)) {
+            // Whole disk has filesystem directly (no partition) - use whole disk
+            preparedDevice = newDevice;
+          } else {
+            // No usable filesystem found
+            throw new Error(`Device ${newDevice} has no usable filesystem. Use format: true to create partition and format.`);
+          }
+        } else {
+          // Already a partition - use as-is
+          preparedDevice = newDevice;
+        }
+
+        // Validate filesystem exists when format=false
+        const deviceInfo = await this.checkDeviceFilesystem(preparedDevice);
+        if (!deviceInfo.isFormatted) {
+          throw new Error(`Device ${preparedDevice} has no filesystem. Use format: true to format.`);
+        }
+      }
+
+      // Prepare device with Strategy Pattern (handles encryption)
+      const devicesToEncrypt = [preparedDevice];
+      const preparedDevices = await strategy.prepareDevices(
+        devicesToEncrypt,
+        poolConfig,
+        { ...options, slots: [nextSlot] }
+      );
+
+      preparedNewDevice = preparedDevices[0];
+      const actualDevice = strategy.getOperationalDevicePath(preparedNewDevice);
+
+      // Determine filesystem
+      let filesystem;
+      if (options.format === true) {
+        // Format new device with specified filesystem
+        filesystem = options.filesystem || pool.data_devices[0]?.filesystem || 'xfs';
+        await this.formatDevice(actualDevice, filesystem);
+      } else {
+        // Get filesystem from existing device
+        const deviceInfo = await this.checkDeviceFilesystem(actualDevice);
+        filesystem = deviceInfo.filesystem;
+        if (!filesystem || ['dos', 'gpt', 'mbr'].includes(filesystem)) {
+          throw new Error(`Could not determine filesystem type for ${actualDevice}`);
+        }
+      }
+
+      // Refresh device symlinks
+      await this._refreshDeviceSymlinks();
+
+      // Get device UUID
+      const deviceUuid = await strategy.getDeviceUuid(preparedNewDevice, poolConfig);
+
+      // Load md-nonraid module
+      console.log('Loading md-nonraid kernel module...');
+      const nonraidDatPath = '/boot/config/system/nonraid.dat';
+      await execPromise(`modprobe md-nonraid super=${nonraidDatPath}`);
+
+      // Import all devices (including new one)
+      console.log('Importing devices into NonRAID array...');
+
+      // Import existing data devices
+      for (const device of pool.data_devices) {
+        const slot = parseInt(device.slot);
+
+        // Get physical device path
+        let physicalDevice;
+        if (pool.config?.encrypted && pool.devices) {
+          // For encrypted pools, use stored physical device path
+          physicalDevice = pool.devices[pool.data_devices.indexOf(device)];
+        } else {
+          // For non-encrypted pools, resolve from UUID
+          physicalDevice = await this.getRealDevicePathFromUuid(device.id);
+        }
+
+        if (!physicalDevice) {
+          throw new Error(`Could not find physical device for UUID ${device.id} at slot ${slot}`);
+        }
+
+        const deviceSize = await this._getDeviceSizeInKB(physicalDevice);
+        const deviceBasename = path.basename(physicalDevice);
+
+        const importCmd = `echo "import ${slot} ${deviceBasename} 0 ${deviceSize} 0 ${device.id}" > /proc/nmdcmd`;
+        console.log(`Importing existing data device slot ${slot}: ${importCmd}`);
+        await execPromise(importCmd);
+      }
+
+      // Import NEW data device
+      const deviceSize = await this._getDeviceSizeInKB(preparedDevice);
+      const deviceBasename = path.basename(preparedDevice);
+      const importCmd = `echo "import ${nextSlot} ${deviceBasename} 0 ${deviceSize} 0 ${deviceUuid}" > /proc/nmdcmd`;
+      console.log(`Importing NEW data device slot ${nextSlot}: ${importCmd}`);
+      await execPromise(importCmd);
+
+      // Import parity devices if they exist
+      if (pool.parity_devices && pool.parity_devices.length > 0) {
+        for (const parityDevice of pool.parity_devices) {
+          const jsonSlot = parseInt(parityDevice.slot);
+          const arraySlot = jsonSlot === 1 ? 0 : 29;
+
+          const byIdPath = `/dev/disk/by-id/${parityDevice.id}`;
+          const { stdout } = await execPromise(`readlink -f ${byIdPath}`);
+          const actualDevice = stdout.trim();
+          const deviceSize = await this._getDeviceSizeInKB(actualDevice);
+          const deviceBasename = path.basename(actualDevice);
+
+          const importCmd = `echo "import ${arraySlot} ${deviceBasename} 0 ${deviceSize} 0 ${parityDevice.id}" > /proc/nmdcmd`;
+          console.log(`Importing existing parity device slot ${arraySlot}: ${importCmd}`);
+          await execPromise(importCmd);
+        }
+      }
+
+      // Start array with STARTED
+      console.log('Starting NonRAID array...');
+      await execPromise('echo "start STARTED" > /proc/nmdcmd');
+      console.log('NonRAID array started with STARTED');
+
+      // Set write mode based on config
+      const writeMode = pool.config?.md_writemode || 'normal';
+      await this._setNonRaidWriteMode(writeMode);
+
+      // Run check CORRECT if parity_valid is NOT true
+      const shouldRunCheck = options.parity_valid !== true;
+      if (shouldRunCheck && pool.parity_devices && pool.parity_devices.length > 0) {
+        await this._startNonRaidParityCheck();
+      }
+
+      // Add new device to pool config
+      pool.data_devices.push({
+        slot: nextSlot.toString(),
+        id: deviceUuid,
+        filesystem,
+        spindown: null
+      });
+
+      // Update physical devices array for encrypted pools
+      if (pool.config?.encrypted) {
+        if (!pool.devices) pool.devices = [];
+        pool.devices.push(preparedDevice);
+      }
+
+      // Update pool in pools.json
+      pools[poolIndex] = pool;
+      await this._writePools(pools);
+
+      return {
+        success: true,
+        message: `Successfully added data device to NonRAID pool "${pool.name}" at slot ${nextSlot}${shouldRunCheck ? '. Parity check started.' : ''}`,
+        pool,
+        slot: nextSlot
+      };
+    } catch (error) {
+      console.error(`Error adding data device to NonRAID pool: ${error.message}`);
+
+      // Cleanup on error
+      if (preparedNewDevice && strategy) {
+        try {
+          await strategy.cleanup([preparedNewDevice], poolConfig);
+        } catch (cleanupError) {
+          console.warn(`LUKS cleanup failed: ${cleanupError.message}`);
+        }
+      }
+
+      // Try to unload module
+      // Cancel any running checks first (ignore errors)
+      try {
+        await execPromise('echo "check CANCEL" > /proc/nmdcmd');
+      } catch (e) {
+        // Ignore - no check running
+      }
+
+      try {
+        await execPromise('echo "stop" > /proc/nmdcmd');
+        await execPromise('modprobe -r md-nonraid');
+      } catch (e) {
+        console.warn(`Failed to cleanup md-nonraid module: ${e.message}`);
+      }
+
+      throw new Error(`Error adding data device to NonRAID pool: ${error.message}`);
+    }
+  }
+
+  /**
+   * Add parity device to NonRAID pool
+   * @param {string} newDevice - New parity device path
+   * @param {Object} options - Options
+   * @returns {Promise<Object>} - Result object
+   */
+  async addParityDeviceToNonRaidPool(newDevice, options = {}) {
+    try {
+      // Validate inputs
+      if (!newDevice) throw new Error('Device path is required');
+
+      // Find the NonRAID pool (only one can exist)
+      const pools = await this._readPools();
+      const poolIndex = pools.findIndex(p => p.type === 'nonraid');
+
+      if (poolIndex === -1) {
+        throw new Error('No NonRAID pool found on this system');
+      }
+
+      const pool = pools[poolIndex];
+
+      // Check if pool is mounted
+      const mountPoint = path.join(this.mountBasePath, pool.name);
+      const isMounted = await this._isMounted(mountPoint);
+
+      if (isMounted) {
+        throw new Error('Pool must be unmounted before adding parity devices. Please unmount the pool first.');
+      }
+
+      // Check max parity devices
+      const currentParityCount = pool.parity_devices?.length || 0;
+      if (currentParityCount >= 2) {
+        throw new Error('Maximum 2 parity devices allowed for NonRAID pools');
+      }
+
+      // Determine next parity slot
+      const nextJsonSlot = currentParityCount === 0 ? 1 : 2;
+      const nextArraySlot = nextJsonSlot === 1 ? 0 : 29;
+
+      // Validate new parity device size against largest data device
+      let largestDataSize = 0;
+      for (const dataDev of pool.data_devices) {
+        try {
+          const device = await this.getRealDevicePathFromUuid(dataDev.id);
+          const size = await this.getDeviceSize(device);
+          if (size > largestDataSize) largestDataSize = size;
+        } catch (error) {
+          console.warn(`Could not get size for data device ${dataDev.id}: ${error.message}`);
+        }
+      }
+
+      const newParitySize = await this.getDeviceSize(newDevice);
+      if (largestDataSize > 0 && newParitySize < largestDataSize) {
+        throw new Error(
+          `New parity device ${newDevice} (${(newParitySize / 1024 / 1024 / 1024).toFixed(2)} GB) ` +
+          `is smaller than largest data device (${(largestDataSize / 1024 / 1024 / 1024).toFixed(2)} GB)`
+        );
+      }
+
+      // Get by-id path for parity device
+      const byIdPath = await this._getDeviceByIdPath(newDevice);
+      if (!byIdPath) {
+        throw new Error(`Could not find /dev/disk/by-id/ path for parity device ${newDevice}`);
+      }
+
+      // Load md-nonraid module
+      console.log('Loading md-nonraid kernel module...');
+      const nonraidDatPath = '/boot/config/system/nonraid.dat';
+      await execPromise(`modprobe md-nonraid super=${nonraidDatPath}`);
+
+      // Import all devices (including new parity)
+      console.log('Importing devices into NonRAID array...');
+
+      // Import existing data devices
+      for (const device of pool.data_devices) {
+        const slot = parseInt(device.slot);
+
+        // Get physical device path
+        let physicalDevice;
+        if (pool.config?.encrypted && pool.devices) {
+          // For encrypted pools, use stored physical device path
+          physicalDevice = pool.devices[pool.data_devices.indexOf(device)];
+        } else {
+          // For non-encrypted pools, resolve from UUID
+          physicalDevice = await this.getRealDevicePathFromUuid(device.id);
+        }
+
+        if (!physicalDevice) {
+          throw new Error(`Could not find physical device for UUID ${device.id} at slot ${slot}`);
+        }
+
+        const deviceSize = await this._getDeviceSizeInKB(physicalDevice);
+        const deviceBasename = path.basename(physicalDevice);
+
+        const importCmd = `echo "import ${slot} ${deviceBasename} 0 ${deviceSize} 0 ${device.id}" > /proc/nmdcmd`;
+        console.log(`Importing existing data device slot ${slot}: ${importCmd}`);
+        await execPromise(importCmd);
+      }
+
+      // Import existing parity devices
+      if (pool.parity_devices && pool.parity_devices.length > 0) {
+        for (const parityDevice of pool.parity_devices) {
+          const jsonSlot = parseInt(parityDevice.slot);
+          const arraySlot = jsonSlot === 1 ? 0 : 29;
+
+          const byIdPath = `/dev/disk/by-id/${parityDevice.id}`;
+          const { stdout } = await execPromise(`readlink -f ${byIdPath}`);
+          const actualDevice = stdout.trim();
+          const deviceSize = await this._getDeviceSizeInKB(actualDevice);
+          const deviceBasename = path.basename(actualDevice);
+
+          const importCmd = `echo "import ${arraySlot} ${deviceBasename} 0 ${deviceSize} 0 ${parityDevice.id}" > /proc/nmdcmd`;
+          console.log(`Importing existing parity device slot ${arraySlot}: ${importCmd}`);
+          await execPromise(importCmd);
+        }
+      }
+
+      // Import NEW parity device
+      const deviceSize = await this._getDeviceSizeInKB(newDevice);
+      const deviceBasename = path.basename(newDevice);
+      const importCmd = `echo "import ${nextArraySlot} ${deviceBasename} 0 ${deviceSize} 0 ${byIdPath}" > /proc/nmdcmd`;
+      console.log(`Importing NEW parity device slot ${nextArraySlot}: ${importCmd}`);
+      await execPromise(importCmd);
+
+      // Start array with STARTED
+      console.log('Starting NonRAID array...');
+      await execPromise('echo "start STARTED" > /proc/nmdcmd');
+      console.log('NonRAID array started with STARTED');
+
+      // Set write mode based on config (with retries)
+      const writeMode = pool.config?.md_writemode || 'normal';
+      await this._setNonRaidWriteMode(writeMode);
+
+      // ALWAYS run check CORRECT when adding parity
+      await this._startNonRaidParityCheck();
+
+      // Add new parity device to pool config
+      if (!pool.parity_devices) pool.parity_devices = [];
+      pool.parity_devices.push({
+        slot: nextJsonSlot.toString(),
+        id: byIdPath,
+        filesystem: pool.data_devices[0]?.filesystem || 'xfs',
+        spindown: null
+      });
+
+      // Add check config if this is the first parity
+      if (currentParityCount === 0) {
+        if (!pool.config) pool.config = {};
+        pool.config.check = {
+          enabled: false,
+          schedule: "0 5 * * SUN"
+        };
+      }
+
+      // Update pool in pools.json
+      pools[poolIndex] = pool;
+      await this._writePools(pools);
+
+      return {
+        success: true,
+        message: `Successfully added parity device to NonRAID pool "${pool.name}" at slot ${nextJsonSlot}. Parity check started.`,
+        pool,
+        slot: nextJsonSlot
+      };
+    } catch (error) {
+      console.error(`Error adding parity device to NonRAID pool: ${error.message}`);
+
+      // Try to unload module
+      // Cancel any running checks first (ignore errors)
+      try {
+        await execPromise('echo "check CANCEL" > /proc/nmdcmd');
+      } catch (e) {
+        // Ignore - no check running
+      }
+
+      try {
+        await execPromise('echo "stop" > /proc/nmdcmd');
+        await execPromise('modprobe -r md-nonraid');
+      } catch (e) {
+        console.warn(`Failed to cleanup md-nonraid module: ${e.message}`);
+      }
+
+      throw new Error(`Error adding parity device to NonRAID pool: ${error.message}`);
+    }
+  }
+
+  /**
    * Add parity devices to a MergerFS pool
    * @param {string} poolId - Pool ID
    * @param {string[]} parityDevices - Array of parity device paths to add
@@ -6030,8 +7978,6 @@ class PoolsService {
     return keyfilePath;
   }
 
-
-
   /**
    * Open LUKS devices for a pool
    * @param {string[]} devices - Array of device paths
@@ -6468,6 +8414,262 @@ class PoolsService {
         status: spaceInfo
       }
     };
+  }
+
+  /**
+   * Mount a NonRAID pool
+   * @param {Object} pool - Pool object
+   * @param {Object} options - Mount options
+   * @private
+   */
+  async _mountNonRaidPool(pool, options = {}) {
+    const mountPoint = path.join(this.mountBasePath, pool.name);
+    const nonraidBasePath = path.join(this.mergerfsBasePath, pool.name);
+
+    try {
+      // Ensure device paths are available
+      await this._ensureDevicePaths(pool);
+
+      // Check if md-nonraid module is loaded
+      let moduleLoaded = false;
+      try {
+        const { stdout } = await execPromise('lsmod | grep -E "md.nonraid"');
+        moduleLoaded = stdout.trim().length > 0;
+      } catch (error) {
+        // grep returns non-zero if no match
+        moduleLoaded = false;
+      }
+
+      // Check for missing devices (both data and parity)
+      const missingDataDevices = [];
+      const availableDataDevices = [];
+      const missingParityDevices = [];
+      const availableParityDevices = [];
+
+      // Check data devices availability
+      for (const device of pool.data_devices) {
+        let physicalDevice;
+
+        // For encrypted pools, get physical device path from stored devices array
+        if (pool.config?.encrypted && pool.devices) {
+          const deviceIndex = pool.data_devices.findIndex(d => d.slot === device.slot);
+          if (deviceIndex !== -1 && pool.devices[deviceIndex]) {
+            physicalDevice = pool.devices[deviceIndex];
+          }
+        }
+
+        // If not encrypted or not found in devices array, resolve from UUID
+        if (!physicalDevice) {
+          physicalDevice = await this.getRealDevicePathFromUuid(device.id);
+        }
+
+        // Check if device exists
+        if (physicalDevice) {
+          try {
+            await fs.access(physicalDevice);
+            availableDataDevices.push({ ...device, physicalDevice });
+          } catch (error) {
+            missingDataDevices.push(device);
+            console.warn(`Data device at slot ${device.slot} (${device.id}) is missing`);
+          }
+        } else {
+          missingDataDevices.push(device);
+          console.warn(`Data device at slot ${device.slot} (${device.id}) could not be resolved`);
+        }
+      }
+
+      // Check parity devices availability (always allow missing parity)
+      if (pool.parity_devices && pool.parity_devices.length > 0) {
+        for (const parityDevice of pool.parity_devices) {
+          const byIdPath = `/dev/disk/by-id/${parityDevice.id}`;
+
+          try {
+            const { stdout } = await execPromise(`readlink -f ${byIdPath}`);
+            const actualDevice = stdout.trim();
+            await fs.access(actualDevice);
+            availableParityDevices.push({ ...parityDevice, actualDevice });
+          } catch (error) {
+            missingParityDevices.push(parityDevice);
+            console.warn(`Parity device at slot ${parityDevice.slot} (${parityDevice.id}) is missing`);
+          }
+        }
+      }
+
+      // Validate missing devices based on mount_missing option
+      const mountMissing = options.mount_missing || false;
+      const totalParityCount = (pool.parity_devices || []).length;
+
+      if (missingDataDevices.length > 0) {
+        if (!mountMissing) {
+          throw new Error(
+            `Cannot mount NonRAID pool: ${missingDataDevices.length} data device(s) missing. ` +
+            `Use mount_missing: true to mount in degraded mode.`
+          );
+        }
+
+        // Check if we have enough parity devices to recover
+        if (missingDataDevices.length > totalParityCount) {
+          throw new Error(
+            `Cannot mount NonRAID pool: ${missingDataDevices.length} data device(s) missing, ` +
+            `but only ${totalParityCount} parity device(s) available. Cannot recover data.`
+          );
+        }
+
+        console.log(
+          `Mounting NonRAID pool in degraded mode: ${missingDataDevices.length} data device(s) missing, ` +
+          `${totalParityCount} parity device(s) available`
+        );
+      }
+
+      // Handle LUKS encryption before mounting (only for available data devices)
+      if (pool.config?.encrypted && availableDataDevices.length > 0) {
+        console.log(`Opening LUKS devices for encrypted NonRAID pool '${pool.name}'`);
+
+        // Extract physical device paths from available data_devices only
+        const dataDevices = availableDataDevices.map(d => d.physicalDevice);
+        const dataSlots = availableDataDevices.map(d => parseInt(d.slot));
+
+        const luksDevices = await this._openLuksDevicesWithSlots(dataDevices, pool.name, dataSlots, options.passphrase || null);
+        pool._luksDevices = luksDevices;
+      }
+
+      // Load md-nonraid module if not loaded
+      if (!moduleLoaded) {
+        console.log('Loading md-nonraid kernel module...');
+        const nonraidDatPath = '/boot/config/system/nonraid.dat';
+        await execPromise(`modprobe md-nonraid super=${nonraidDatPath}`);
+      }
+
+      // Create nonraid base directory
+      await this._createDirectoryWithOwnership(nonraidBasePath);
+
+      // Import available data devices into NonRAID array
+      console.log('Importing available data devices into NonRAID array...');
+      for (const device of availableDataDevices) {
+        const slot = parseInt(device.slot);
+        const physicalDevice = device.physicalDevice;
+
+        // Get device size from physical partition
+        const deviceSize = await this._getDeviceSizeInKB(physicalDevice);
+
+        // Get basename for import command
+        const deviceBasename = path.basename(physicalDevice);
+
+        // Import device into NonRAID array
+        const importCmd = `echo "import ${slot} ${deviceBasename} 0 ${deviceSize} 0 ${device.id}" > /proc/nmdcmd`;
+        console.log(`Importing data device slot ${slot}: ${importCmd}`);
+        await execPromise(importCmd);
+      }
+
+      // Import missing data devices as empty
+      if (missingDataDevices.length > 0) {
+        console.log('Importing missing data devices as empty slots...');
+        for (const device of missingDataDevices) {
+          const slot = parseInt(device.slot);
+          const importCmd = `echo "import ${slot} '' 0 0 0 ''" > /proc/nmdcmd`;
+          console.log(`Importing missing data device slot ${slot}: ${importCmd}`);
+          await execPromise(importCmd);
+        }
+      }
+
+      // Import available parity devices
+      if (availableParityDevices.length > 0) {
+        console.log('Importing available parity devices into NonRAID array...');
+        for (const parityDevice of availableParityDevices) {
+          // Map JSON slot (1,2) to array slot (0,29)
+          const jsonSlot = parseInt(parityDevice.slot);
+          const arraySlot = jsonSlot === 1 ? 0 : 29;
+
+          // Get device size from physical device (whole disk, not partition)
+          const deviceSize = await this._getDeviceSizeInKB(parityDevice.actualDevice);
+
+          // Get basename for import command (whole disk, no partition)
+          const deviceBasename = path.basename(parityDevice.actualDevice);
+
+          // Import parity device
+          const importCmd = `echo "import ${arraySlot} ${deviceBasename} 0 ${deviceSize} 0 ${parityDevice.id}" > /proc/nmdcmd`;
+          console.log(`Importing parity device slot ${arraySlot}: ${importCmd}`);
+          await execPromise(importCmd);
+        }
+      }
+
+      // Import missing parity devices as empty (always allowed)
+      if (missingParityDevices.length > 0) {
+        console.log('Importing missing parity devices as empty slots...');
+        for (const parityDevice of missingParityDevices) {
+          // Map JSON slot (1,2) to array slot (0,29)
+          const jsonSlot = parseInt(parityDevice.slot);
+          const arraySlot = jsonSlot === 1 ? 0 : 29;
+
+          const importCmd = `echo "import ${arraySlot} '' 0 0 0 ''" > /proc/nmdcmd`;
+          console.log(`Importing missing parity device slot ${arraySlot}: ${importCmd}`);
+          await execPromise(importCmd);
+        }
+      }
+
+      // Start the NonRAID array (use "start" not "start NEW_ARRAY" for existing pools)
+      console.log('Starting NonRAID array...');
+      await execPromise('echo "start" > /proc/nmdcmd');
+
+      // Set write mode based on config
+      const writeMode = pool.config?.md_writemode || 'normal';
+      await this._setNonRaidWriteMode(writeMode);
+
+      // Mount individual data devices (only available ones)
+      const mountedDevices = [];
+      for (const device of availableDataDevices) {
+        const slot = device.slot;
+        const nmdDevice = `/dev/nmd${slot}p1`;
+        const deviceMountPoint = path.join(nonraidBasePath, `disk${slot}`);
+
+        await this._createDirectoryWithOwnership(deviceMountPoint);
+        await execPromise(`mount -t ${device.filesystem || 'xfs'} ${nmdDevice} ${deviceMountPoint}`);
+
+        mountedDevices.push(deviceMountPoint);
+        console.log(`Mounted ${nmdDevice} to ${deviceMountPoint}`);
+      }
+
+      // Log warning if mounting in degraded mode
+      if (missingDataDevices.length > 0 || missingParityDevices.length > 0) {
+        console.warn(
+          `NonRAID pool mounted in degraded mode: ` +
+          `${missingDataDevices.length} data device(s) missing, ` +
+          `${missingParityDevices.length} parity device(s) missing`
+        );
+      }
+
+      // Create main mount point
+      await this._createDirectoryWithOwnership(mountPoint);
+
+      // Mount MergerFS
+      const createPolicy = pool.config?.policies?.create || 'epmfs';
+      const searchPolicy = pool.config?.policies?.search || 'ff';
+      const mergerfsOptions = `defaults,allow_other,use_ino,cache.files=off,dropcacheonclose=true,category.create=${createPolicy},category.search=${searchPolicy}`;
+      const mergerfsCommand = `mergerfs ${mountedDevices.join(':')} ${mountPoint} -o ${mergerfsOptions}`;
+      await execPromise(mergerfsCommand);
+
+      // Get space info after successful mount
+      const spaceInfo = await this.getDeviceSpace(mountPoint);
+
+      // Build message with degraded mode info if applicable
+      let message = `NonRAID pool "${pool.name}" mounted successfully`;
+      if (missingDataDevices.length > 0 || missingParityDevices.length > 0) {
+        message += ` (degraded mode: ${missingDataDevices.length} data + ${missingParityDevices.length} parity device(s) missing)`;
+      }
+
+      return {
+        success: true,
+        message,
+        pool: {
+          id: pool.id,
+          name: pool.name,
+          status: spaceInfo
+        }
+      };
+    } catch (error) {
+      console.error(`Error mounting NonRAID pool: ${error.message}`);
+      throw error;
+    }
   }
 
   /**

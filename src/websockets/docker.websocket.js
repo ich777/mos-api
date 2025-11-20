@@ -1129,62 +1129,89 @@ class DockerWebSocketManager extends EventEmitter {
       const stackPath = this.dockerComposeService._getStackPath(name);
       const composePath = path.join(stackPath, 'compose.yaml');
 
+      let stackExists = false;
+
       // Check if stack exists in boot
       try {
         await fs.access(composePath);
-      } catch (err) {
-        throw new Error(`Stack '${name}' not found`);
-      }
-
-      // Get working path
-      const workingPath = await this.dockerComposeService._getWorkingPath(name);
-
-      // Check if working directory exists, if not recreate it
-      try {
-        await fs.access(workingPath);
+        stackExists = true;
       } catch (err) {
         this.sendUpdate(null, operationId, 'running', {
-          output: `Working directory not found, recreating from boot...\n`,
+          output: `Warning: Stack files not found in boot directory\n`,
+          stream: 'stdout'
+        });
+      }
+
+      if (stackExists) {
+        // Get working path
+        const workingPath = await this.dockerComposeService._getWorkingPath(name);
+
+        // Check if working directory exists, if not recreate it
+        try {
+          await fs.access(workingPath);
+        } catch (err) {
+          this.sendUpdate(null, operationId, 'running', {
+            output: `Working directory not found, recreating from boot...\n`,
+            stream: 'stdout'
+          });
+
+          try {
+            await this.dockerComposeService._copyStackToWorking(name);
+            this.sendUpdate(null, operationId, 'running', {
+              output: `Working directory recreated\n`,
+              stream: 'stdout'
+            });
+          } catch (copyError) {
+            this.sendUpdate(null, operationId, 'running', {
+              output: `Failed to recreate working directory: ${copyError.message}\n`,
+              stream: 'stdout'
+            });
+            // Continue anyway, docker-compose down might still work if containers exist
+          }
+        }
+
+        this.sendUpdate(null, operationId, 'running', {
+          output: `Stopping and removing stack via docker-compose...\n`,
           stream: 'stdout'
         });
 
+        // Stop and remove stack with streaming from working directory
         try {
-          await this.dockerComposeService._copyStackToWorking(name);
+          await this.executeCommandWithStream(
+            operationId,
+            'docker-compose',
+            ['-f', 'compose.yaml', '-f', 'mos.override.yaml', 'down', '--rmi', 'all', '-v'],
+            'compose-delete',
+            params,
+            { cwd: workingPath }
+          );
+        } catch (downError) {
           this.sendUpdate(null, operationId, 'running', {
-            output: `Working directory recreated\n`,
+            output: `Warning: docker-compose down failed: ${downError.message}\n`,
             stream: 'stdout'
           });
-        } catch (copyError) {
-          this.sendUpdate(null, operationId, 'running', {
-            output: `Failed to recreate working directory: ${copyError.message}\n`,
-            stream: 'stdout'
-          });
-          // Continue anyway, docker-compose down might still work if containers exist
         }
+
+        // Move stack directory in boot to removed (working directory stays untouched)
+        try {
+          await this.dockerComposeService._moveStackToRemoved(name);
+          this.sendUpdate(null, operationId, 'running', {
+            output: `Moved stack to removed directory\n`,
+            stream: 'stdout'
+          });
+        } catch (moveError) {
+          this.sendUpdate(null, operationId, 'running', {
+            output: `Warning: Failed to move stack: ${moveError.message}\n`,
+            stream: 'stdout'
+          });
+        }
+      } else {
+        // Stack files missing - only remove group, keep containers running
+        this.sendUpdate(null, operationId, 'running', {
+          output: `Stack files missing - only removing group, containers will remain running\n`,
+          stream: 'stdout'
+        });
       }
-
-      this.sendUpdate(null, operationId, 'running', {
-        output: `Stopping and removing stack from working directory...\n`,
-        stream: 'stdout'
-      });
-
-      // Stop and remove stack with streaming from working directory
-      await this.executeCommandWithStream(
-        operationId,
-        'docker-compose',
-        ['-f', 'compose.yaml', '-f', 'mos.override.yaml', 'down', '--rmi', 'all', '-v'],
-        'compose-delete',
-        params,
-        { cwd: workingPath }
-      );
-
-      // Move stack directory in boot to removed (working directory stays untouched)
-      await this.dockerComposeService._moveStackToRemoved(name);
-
-      this.sendUpdate(null, operationId, 'running', {
-        output: `Moved stack to removed directory\n`,
-        stream: 'stdout'
-      });
 
       // Delete icon
       try {

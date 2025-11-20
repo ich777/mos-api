@@ -771,20 +771,38 @@ class DockerComposeService {
       const stackPath = this._getStackPath(name);
       const composePath = path.join(stackPath, 'compose.yaml');
 
-      // Check if stack exists
+      let stackExists = false;
+      let warnings = [];
+      let removeOutput = null;
+
+      // Check if stack files exist
       try {
         await fs.access(composePath);
+        stackExists = true;
       } catch (err) {
-        throw new Error(`Stack '${name}' not found`);
+        warnings.push('Stack files not found in boot directory');
       }
 
-      // Stop and remove stack
-      const removeOutput = await this._removeStack(name);
+      // Try to stop and remove stack (even if files are missing)
+      if (stackExists) {
+        try {
+          removeOutput = await this._removeStack(name);
+        } catch (err) {
+          warnings.push(`Failed to stop stack via docker-compose: ${err.message}`);
+        }
 
-      // Move stack directory to removed instead of deleting
-      await this._moveStackToRemoved(name);
+        // Move stack directory to removed instead of deleting
+        try {
+          await this._moveStackToRemoved(name);
+        } catch (err) {
+          warnings.push(`Failed to move stack to removed: ${err.message}`);
+        }
+      } else {
+        // Stack files missing - only remove group, keep containers running
+        warnings.push('Stack files missing - only removing group, containers will remain running as individual containers');
+      }
 
-      // Delete icon
+      // Delete icon (always try, even if stack files are missing)
       try {
         const iconPath = `/var/lib/docker/mos/icons/compose/${name}.png`;
         await fs.unlink(iconPath);
@@ -798,13 +816,21 @@ class DockerComposeService {
 
       if (group) {
         await dockerService.deleteContainerGroup(group.id);
+      } else {
+        warnings.push('No Docker group found for this stack');
       }
 
-      return {
+      const result = {
         success: true,
         message: `Stack '${name}' deleted successfully`,
-        output: removeOutput.stdout || removeOutput.stderr || ''
+        output: removeOutput ? (removeOutput.stdout || removeOutput.stderr || '') : ''
       };
+
+      if (warnings.length > 0) {
+        result.warnings = warnings;
+      }
+
+      return result;
     } catch (error) {
       throw new Error(`Failed to delete stack: ${error.message}`);
     }
