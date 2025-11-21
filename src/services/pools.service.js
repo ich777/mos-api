@@ -6223,12 +6223,12 @@ class PoolsService {
   /**
    * Set NonRAID write mode with retries
    * @param {string} mode - Write mode (normal or turbo)
-   * @param {number} maxAttempts - Maximum number of attempts (default: 30)
+   * @param {number} maxAttempts - Maximum number of attempts (default: 10)
    * @param {number} delayMs - Delay between attempts in milliseconds (default: 2000)
    * @returns {Promise<boolean>} - True if mode set successfully, false otherwise
    * @private
    */
-  async _setNonRaidWriteMode(mode = 'normal', maxAttempts = 30, delayMs = 2000) {
+  async _setNonRaidWriteMode(mode = 'normal', maxAttempts = 10, delayMs = 2000) {
     const modeValue = mode === 'turbo' ? 1 : 0;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -6253,16 +6253,17 @@ class PoolsService {
 
   /**
    * Try to start NonRAID parity check with retries
-   * @param {number} maxAttempts - Maximum number of attempts (default: 30)
+   * @param {number} maxAttempts - Maximum number of attempts (default: 10)
    * @param {number} delayMs - Delay between attempts in milliseconds (default: 2000)
    * @returns {Promise<boolean>} - True if check started successfully, false otherwise
    * @private
    */
-  async _startNonRaidParityCheck(maxAttempts = 30, delayMs = 2000) {
+  async _startNonRaidParityCheck(maxAttempts = 10, delayMs = 2000) {
+    await execPromise('cat /proc/nmdstat');
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         console.log(`Attempting to start parity check (attempt ${attempt}/${maxAttempts})...`);
-        await execPromise('echo "check CORRECT" > /proc/nmdcmd');
+        await execPromise('echo "check" > /proc/nmdcmd');
         console.log('Parity check started successfully');
         return true;
       } catch (error) {
