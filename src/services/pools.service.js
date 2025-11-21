@@ -1037,28 +1037,33 @@ class PoolsService {
 
       // Parse exit status, timestamps and resync position to determine if check is finished
       const syncExitMatch = stdout.match(/sbSyncExit=(-?\d+)/);
+      const syncedMatch = stdout.match(/sbSynced=(\d+)/);
       const synced2Match = stdout.match(/sbSynced2=(\d+)/);
       const resyncPosMatch = stdout.match(/mdResyncPos=(\d+)/);
+      const resyncDtMatch = stdout.match(/mdResyncDt=(\d+)/);
+      const resyncDbMatch = stdout.match(/mdResyncDb=(\d+)/);
 
       const syncExit = syncExitMatch ? parseInt(syncExitMatch[1]) : null;
+      const sbSynced = syncedMatch ? parseInt(syncedMatch[1]) : null;
       const sbSynced2 = synced2Match ? parseInt(synced2Match[1]) : null;
       const mdResyncPos = resyncPosMatch ? parseInt(resyncPosMatch[1]) : null;
+      const mdResyncDt = resyncDtMatch ? parseInt(resyncDtMatch[1]) : null;
+      const mdResyncDb = resyncDbMatch ? parseInt(resyncDbMatch[1]) : null;
 
-      // Check if operation is finished:
-      // 1. sbSyncExit = 0 AND sbSynced2 > 0: successfully completed
-      // 2. sbSyncExit = -4 AND mdResyncPos = 0: cancelled (aborted, not paused)
-      // 3. sbSyncExit < 0 AND sbSyncExit ≠ -4: error exit
-      const isFinishedSuccessfully = syncExit === 0 && sbSynced2 !== null && sbSynced2 > 0;
-      const isCancelled = syncExit === -4 && mdResyncPos === 0;
-      const isFinishedWithError = syncExit !== null && syncExit < 0 && syncExit !== -4;
+      // Check if operation is actually running (has any progress/activity)
+      // If mdResyncAction is set but all progress values are 0, it's not really active
+      const hasActivity = (mdResyncPos !== null && mdResyncPos > 0) ||
+                          (mdResyncDt !== null && mdResyncDt > 0) ||
+                          (mdResyncDb !== null && mdResyncDb > 0);
 
-      if (isFinishedSuccessfully || isCancelled || isFinishedWithError) {
-        // Operation is finished, not running anymore
-        return false;
+      // If there's activity, the operation is definitely running
+      // sbSynced/sbSynced2 are timestamps of LAST completed sync, not current operation
+      if (hasActivity) {
+        return true;
       }
 
-      // Operation is still running or paused
-      return true;
+      // No activity - operation is not running
+      return false;
     } catch (error) {
       return false;
     }
@@ -3972,22 +3977,35 @@ class PoolsService {
       const syncedMatch = stdout.match(/sbSynced=(\d+)/);
       const synced2Match = stdout.match(/sbSynced2=(\d+)/);
       const resyncPosMatch = stdout.match(/mdResyncPos=(\d+)/);
+      const resyncDtMatch = stdout.match(/mdResyncDt=(\d+)/);
+      const resyncDbMatch = stdout.match(/mdResyncDb=(\d+)/);
 
       const syncExit = syncExitMatch ? parseInt(syncExitMatch[1]) : null;
       const sbSynced = syncedMatch ? parseInt(syncedMatch[1]) : null;
       const sbSynced2 = synced2Match ? parseInt(synced2Match[1]) : null;
       const mdResyncPos = resyncPosMatch ? parseInt(resyncPosMatch[1]) : null;
+      const mdResyncDt = resyncDtMatch ? parseInt(resyncDtMatch[1]) : null;
+      const mdResyncDb = resyncDbMatch ? parseInt(resyncDbMatch[1]) : null;
 
-      // Check if operation is finished:
-      // 1. sbSyncExit = 0 AND sbSynced2 > 0: successfully completed
-      // 2. sbSyncExit = -4 AND mdResyncPos = 0: cancelled (aborted, not paused)
-      // 3. sbSyncExit < 0 AND sbSyncExit ≠ -4: error exit
-      const isFinishedSuccessfully = syncExit === 0 && sbSynced2 !== null && sbSynced2 > 0;
-      const isCancelled = syncExit === -4 && mdResyncPos === 0;
-      const isFinishedWithError = syncExit !== null && syncExit < 0 && syncExit !== -4;
+      // Check if operation is actually running (has any progress/activity)
+      // If mdResyncAction is set but all progress values are 0, it's not really active
+      const hasActivity = (mdResyncPos !== null && mdResyncPos > 0) ||
+                          (mdResyncDt !== null && mdResyncDt > 0) ||
+                          (mdResyncDb !== null && mdResyncDb > 0);
 
-      if (isFinishedSuccessfully || isCancelled || isFinishedWithError) {
-        // Operation is finished, not running anymore
+      // If there's activity, the operation is definitely running - don't check "finished" conditions!
+      // sbSynced/sbSynced2 are timestamps of LAST completed sync, not current operation
+      if (hasActivity) {
+        // Operation is running, continue to build progress object
+      } else {
+        // No activity - check if operation is finished/cancelled:
+        // 1. sbSyncExit = -4 AND mdResyncPos = 0: cancelled (aborted, not paused)
+        // 2. sbSyncExit < 0 AND sbSyncExit ≠ -4: error exit
+        // 3. No activity at all: not running
+        const isCancelled = syncExit === -4 && mdResyncPos === 0;
+        const isFinishedWithError = syncExit !== null && syncExit < 0 && syncExit !== -4;
+
+        // Operation is not running
         pool.status.parity_operation = false;
         pool.status.parity_progress = null;
         return;
@@ -4021,16 +4039,14 @@ class PoolsService {
         description = `Unknown operation: ${action}`;
       }
 
-      // Parse resync statistics (resyncPos already parsed above as mdResyncPos)
+      // Parse resync statistics (resyncPos, resyncDt, resyncDb already parsed above)
       const resyncSizeMatch = stdout.match(/mdResyncSize=(\d+)/);
-      const resyncDtMatch = stdout.match(/mdResyncDt=(\d+)/);
-      const resyncDbMatch = stdout.match(/mdResyncDb=(\d+)/);
       const resyncCorrMatch = stdout.match(/mdResyncCorr=(\d+)/);
 
       const resyncSize = resyncSizeMatch ? parseInt(resyncSizeMatch[1]) : null;
       const resyncPos = mdResyncPos; // Use already parsed value
-      const resyncDt = resyncDtMatch ? parseInt(resyncDtMatch[1]) : null;
-      const resyncDb = resyncDbMatch ? parseInt(resyncDbMatch[1]) : null;
+      const resyncDt = mdResyncDt; // Use already parsed value
+      const resyncDb = mdResyncDb; // Use already parsed value
       const resyncCorr = resyncCorrMatch ? parseInt(resyncCorrMatch[1]) : null;
 
       // Calculate percent
