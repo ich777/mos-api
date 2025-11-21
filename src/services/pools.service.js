@@ -754,7 +754,8 @@ class PoolsService {
   }
 
   /**
-   * Get real device path from UUID for display purposes (may wake up disks)
+   * Get real device path from UUID for display purposes (WITHOUT waking up disks)
+   * Uses fs.readlink() instead of readlink -f to avoid disk access
    * @param {string} uuid - Filesystem UUID
    * @returns {Promise<string|null>} - Real device path or null if not found
    */
@@ -766,8 +767,10 @@ class PoolsService {
       const uuidPath = `/dev/disk/by-uuid/${uuid}`;
       try {
         await fs.access(uuidPath);
-        const { stdout } = await execPromise(`readlink -f ${uuidPath}`);
-        const devicePath = stdout.trim();
+        // Read the symlink WITHOUT following it (no disk access)
+        const relativePath = await fs.readlink(uuidPath);
+        // Resolve the relative path to absolute path
+        const devicePath = path.resolve(path.dirname(uuidPath), relativePath);
         return devicePath || null;
       } catch (error) {
         // Not found, try PARTUUID
@@ -777,8 +780,10 @@ class PoolsService {
       const partuuidPath = `/dev/disk/by-partuuid/${uuid}`;
       try {
         await fs.access(partuuidPath);
-        const { stdout } = await execPromise(`readlink -f ${partuuidPath}`);
-        const devicePath = stdout.trim();
+        // Read the symlink WITHOUT following it (no disk access)
+        const relativePath = await fs.readlink(partuuidPath);
+        // Resolve the relative path to absolute path
+        const devicePath = path.resolve(path.dirname(partuuidPath), relativePath);
         return devicePath || null;
       } catch (error) {
         // Not found either
@@ -791,7 +796,8 @@ class PoolsService {
   }
 
   /**
-   * Get real device path from ID for display purposes (may wake up disks)
+   * Get real device path from ID for display purposes (WITHOUT waking up disks)
+   * Uses fs.readlink() instead of readlink -f to avoid disk access
    * @param {string} id - Device ID
    * @returns {Promise<string|null>} - Real device path or null if not found
    */
@@ -799,12 +805,14 @@ class PoolsService {
     try {
       if (!id) return null;
 
-      // First try /dev/disk/by-id/ (device ID)
+      // Try /dev/disk/by-id/ (device ID)
       const idPath = `/dev/disk/by-id/${id}`;
       try {
         await fs.access(idPath);
-        const { stdout } = await execPromise(`readlink -f ${idPath}`);
-        const devicePath = stdout.trim();
+        // Read the symlink WITHOUT following it (no disk access)
+        const relativePath = await fs.readlink(idPath);
+        // Resolve the relative path to absolute path
+        const devicePath = path.resolve(path.dirname(idPath), relativePath);
         return devicePath || null;
       } catch (error) {
         return null;
