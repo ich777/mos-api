@@ -6,6 +6,7 @@ const execPromise = util.promisify(exec);
 const os = require('os');
 const { DeviceStrategyFactory } = require('./pools/device-strategy');
 const PoolHelpers = require('./pools/pool-helpers');
+const disksService = require('./disks.service');
 
 // Timestamp-basierter ID-Generator
 const generateId = () => Date.now().toString();
@@ -20,6 +21,9 @@ class PoolsService {
 
     // Initialize MOS service for service dependency checks
     this.mosService = null;
+
+    // Use the singleton disksService instance for power status checks
+    this.disksService = disksService;
 
     // Default ownership settings for pool mount points
     // Can be overridden per pool or globally configured
@@ -7549,24 +7553,13 @@ class PoolsService {
         throw new Error(`Disk ${diskUuid} not found in pool`);
       }
 
-      // Check power status with hdparm
+      // Use DisksService to check power status (uses smartctl -n standby, doesn't wake disks)
       let powerStatus = 'active';
-
-      // Skip devices that don't support hdparm (nvme, md, nmd, partitions)
-      if (disk.device && (disk.device.includes('nvme') ||
-          disk.device.includes('/dev/md') ||
-          disk.device.includes('/dev/nmd') ||
-          disk.device.match(/p\d+$/))) {
-        powerStatus = 'active';
-      } else {
-        try {
-          const { stdout } = await execPromise(`hdparm -C ${disk.device} 2>/dev/null`);
-          if (stdout.includes('active/idle') || stdout.includes('idle')) powerStatus = 'active';
-          else if (stdout.includes('standby')) powerStatus = 'standby';
-          else if (stdout.includes('sleeping')) powerStatus = 'standby';
-        } catch (error) {
-          powerStatus = 'unknown';
-        }
+      try {
+        const diskPowerInfo = await this.disksService._getLiveDiskPowerStatus(disk.device);
+        powerStatus = diskPowerInfo.status;
+      } catch (error) {
+        powerStatus = 'unknown';
       }
 
       return {
@@ -7715,28 +7708,9 @@ class PoolsService {
         }
       }
 
-      // Skip devices that don't support hdparm (nvme, md, nmd, partitions)
-      if (targetDevice && (targetDevice.includes('nvme') ||
-          targetDevice.includes('/dev/md') ||
-          targetDevice.includes('/dev/nmd') ||
-          targetDevice.match(/p\d+$/))) {
-        device.powerStatus = 'active';
-        continue;
-      }
-
       try {
-        const { stdout } = await execPromise(`hdparm -C ${targetDevice} 2>/dev/null`);
-
-        let powerStatus = 'active';
-        if (stdout.includes('active/idle') || stdout.includes('idle')) {
-          powerStatus = 'active';
-        } else if (stdout.includes('standby')) {
-          powerStatus = 'standby';
-        } else if (stdout.includes('sleeping')) {
-          powerStatus = 'standby';
-        }
-
-        device.powerStatus = powerStatus;
+        const diskPowerInfo = await this.disksService._getLiveDiskPowerStatus(targetDevice);
+        device.powerStatus = diskPowerInfo.status;
       } catch (error) {
         device.powerStatus = 'unknown';
       }
@@ -7758,28 +7732,9 @@ class PoolsService {
         }
       }
 
-      // Skip devices that don't support hdparm (nvme, md, nmd, partitions)
-      if (targetDevice && (targetDevice.includes('nvme') ||
-          targetDevice.includes('/dev/md') ||
-          targetDevice.includes('/dev/nmd') ||
-          targetDevice.match(/p\d+$/))) {
-        device.powerStatus = 'active';
-        continue;
-      }
-
       try {
-        const { stdout } = await execPromise(`hdparm -C ${targetDevice} 2>/dev/null`);
-
-        let powerStatus = 'active';
-        if (stdout.includes('active/idle') || stdout.includes('idle')) {
-          powerStatus = 'active';
-        } else if (stdout.includes('standby')) {
-          powerStatus = 'standby';
-        } else if (stdout.includes('sleeping')) {
-          powerStatus = 'standby';
-        }
-
-        device.powerStatus = powerStatus;
+        const diskPowerInfo = await this.disksService._getLiveDiskPowerStatus(targetDevice);
+        device.powerStatus = diskPowerInfo.status;
       } catch (error) {
         device.powerStatus = 'unknown';
       }
@@ -7928,29 +7883,12 @@ class PoolsService {
       const powerStatuses = [];
 
       for (const disk of allDisks) {
-        // Skip devices that don't support hdparm (nvme, md, nmd, partitions)
-        if (disk.device && (disk.device.includes('nvme') ||
-            disk.device.includes('/dev/md') ||
-            disk.device.includes('/dev/nmd') ||
-            disk.device.match(/p\d+$/))) {
-          powerStatuses.push('active');
-          continue;
-        }
-
         try {
-          const { stdout } = await execPromise(`hdparm -C ${disk.device} 2>/dev/null`);
-
-          let powerStatus = 'active';
-          if (stdout.includes('active/idle') || stdout.includes('idle')) {
-            powerStatus = 'active';
-          } else if (stdout.includes('standby')) {
-            powerStatus = 'standby';
-          } else if (stdout.includes('sleeping')) {
-            powerStatus = 'standby';
-          }
-
-          powerStatuses.push(powerStatus);
+          const diskPowerInfo = await this.disksService._getLiveDiskPowerStatus(disk.device);
+          disk.powerStatus = diskPowerInfo.status;
+          powerStatuses.push(diskPowerInfo.status);
         } catch (error) {
+          disk.powerStatus = 'unknown';
           powerStatuses.push('unknown');
         }
       }

@@ -8,6 +8,9 @@ const path = require('path');
 
 class DisksService {
   constructor() {
+    // Cache für Power-Status (verhindert mehrfache smartctl-Aufrufe innerhalb kurzer Zeit)
+    this.powerStatusCache = new Map();
+    this.powerStatusCacheTTL = 10000; // 10 Sekunden Cache
   }
 
   /**
@@ -346,13 +349,30 @@ class DisksService {
   }
 
   /**
-   * LIVE Power-Status Abfrage - KEIN Caching!
-   * Diese Methode führt immer eine direkte hdparm -C Abfrage durch
+   * LIVE Power-Status Abfrage mit kurzem Cache (10s)
+   * Diese Methode verwendet smartctl -n standby um den Power-Status zu prüfen
+   * OHNE die Disk aufzuwecken (im Gegensatz zu hdparm -C)
    */
   async _getLiveDiskPowerStatus(device) {
     try {
       const devicePath = device.startsWith('/dev/') ? device : `/dev/${device}`;
       const deviceName = device.replace('/dev/', '');
+
+      // Prüfe Cache (verhindert mehrfache Abfragen derselben Disk innerhalb von 10s)
+      const cacheKey = devicePath;
+      const cachedEntry = this.powerStatusCache.get(cacheKey);
+      if (cachedEntry && (Date.now() - cachedEntry.timestamp < this.powerStatusCacheTTL)) {
+        return cachedEntry.data;
+      }
+
+      // Helper-Funktion um Result zu cachen
+      const cacheAndReturn = (result) => {
+        this.powerStatusCache.set(cacheKey, {
+          data: result,
+          timestamp: Date.now()
+        });
+        return result;
+      };
 
       // Hole erweiterte Typ-Informationen (nur für Typ-Bestimmung)
       const diskTypeInfo = await this._getEnhancedDiskType(device);
@@ -360,61 +380,133 @@ class DisksService {
       // Nur NVMe, eMMC, md und nmd sind wirklich immer aktiv (haben keinen Standby-Modus)
       // ALLE anderen Disks (HDDs, SSDs, USB mit mSATA) können in Standby gehen!
       if (diskTypeInfo.type === 'nvme' || diskTypeInfo.type === 'emmc' || diskTypeInfo.type === 'md') {
-        return {
+        return cacheAndReturn({
           status: 'active',
           active: true,
           type: diskTypeInfo.type,
           rotational: diskTypeInfo.rotational,
           removable: diskTypeInfo.removable,
           usbInfo: diskTypeInfo.usbInfo
-        };
+        });
       }
 
-      // Für ALLE anderen Disks: IMMER direkte hdparm -C Abfrage - KEIN CACHING!
+      // Zusätzliche Prüfung: nmd und Partitionen
+      // nmd (Network Block Device) unterstützt auch kein Power Management
+      if (deviceName.match(/^nmd\d+/) || devicePath.includes('/dev/nmd')) {
+        return cacheAndReturn({
+          status: 'active',
+          active: true,
+          type: 'nmd',
+          rotational: null,
+          removable: false,
+          usbInfo: null
+        });
+      }
+
+      // Partitionen können nicht in Standby gehen (nur ganze Disks)
+      // Bei Partitionen: Prüfe die zugrunde liegende Basis-Disk!
+      // NVMe Partitionen: nvme0n1p1 -> nvme0n1, SATA/SCSI Partitionen: sda1 -> sda
+      const endsWithDigit = deviceName.match(/\d+$/);
+      const isSpecialDevice = deviceName.match(/^(nvme\d+n\d+|md\d+|nmd\d+)$/);
+
+      if (endsWithDigit && !isSpecialDevice) {
+        // Das ist eine Partition - ermittle die Basis-Disk und prüfe deren Status
+        // Ermittle Basis-Disk:
+        // NVMe: nvme0n1p1 -> nvme0n1 (remove p\d+)
+        // SATA/SCSI: sda1 -> sda (remove \d+)
+        let baseDisk;
+        if (deviceName.match(/^nvme\d+n\d+p\d+$/)) {
+          // NVMe Partition
+          baseDisk = deviceName.replace(/p\d+$/, '');
+        } else {
+          // SATA/SCSI Partition
+          baseDisk = deviceName.replace(/\d+$/, '');
+        }
+
+        // Rekursiv die Basis-Disk prüfen (nutzt automatisch den Cache für die Basis-Disk)
+        const baseDiskStatus = await this._getLiveDiskPowerStatus(baseDisk);
+
+        return cacheAndReturn({
+          status: baseDiskStatus.status,
+          active: baseDiskStatus.active,
+          type: 'partition',
+          baseDisk: baseDisk,
+          rotational: diskTypeInfo.rotational,
+          removable: diskTypeInfo.removable,
+          usbInfo: diskTypeInfo.usbInfo
+        });
+      }
+
+      // Für ALLE anderen Disks: smartctl -n standby (weckt die Disk NICHT auf!)
       // Das schließt ein: HDDs, SSDs, USB-Disks mit echten SSDs/HDDs
       try {
-        const { stdout } = await execPromise(`hdparm -C ${devicePath}`);
+        // smartctl -n standby: Prüft Power-Status OHNE die Disk aufzuwecken
+        // Exit Code 0: Disk ist active/idle
+        // Exit Code 2: Disk ist in STANDBY (und wurde NICHT aufgeweckt)
+        // Andere: Fehler oder nicht unterstützt
+        const { stdout, stderr } = await execPromise(
+          `smartctl -n standby -i ${devicePath} 2>&1 || echo "EXIT_CODE:$?"`
+        );
 
         let status = 'active';
         let active = true;
 
-        if (stdout.includes('standby')) {
+        // Parse smartctl output
+        const output = stdout + stderr;
+
+        // Check for standby mode (exit code 2 oder Text-Meldung)
+        if (output.includes('Device is in STANDBY mode') ||
+            output.includes('EXIT_CODE:2')) {
           status = 'standby';
           active = false;
-        } else if (stdout.includes('active/idle') || stdout.includes('idle')) {
+        }
+        // Check for active/idle mode
+        else if (output.includes('Device is in ACTIVE or IDLE mode') ||
+                 output.includes('ACTIVE') ||
+                 output.includes('IDLE')) {
           status = 'active';
           active = true;
-        } else if (stdout.includes('sleeping')) {
-          status = 'standby'; // sleeping is treated as standby
+        }
+        // Check for sleep mode
+        else if (output.includes('SLEEP')) {
+          status = 'standby'; // treat sleep as standby
           active = false;
         }
+        // Device doesn't support power mode check
+        else if (output.includes('does not support') ||
+                 output.includes('Unable to detect') ||
+                 output.includes('Unknown USB bridge')) {
+          // Annahme: Wenn nicht unterstützt, ist die Disk wahrscheinlich aktiv
+          // (z.B. SSDs die kein Power-Management haben)
+          status = 'active';
+          active = true;
+        }
 
-        return {
+        return cacheAndReturn({
           status,
           active,
           type: diskTypeInfo.type,
           rotational: diskTypeInfo.rotational,
           removable: diskTypeInfo.removable,
           usbInfo: diskTypeInfo.usbInfo
-        };
+        });
 
-      } catch (hdparmError) {
-        // hdparm failed - device doesn't support power management
-        // WICHTIG: USB-Disks mit echten SSDs/HDDs können durchaus Standby unterstützen!
-        // Wir geben 'unknown' zurück, anstatt fälschlicherweise 'active' anzunehmen
-        console.warn(`hdparm -C failed for ${devicePath}: ${hdparmError.message}`);
-        return {
-          status: 'unknown', // Ehrlich sein - wir wissen es nicht!
+      } catch (smartctlError) {
+        // smartctl failed completely - device doesn't support SMART or other error
+        console.warn(`smartctl -n standby failed for ${devicePath}: ${smartctlError.message}`);
+        return cacheAndReturn({
+          status: 'unknown',
           active: null,
           type: diskTypeInfo.type,
           rotational: diskTypeInfo.rotational,
           removable: diskTypeInfo.removable,
           usbInfo: diskTypeInfo.usbInfo,
-          error: `Power status check not supported: ${hdparmError.message}`
-        };
+          error: `Power status check not supported: ${smartctlError.message}`
+        });
       }
 
     } catch (error) {
+      // Bei generellen Fehlern NICHT cachen, da das ein temporäres Problem sein könnte
       return {
         status: 'unknown',
         active: null,
@@ -427,78 +519,12 @@ class DisksService {
 
   /**
    * Prüft den Power-Status einer Disk ohne sie aufzuwecken
-   * WARNUNG: Diese Methode kann bei HDDs trotzdem Zugriffe verursachen!
+   * Verwendet smartctl -n standby (weckt die Disk NICHT auf)
    * Für Pool-Services verwende _getEnhancedDiskTypeForPools()
    */
   async _getDiskPowerStatus(device) {
-    try {
-      const devicePath = device.startsWith('/dev/') ? device : `/dev/${device}`;
-      const deviceName = device.replace('/dev/', '');
-
-      // Hole erweiterte Typ-Informationen
-      const diskTypeInfo = await this._getEnhancedDiskType(device);
-
-      // NVMe, eMMC, md und SSDs sind immer aktiv
-      if (diskTypeInfo.type === 'nvme' || diskTypeInfo.type === 'emmc' || diskTypeInfo.type === 'md' ||
-          (!diskTypeInfo.rotational && diskTypeInfo.type === 'ssd')) {
-        return {
-          status: 'active',
-          active: true,
-          type: diskTypeInfo.type,
-          rotational: diskTypeInfo.rotational,
-          removable: diskTypeInfo.removable,
-          usbInfo: diskTypeInfo.usbInfo
-        };
-      }
-
-      // Für HDDs und potentielle rotierende USB-Devices: Power-Status prüfen
-      try {
-        const { stdout } = await execPromise(`hdparm -C ${devicePath}`);
-
-        let status = 'active';
-        let active = true;
-
-        if (stdout.includes('standby')) {
-          status = 'standby';
-          active = false;
-        } else if (stdout.includes('active/idle') || stdout.includes('idle')) {
-          status = 'active';
-          active = true;
-        } else if (stdout.includes('sleeping')) {
-          status = 'standby'; // sleeping is treated as standby
-          active = false;
-        }
-
-        return {
-          status,
-          active,
-          type: diskTypeInfo.type,
-          rotational: diskTypeInfo.rotational,
-          removable: diskTypeInfo.removable,
-          usbInfo: diskTypeInfo.usbInfo
-        };
-
-      } catch (hdparmError) {
-        // hdparm failed - probably USB or device doesn't support it
-        return {
-          status: 'active', // Assume active if we can't check
-          active: true,
-          type: diskTypeInfo.type,
-          rotational: diskTypeInfo.rotational,
-          removable: diskTypeInfo.removable,
-          usbInfo: diskTypeInfo.usbInfo
-        };
-      }
-
-    } catch (error) {
-      return {
-        status: 'unknown',
-        active: null,
-        type: 'unknown',
-        rotational: null,
-        removable: null
-      };
-    }
+    // Diese Methode verwendet jetzt die gleiche Logik wie _getLiveDiskPowerStatus
+    return await this._getLiveDiskPowerStatus(device);
   }
 
   /**
@@ -1457,9 +1483,9 @@ class DisksService {
           // Kurz warten, damit die Disk Zeit hat aufzuwachen
           await new Promise(resolve => setTimeout(resolve, 1000));
 
-          // Prüfe den aktuellen Power-Status
-          const { stdout: statusCheck } = await execPromise(`hdparm -C ${devicePath}`);
-          const isAwake = statusCheck.includes('active/idle');
+          // Prüfe den aktuellen Power-Status mit smartctl
+          const powerStatus = await this._getLiveDiskPowerStatus(devicePath);
+          const isAwake = powerStatus.status === 'active';
 
           if (isAwake) {
             return {
@@ -1477,7 +1503,7 @@ class DisksService {
               device: device,
               method: wakeMethod,
               verified: false,
-              currentStatus: statusCheck.trim()
+              currentStatus: powerStatus.status
             };
           }
         } catch (verifyError) {
