@@ -62,6 +62,17 @@ class SharesService {
         throw new Error(`Invalid shares configuration format: Expected array, got ${typeof sharesConfig}`);
       }
 
+      // Enrich shares with pool information (API-only, not persisted)
+      sharesConfig.forEach(section => {
+        Object.keys(section).forEach(shareType => {
+          if (Array.isArray(section[shareType])) {
+            section[shareType] = section[shareType].map(share =>
+              this._enrichShareWithPoolInfo(share)
+            );
+          }
+        });
+      });
+
       return sharesConfig;
     } catch (error) {
       if (error.code === 'ENOENT') {
@@ -95,6 +106,7 @@ class SharesService {
         });
       }
 
+      // Pool info is already enriched in getShares()
       return smbShares;
     } catch (error) {
       throw error; // Re-throw to preserve the original error
@@ -120,6 +132,7 @@ class SharesService {
         });
       }
 
+      // Pool info is already enriched in getShares()
       return nfsShares;
     } catch (error) {
       throw error; // Re-throw to preserve the original error
@@ -270,6 +283,28 @@ class SharesService {
     } catch (error) {
       return null;
     }
+  }
+
+  /**
+   * Enrich share with pool information (for GET requests only, not persisted)
+   * @param {Object} share - Share configuration object
+   * @returns {Object} Share with pool information
+   */
+  _enrichShareWithPoolInfo(share) {
+    if (!share || !share.path) {
+      return share;
+    }
+
+    // Check if path starts with /mnt/
+    if (share.path.startsWith('/mnt/')) {
+      const poolName = this._extractPoolNameFromPath(share.path);
+      if (poolName) {
+        // Add pool info (not persisted, only for API response)
+        share.pool = poolName;
+      }
+    }
+
+    return share;
   }
 
   /**
@@ -1117,6 +1152,7 @@ class SharesService {
 
       const { share: foundShare, shareType } = shareResult;
 
+      // Pool info is already enriched in getShares()
       return {
         success: true,
         data: {
