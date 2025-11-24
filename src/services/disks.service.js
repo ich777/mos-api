@@ -1194,7 +1194,55 @@ class DisksService {
   }
 
   /**
-   * Find unassigned disks - improved logic with BTRFS multi-device support
+   * Get all physical block devices from /dev/disk/by-diskseq/
+   * This is SAFE - only reads symlinks, doesn't access disks
+   * @returns {Promise<Set<string>>} Set of device paths (e.g., /dev/sda, /dev/nvme0n1)
+   * @private
+   */
+  async _getAllPhysicalDevices() {
+    const devices = new Set();
+
+    try {
+      const diskseqDir = '/dev/disk/by-diskseq';
+      const diskseqFiles = await fs.readdir(diskseqDir);
+
+      for (const file of diskseqFiles) {
+        try {
+          const symlinkPath = path.join(diskseqDir, file);
+          const realPath = await fs.realpath(symlinkPath);
+
+          // Extract device name (e.g., sda, nvme0n1)
+          const deviceName = path.basename(realPath);
+
+          // Filter out unwanted devices (only symlinks, no disk access!)
+          // Exclude: loop devices, ram disks, dm-devices, CD-ROMs, etc.
+          if (deviceName.match(/^loop\d+$/)) continue;        // loop0, loop1, ...
+          if (deviceName.match(/^ram\d+$/)) continue;         // ram0, ram1, ...
+          if (deviceName.match(/^dm-\d+$/)) continue;         // dm-0, dm-1, ... (device mapper)
+          if (deviceName.match(/^sr\d+$/)) continue;          // sr0, sr1, ... (CD-ROM)
+          if (deviceName.match(/^zram\d+$/)) continue;        // zram0, zram1, ...
+          if (deviceName.match(/^nbd\d+$/)) continue;         // nbd0, nbd1, ... (network block device)
+          if (deviceName.match(/^nmd\d+$/)) continue;         // nmd0, nmd1, ... (nonraid md device)
+
+          // Only include physical disks: sd*, nvme*, mmc*, md*
+          if (deviceName.match(/^(sd[a-z]+|nvme\d+n\d+|mmc\w+|md\d+)$/)) {
+            devices.add(realPath);
+          }
+        } catch (error) {
+          // Skip broken symlinks or inaccessible devices
+          continue;
+        }
+      }
+    } catch (error) {
+      // /dev/disk/by-diskseq/ might not exist on older systems
+      console.warn('Could not read /dev/disk/by-diskseq/:', error.message);
+    }
+
+    return devices;
+  }
+
+  /**
+   * Find unassigned disks
    * @param {Object} options - Options for disk listing
    * @param {Object} user - User object with byte_format preference
    */
@@ -1205,58 +1253,95 @@ class DisksService {
       const allDisks = await this.getAllDisks(diskOptions, user);
       const unassignedDisks = [];
 
-      // Get all blkid data at once (single command, much faster than individual calls)
-      let blkidCache = new Map();
+      // Get all physical devices from /dev/disk/by-diskseq/ (SAFE - only symlinks)
+      // This ensures we don't miss any disks that might be in standby or not detected
+      const allPhysicalDevices = await this._getAllPhysicalDevices();
+
+      // Log if we found devices that are not in allDisks (for debugging)
+      const detectedDevices = new Set(allDisks.map(d => d.device));
+      for (const physicalDevice of allPhysicalDevices) {
+        if (!detectedDevices.has(physicalDevice)) {
+          console.log(`Note: Physical device ${physicalDevice} found in /dev/disk/by-diskseq/ but not in disk list (might be in standby)`);
+        }
+      }
+
+      // Build a safe device info cache using /dev/disk/by-uuid/ and /dev/disk/by-partuuid/
+      // This is SAFE - only reads symlinks, doesn't access disks directly
+      const deviceUuidCache = new Map(); // device -> { uuid, type }
+
       try {
-        const { stdout: allBlkidOut } = await execPromise(`blkid 2>/dev/null || echo ""`);
-        const lines = allBlkidOut.trim().split('\n');
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          const deviceMatch = line.match(/^([^:]+):/);
-          if (deviceMatch) {
-            const device = deviceMatch[1];
-            const uuidMatch = line.match(/UUID="([^"]+)"/);
-            const typeMatch = line.match(/TYPE="([^"]+)"/);
-            if (uuidMatch || typeMatch) {
-              blkidCache.set(device, {
-                uuid: uuidMatch ? uuidMatch[1] : null,
-                type: typeMatch ? typeMatch[1] : null
-              });
-            }
+        // Read /dev/disk/by-uuid/ for filesystem UUIDs
+        const uuidDir = '/dev/disk/by-uuid';
+        const uuidFiles = await fs.readdir(uuidDir);
+
+        for (const uuid of uuidFiles) {
+          try {
+            const symlinkPath = path.join(uuidDir, uuid);
+            const realPath = await fs.realpath(symlinkPath);
+
+            deviceUuidCache.set(realPath, {
+              uuid: uuid,
+              type: 'unknown' // Type will be determined later if needed
+            });
+          } catch (error) {
+            // Skip broken symlinks
           }
         }
       } catch (error) {
-        // If blkid fails, continue without cache
+        // Directory doesn't exist or can't be read
       }
 
-      // Collect all mounted BTRFS UUIDs using parallel promises
-      const mountedBtrfsUuids = new Set();
+      // Load mounts once for all disks (performance optimization)
       const mounts = await this._getMountInfo();
 
-      const btrfsMountPromises = Array.from(mounts)
-        .filter(([_, mountInfo]) => mountInfo.fstype === 'btrfs')
-        .map(async ([mountedDevice]) => {
+      // Collect all devices that are part of ACTUALLY MOUNTED BTRFS filesystems
+      // IMPORTANT: 'btrfs filesystem show' shows ALL BTRFS filesystems, not just mounted ones!
+      // We need to cross-reference with actual mounts
+      const mountedBtrfsDevices = new Set();
+      const mountedBtrfsUuids = new Set();
+
+      try {
+        // First, find all BTRFS mounts
+        const btrfsMounts = new Set();
+        for (const [mountedDevice, mountInfo] of mounts) {
+          if (mountInfo.fstype === 'btrfs') {
+            btrfsMounts.add(mountedDevice);
+          }
+        }
+
+        // For each mounted BTRFS device, use 'btrfs filesystem show' to find ALL devices in that array
+        for (const mountedDevice of btrfsMounts) {
           try {
-            // Use cache if available
-            if (blkidCache.has(mountedDevice)) {
-              const cached = blkidCache.get(mountedDevice);
-              if (cached.uuid) {
-                return cached.uuid;
+            const { stdout: btrfsShowOut } = await execPromise(`btrfs filesystem show ${mountedDevice} 2>/dev/null || echo ""`);
+
+            // Parse filesystem UUID
+            const uuidMatch = btrfsShowOut.match(/uuid:\s*([a-f0-9-]{36})/i);
+            if (uuidMatch) {
+              mountedBtrfsUuids.add(uuidMatch[1].toLowerCase());
+            }
+
+            // Parse all device paths from this specific mounted filesystem
+            // Example: "devid    1 size 3.49TiB used 1.67TiB path /dev/nvme0n1p1"
+            const deviceMatches = btrfsShowOut.matchAll(/path\s+(\/dev\/[^\s]+)/g);
+
+            for (const match of deviceMatches) {
+              if (match[1]) {
+                mountedBtrfsDevices.add(match[1]);
+                // Mark these devices as BTRFS in cache
+                if (deviceUuidCache.has(match[1])) {
+                  deviceUuidCache.get(match[1]).type = 'btrfs';
+                }
               }
             }
-            // Fallback to individual blkid call
-            const { stdout: blkidOut } = await execPromise(`blkid ${mountedDevice} 2>/dev/null || echo ""`);
-            const uuidMatch = blkidOut.match(/UUID="([^"]+)"/);
-            return uuidMatch ? uuidMatch[1] : null;
           } catch (error) {
-            return null;
+            console.warn(`Failed to get BTRFS info for ${mountedDevice}:`, error.message);
           }
-        });
+        }
 
-      const btrfsUuids = await Promise.all(btrfsMountPromises);
-      btrfsUuids.forEach(uuid => {
-        if (uuid) mountedBtrfsUuids.add(uuid);
-      });
+      } catch (error) {
+        // If btrfs command fails, continue without BTRFS detection
+        console.warn('Failed to get BTRFS filesystem info:', error.message);
+      }
 
       // Load pools and mounts once for all disks (major performance optimization)
       let pools = [];
@@ -1280,63 +1365,35 @@ class DisksService {
 
         if (!usageInfo.inUse) {
           // Additional BTRFS check: Is this disk or one of its partitions part of a mounted BTRFS?
-          // BUT: Only if the disk is not in standby (blkid would wake it up!)
+          // This check is SAFE - it uses:
+          // 1. 'btrfs filesystem show' output (mounted filesystems only)
+          // 2. /dev/disk/by-uuid/ symlinks (no disk access)
           let isPartOfMountedBtrfs = false;
 
-          if (!disk.standbySkipped) {
-            // 1. Check the whole disk using cache
-            const devicePath = disk.device.startsWith('/dev/') ? disk.device : `/dev/${disk.device}`;
+          // Check the whole disk
+          const devicePath = disk.device.startsWith('/dev/') ? disk.device : `/dev/${disk.device}`;
+          if (mountedBtrfsDevices.has(devicePath)) {
+            isPartOfMountedBtrfs = true;
+          }
 
-            if (blkidCache.has(devicePath)) {
-              const cached = blkidCache.get(devicePath);
-              if (cached.type === 'btrfs' && cached.uuid && mountedBtrfsUuids.has(cached.uuid)) {
+          // Check all partitions of the disk
+          if (!isPartOfMountedBtrfs && disk.partitions && disk.partitions.length > 0) {
+            for (const partition of disk.partitions) {
+              // Direct check from 'btrfs filesystem show'
+              if (mountedBtrfsDevices.has(partition.device)) {
                 isPartOfMountedBtrfs = true;
-              }
-            }
-
-            // 2. Check all partitions of the disk for BTRFS using cache and parallel calls
-            if (!isPartOfMountedBtrfs && disk.partitions && disk.partitions.length > 0) {
-              // Check cache first for all partitions
-              for (const partition of disk.partitions) {
-                if (blkidCache.has(partition.device)) {
-                  const cached = blkidCache.get(partition.device);
-                  if (cached.type === 'btrfs' && cached.uuid && mountedBtrfsUuids.has(cached.uuid)) {
-                    isPartOfMountedBtrfs = true;
-                    break;
-                  }
-                }
+                break;
               }
 
-              // If not found in cache, do parallel blkid calls for partitions not in cache
-              if (!isPartOfMountedBtrfs) {
-                const partitionsToCheck = disk.partitions.filter(p => !blkidCache.has(p.device));
-
-                if (partitionsToCheck.length > 0) {
-                  const partitionCheckPromises = partitionsToCheck.map(async (partition) => {
-                    try {
-                      const { stdout: partBlkidOut } = await execPromise(`blkid ${partition.device} 2>/dev/null || echo ""`);
-                      if (partBlkidOut.trim()) {
-                        const uuidMatch = partBlkidOut.match(/UUID="([^"]+)"/);
-                        const fsTypeMatch = partBlkidOut.match(/TYPE="([^"]+)"/);
-                        if (uuidMatch && fsTypeMatch && fsTypeMatch[1] === 'btrfs') {
-                          return mountedBtrfsUuids.has(uuidMatch[1]);
-                        }
-                      }
-                      return false;
-                    } catch (error) {
-                      return false;
-                    }
-                  });
-
-                  const partitionResults = await Promise.all(partitionCheckPromises);
-                  isPartOfMountedBtrfs = partitionResults.some(result => result === true);
-                }
+              // UUID-based check for BTRFS multi-device arrays
+              // where not all devices appear in 'btrfs filesystem show'
+              const cached = deviceUuidCache.get(partition.device);
+              if (cached && cached.uuid && mountedBtrfsUuids.has(cached.uuid.toLowerCase())) {
+                isPartOfMountedBtrfs = true;
+                break;
               }
             }
           }
-          // If disk is in standby, we skip the BTRFS UUID checks to avoid waking it
-          // This means standby disks might be shown as unassigned even if they're part of a BTRFS array
-          // but this is better than waking them up
 
           if (!isPartOfMountedBtrfs) {
             // Additionally check if partitions exist but are not mounted
@@ -2126,4 +2183,4 @@ class DisksService {
   }
 }
 
-module.exports = new DisksService(); 
+module.exports = new DisksService();
