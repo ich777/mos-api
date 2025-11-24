@@ -2,7 +2,6 @@ const si = require('systeminformation');
 const { exec } = require('child_process');
 const util = require('util');
 const execPromise = util.promisify(exec);
-const PoolsService = require('./pools.service');
 const fs = require('fs').promises;
 const path = require('path');
 
@@ -633,6 +632,84 @@ class DisksService {
   }
 
   /**
+   * Resolve device mapper to underlying physical device(s) - SAFE VERSION
+   * Uses /sys/block/dm-X/slaves/ to find the underlying devices WITHOUT waking up disks
+   * @param {string} device - Device mapper path (e.g., /dev/mapper/luks-xyz or /dev/dm-0)
+   * @returns {Promise<Array>} Array of underlying device paths
+   */
+  async _resolveDeviceMapperToPhysical(device) {
+    try {
+      let dmName;
+
+      // Handle both /dev/mapper/name and /dev/dm-X formats
+      if (device.includes('/dev/mapper/')) {
+        // For /dev/mapper/name, we need to find the corresponding dm-X
+        const mapperName = device.replace('/dev/mapper/', '');
+
+        // Read /sys/block/ to find the dm-X that corresponds to this mapper name
+        try {
+          const blockDevices = await fs.readdir('/sys/block');
+          for (const blockDev of blockDevices) {
+            if (blockDev.startsWith('dm-')) {
+              // Check if this dm-X has the same name
+              const namePath = `/sys/block/${blockDev}/dm/name`;
+              try {
+                const name = (await fs.readFile(namePath, 'utf8')).trim();
+                if (name === mapperName) {
+                  dmName = blockDev;
+                  break;
+                }
+              } catch (error) {
+                // Continue searching
+              }
+            }
+          }
+        } catch (error) {
+          return [];
+        }
+
+        if (!dmName) {
+          return [];
+        }
+      } else if (device.includes('/dev/dm-')) {
+        // Direct dm-X format
+        dmName = device.replace('/dev/', '');
+      } else {
+        // Not a device mapper
+        return [];
+      }
+
+      // Read slaves directory to find underlying devices
+      const slavesPath = `/sys/block/${dmName}/slaves`;
+      const slaves = await fs.readdir(slavesPath);
+
+      // Convert slave names to full device paths
+      const physicalDevices = slaves.map(slave => `/dev/${slave}`);
+
+      return physicalDevices;
+
+    } catch (error) {
+      // Not a device mapper or error reading slaves
+      return [];
+    }
+  }
+
+  /**
+   * Check if a device is the underlying physical device of a device mapper - SAFE VERSION
+   * @param {string} physicalDevice - Physical device to check (e.g., /dev/sda1)
+   * @param {string} mapperDevice - Device mapper to check (e.g., /dev/mapper/luks-xyz)
+   * @returns {Promise<boolean>} True if physicalDevice is underlying mapperDevice
+   */
+  async _isPhysicalDeviceOfMapper(physicalDevice, mapperDevice) {
+    try {
+      const underlyingDevices = await this._resolveDeviceMapperToPhysical(mapperDevice);
+      return underlyingDevices.includes(physicalDevice);
+    } catch (error) {
+      return false;
+    }
+  }
+
+  /**
    * Get UUIDs of all partitions of a device
    */
   /**
@@ -710,8 +787,9 @@ class DisksService {
       try {
         // Use provided pools or load them
         if (!pools) {
-          const baseService = new PoolsService();
-          pools = await baseService.listPools({});
+          const PoolsServiceClass = require('./pools.service');
+          const poolsService = new PoolsServiceClass();
+          pools = await poolsService.listPools({});
         }
 
         // Get all UUIDs that belong to this device by reading /dev/disk/by-uuid/
@@ -721,7 +799,18 @@ class DisksService {
           // Check data_devices
           if (pool.data_devices) {
             for (const poolDevice of pool.data_devices) {
-              // Skip devices without UUID
+              // Check by device path first (catches partitions like /dev/sdf1 from /dev/sdf)
+              if (poolDevice.device &&
+                  (poolDevice.device === device || this._isPartitionOfDevice(poolDevice.device, device))) {
+                return {
+                  inUse: true,
+                  reason: 'in_pool_data',
+                  poolName: pool.name || 'unknown',
+                  poolDevice: poolDevice.device
+                };
+              }
+
+              // Skip UUID check if no ID
               if (!poolDevice.id) {
                 continue;
               }
@@ -734,6 +823,38 @@ class DisksService {
                   poolName: pool.name || 'unknown',
                   poolDevice: poolDevice.device || poolDevice.id
                 };
+              }
+
+              // NEW: Check if pool device is a device mapper and our device is the underlying physical device
+              if (poolDevice.device &&
+                  (poolDevice.device.includes('/dev/mapper/') || poolDevice.device.includes('/dev/dm-'))) {
+                const isUnderlying = await this._isPhysicalDeviceOfMapper(device, poolDevice.device);
+                if (isUnderlying) {
+                  return {
+                    inUse: true,
+                    reason: 'in_pool_data_via_mapper',
+                    poolName: pool.name || 'unknown',
+                    poolDevice: poolDevice.device,
+                    mapperDevice: poolDevice.device,
+                    physicalDevice: device
+                  };
+                }
+
+                // Also check if any partition of our device is the underlying physical device
+                const devicePartitions = await this._getPartitions(device);
+                for (const partition of devicePartitions) {
+                  const isPartitionUnderlying = await this._isPhysicalDeviceOfMapper(partition.device, poolDevice.device);
+                  if (isPartitionUnderlying) {
+                    return {
+                      inUse: true,
+                      reason: 'in_pool_data_via_mapper',
+                      poolName: pool.name || 'unknown',
+                      poolDevice: poolDevice.device,
+                      mapperDevice: poolDevice.device,
+                      physicalDevice: partition.device
+                    };
+                  }
+                }
               }
             }
           }
@@ -760,6 +881,38 @@ class DisksService {
                   poolName: pool.name || 'unknown',
                   poolDevice: parityDevice.device || parityDevice.id
                 };
+              }
+
+              // NEW: Check if parity device is a device mapper and our device is the underlying physical device
+              if (parityDevice.device &&
+                  (parityDevice.device.includes('/dev/mapper/') || parityDevice.device.includes('/dev/dm-'))) {
+                const isUnderlying = await this._isPhysicalDeviceOfMapper(device, parityDevice.device);
+                if (isUnderlying) {
+                  return {
+                    inUse: true,
+                    reason: 'in_pool_parity_via_mapper',
+                    poolName: pool.name || 'unknown',
+                    poolDevice: parityDevice.device,
+                    mapperDevice: parityDevice.device,
+                    physicalDevice: device
+                  };
+                }
+
+                // Also check if any partition of our device is the underlying physical device
+                const devicePartitions = await this._getPartitions(device);
+                for (const partition of devicePartitions) {
+                  const isPartitionUnderlying = await this._isPhysicalDeviceOfMapper(partition.device, parityDevice.device);
+                  if (isPartitionUnderlying) {
+                    return {
+                      inUse: true,
+                      reason: 'in_pool_parity_via_mapper',
+                      poolName: pool.name || 'unknown',
+                      poolDevice: parityDevice.device,
+                      mapperDevice: parityDevice.device,
+                      physicalDevice: partition.device
+                    };
+                  }
+                }
               }
             }
           }
@@ -804,6 +957,40 @@ class DisksService {
             mountpoint: mountInfo.mountpoint,
             filesystem: mountInfo.fstype
           };
+        }
+      }
+
+      // NEW: Check if any mounted device is a device mapper and our device (or its partitions) is the underlying physical device
+      for (const [mountedDevice, mountInfo] of mounts) {
+        if (mountedDevice.includes('/dev/mapper/') || mountedDevice.includes('/dev/dm-')) {
+          // Check if the whole disk is the underlying device
+          const isUnderlying = await this._isPhysicalDeviceOfMapper(device, mountedDevice);
+          if (isUnderlying) {
+            return {
+              inUse: true,
+              reason: 'mounted_via_mapper',
+              mapperDevice: mountedDevice,
+              physicalDevice: device,
+              mountpoint: mountInfo.mountpoint,
+              filesystem: mountInfo.fstype
+            };
+          }
+
+          // Check if any partition of our device is the underlying device
+          const devicePartitions = await this._getPartitions(device);
+          for (const partition of devicePartitions) {
+            const isPartitionUnderlying = await this._isPhysicalDeviceOfMapper(partition.device, mountedDevice);
+            if (isPartitionUnderlying) {
+              return {
+                inUse: true,
+                reason: 'mounted_partition_via_mapper',
+                mapperDevice: mountedDevice,
+                physicalDevice: partition.device,
+                mountpoint: mountInfo.mountpoint,
+                filesystem: mountInfo.fstype
+              };
+            }
+          }
         }
       }
 
@@ -1253,174 +1440,79 @@ class DisksService {
       const allDisks = await this.getAllDisks(diskOptions, user);
       const unassignedDisks = [];
 
-      // Get all physical devices from /dev/disk/by-diskseq/ (SAFE - only symlinks)
-      // This ensures we don't miss any disks that might be in standby or not detected
-      const allPhysicalDevices = await this._getAllPhysicalDevices();
-
-      // Log if we found devices that are not in allDisks (for debugging)
-      const detectedDevices = new Set(allDisks.map(d => d.device));
-      for (const physicalDevice of allPhysicalDevices) {
-        if (!detectedDevices.has(physicalDevice)) {
-          console.log(`Note: Physical device ${physicalDevice} found in /dev/disk/by-diskseq/ but not in disk list (might be in standby)`);
-        }
-      }
-
-      // Build a safe device info cache using /dev/disk/by-uuid/ and /dev/disk/by-partuuid/
-      // This is SAFE - only reads symlinks, doesn't access disks directly
-      const deviceUuidCache = new Map(); // device -> { uuid, type }
-
-      try {
-        // Read /dev/disk/by-uuid/ for filesystem UUIDs
-        const uuidDir = '/dev/disk/by-uuid';
-        const uuidFiles = await fs.readdir(uuidDir);
-
-        for (const uuid of uuidFiles) {
-          try {
-            const symlinkPath = path.join(uuidDir, uuid);
-            const realPath = await fs.realpath(symlinkPath);
-
-            deviceUuidCache.set(realPath, {
-              uuid: uuid,
-              type: 'unknown' // Type will be determined later if needed
-            });
-          } catch (error) {
-            // Skip broken symlinks
-          }
-        }
-      } catch (error) {
-        // Directory doesn't exist or can't be read
-      }
-
-      // Load mounts once for all disks (performance optimization)
-      const mounts = await this._getMountInfo();
-
-      // Collect all devices that are part of ACTUALLY MOUNTED BTRFS filesystems
-      // IMPORTANT: 'btrfs filesystem show' shows ALL BTRFS filesystems, not just mounted ones!
-      // We need to cross-reference with actual mounts
-      const mountedBtrfsDevices = new Set();
-      const mountedBtrfsUuids = new Set();
-
-      try {
-        // First, find all BTRFS mounts
-        const btrfsMounts = new Set();
-        for (const [mountedDevice, mountInfo] of mounts) {
-          if (mountInfo.fstype === 'btrfs') {
-            btrfsMounts.add(mountedDevice);
-          }
-        }
-
-        // For each mounted BTRFS device, use 'btrfs filesystem show' to find ALL devices in that array
-        for (const mountedDevice of btrfsMounts) {
-          try {
-            const { stdout: btrfsShowOut } = await execPromise(`btrfs filesystem show ${mountedDevice} 2>/dev/null || echo ""`);
-
-            // Parse filesystem UUID
-            const uuidMatch = btrfsShowOut.match(/uuid:\s*([a-f0-9-]{36})/i);
-            if (uuidMatch) {
-              mountedBtrfsUuids.add(uuidMatch[1].toLowerCase());
-            }
-
-            // Parse all device paths from this specific mounted filesystem
-            // Example: "devid    1 size 3.49TiB used 1.67TiB path /dev/nvme0n1p1"
-            const deviceMatches = btrfsShowOut.matchAll(/path\s+(\/dev\/[^\s]+)/g);
-
-            for (const match of deviceMatches) {
-              if (match[1]) {
-                mountedBtrfsDevices.add(match[1]);
-                // Mark these devices as BTRFS in cache
-                if (deviceUuidCache.has(match[1])) {
-                  deviceUuidCache.get(match[1]).type = 'btrfs';
-                }
-              }
-            }
-          } catch (error) {
-            console.warn(`Failed to get BTRFS info for ${mountedDevice}:`, error.message);
-          }
-        }
-
-      } catch (error) {
-        // If btrfs command fails, continue without BTRFS detection
-        console.warn('Failed to get BTRFS filesystem info:', error.message);
-      }
-
-      // Load pools and mounts once for all disks (major performance optimization)
+      // Load pools once - listPools() automatically injects real device paths via symlinks (no disk access)
       let pools = [];
       try {
-        const baseService = new PoolsService();
-        pools = await baseService.listPools({});
+        const PoolsServiceClass = require('./pools.service');
+        const poolsService = new PoolsServiceClass();
+        pools = await poolsService.listPools({});
       } catch (error) {
-        // Pools service not available, continue without pool info
+        console.warn('Failed to load pools:', error.message);
       }
 
+      // Load mounts once
+      const mounts = await this._getMountInfo();
+
+      // Build set of base disks used in pools
+      const poolDisks = new Set();
+      for (const pool of pools) {
+        // Collect data devices
+        if (pool.data_devices) {
+          for (const device of pool.data_devices) {
+            if (device.device) {
+              // Get base disk (converts partition to whole disk)
+              poolDisks.add(this._getBaseDisk(device.device));
+            }
+          }
+        }
+        // Collect parity devices
+        if (pool.parity_devices) {
+          for (const device of pool.parity_devices) {
+            if (device.device) {
+              // Get base disk (converts partition to whole disk)
+              poolDisks.add(this._getBaseDisk(device.device));
+            }
+          }
+        }
+      }
+
+      // Check each disk
       for (const disk of allDisks) {
-        // Check if system disk
+        // Skip system disks
         const isSystem = await this._isSystemDisk(disk.device);
         if (isSystem) {
-          continue; // Skip system disk
+          continue;
         }
 
-        // Check in detail if disk is in use (pools, all mounts, etc.)
-        // Pass pre-loaded pools and mounts to avoid repeated calls
-        const usageInfo = await this._isDiskInUse(disk.device, pools, mounts);
+        // Check if disk is in a pool
+        if (poolDisks.has(disk.device)) {
+          continue;
+        }
 
-        if (!usageInfo.inUse) {
-          // Additional BTRFS check: Is this disk or one of its partitions part of a mounted BTRFS?
-          // This check is SAFE - it uses:
-          // 1. 'btrfs filesystem show' output (mounted filesystems only)
-          // 2. /dev/disk/by-uuid/ symlinks (no disk access)
-          let isPartOfMountedBtrfs = false;
+        // Check if disk has partitions mounted outside of pools
+        if (disk.partitions && disk.partitions.length > 0) {
+          const hasOtherMounts = disk.partitions.some(p =>
+            p.mountpoint &&
+            p.mountpoint !== '[SWAP]' &&
+            !p.mountpoint.startsWith('/mnt/disks/') &&
+            !p.mountpoint.startsWith('/mnt/remotes/')
+          );
 
-          // Check the whole disk
-          const devicePath = disk.device.startsWith('/dev/') ? disk.device : `/dev/${disk.device}`;
-          if (mountedBtrfsDevices.has(devicePath)) {
-            isPartOfMountedBtrfs = true;
+          if (hasOtherMounts) {
+            continue;
           }
 
-          // Check all partitions of the disk
-          if (!isPartOfMountedBtrfs && disk.partitions && disk.partitions.length > 0) {
-            for (const partition of disk.partitions) {
-              // Direct check from 'btrfs filesystem show'
-              if (mountedBtrfsDevices.has(partition.device)) {
-                isPartOfMountedBtrfs = true;
-                break;
-              }
-
-              // UUID-based check for BTRFS multi-device arrays
-              // where not all devices appear in 'btrfs filesystem show'
-              const cached = deviceUuidCache.get(partition.device);
-              if (cached && cached.uuid && mountedBtrfsUuids.has(cached.uuid.toLowerCase())) {
-                isPartOfMountedBtrfs = true;
-                break;
-              }
-            }
-          }
-
-          if (!isPartOfMountedBtrfs) {
-            // Additionally check if partitions exist but are not mounted
-            if (disk.partitions && disk.partitions.length > 0) {
-              // Has partitions but not recognized as "in use" - check other mountpoints (not /mnt/disks, not /mnt/remotes)
-              const hasOtherMountedPartitions = disk.partitions.some(p =>
-                p.mountpoint &&
-                p.mountpoint !== '[SWAP]' &&
-                !p.mountpoint.startsWith('/mnt/disks/') &&
-                !p.mountpoint.startsWith('/mnt/remotes/')
-              );
-
-              if (!hasOtherMountedPartitions) {
-                // Has partitions but none are mounted elsewhere - consider as unassigned
-                unassignedDisks.push({
-                  ...disk,
-                  reason: 'has_partitions_but_not_mounted'
-                });
-              }
-            } else {
-              // No partitions and not in use
-              unassignedDisks.push({
-                ...disk,
-                reason: 'no_partitions_or_filesystem'
-              });
-            }
-          }
+          // Has partitions but not mounted elsewhere - unassigned
+          unassignedDisks.push({
+            ...disk,
+            reason: 'has_partitions_but_not_mounted'
+          });
+        } else {
+          // No partitions and not in use - unassigned
+          unassignedDisks.push({
+            ...disk,
+            reason: 'no_partitions_or_filesystem'
+          });
         }
       }
 
@@ -1432,6 +1524,29 @@ class DisksService {
     } catch (error) {
       throw new Error(`Failed to get unassigned disks: ${error.message}`);
     }
+  }
+
+  /**
+   * Helper to get base disk from partition
+   * @param {string} device - Device path
+   * @returns {string} Base disk path
+   * @private
+   */
+  _getBaseDisk(device) {
+    const deviceName = device.replace('/dev/', '');
+
+    // NVMe: nvme0n1p1 -> nvme0n1
+    if (deviceName.match(/^nvme\d+n\d+p\d+$/)) {
+      return '/dev/' + deviceName.replace(/p\d+$/, '');
+    }
+
+    // SATA/SCSI: sda1 -> sda
+    if (deviceName.match(/^[a-z]+\d+$/)) {
+      return '/dev/' + deviceName.replace(/\d+$/, '');
+    }
+
+    // Not a partition or unknown format
+    return device;
   }
 
   /**
