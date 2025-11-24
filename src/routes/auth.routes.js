@@ -104,20 +104,16 @@ const { authenticateToken, checkRole, getBootToken } = require('../middleware/au
  *     JwtSettings:
  *       type: object
  *       properties:
- *         jwt_expiry_days:
+ *         expiryDays:
  *           type: integer
  *           description: JWT token expiry in days
  *           example: 7
- *         jwt_expiry_string:
- *           type: string
- *           description: JWT token expiry as string
- *           example: "7d"
  *     UpdateJwtExpiryRequest:
  *       type: object
  *       required:
- *         - days
+ *         - expiryDays
  *       properties:
- *         days:
+ *         expiryDays:
  *           type: integer
  *           minimum: 1
  *           maximum: 365
@@ -641,7 +637,7 @@ router.get('/jwt-settings', authenticateToken, checkRole(['admin']), async (req,
 
 /**
  * @swagger
- * /auth/jwt-settings/expiry:
+ * /auth/jwt-settings:
  *   put:
  *     summary: Update JWT expiry time
  *     description: Update JWT token expiry time in days (admin only)
@@ -671,7 +667,7 @@ router.get('/jwt-settings', authenticateToken, checkRole(['admin']), async (req,
  *                 data:
  *                   type: object
  *                   properties:
- *                     jwt_expiry_days:
+ *                     expiryDays:
  *                       type: integer
  *                       example: 7
  *                     updated_at:
@@ -686,18 +682,18 @@ router.get('/jwt-settings', authenticateToken, checkRole(['admin']), async (req,
  *       500:
  *         description: Server error
  */
-router.put('/jwt-settings/expiry', authenticateToken, checkRole(['admin']), async (req, res) => {
+router.put('/jwt-settings', authenticateToken, checkRole(['admin']), async (req, res) => {
   try {
-    const { days } = req.body;
+    const { expiryDays } = req.body;
 
-    if (!days || !Number.isInteger(days)) {
+    if (!expiryDays || !Number.isInteger(expiryDays)) {
       return res.status(400).json({
         success: false,
-        error: 'Days must be provided as an integer'
+        error: 'expiryDays must be provided as an integer'
       });
     }
 
-    const result = await userService.updateJwtExpiryDays(days);
+    const result = await userService.updateJwtExpiryDays(expiryDays);
     res.json(result);
   } catch (error) {
     res.status(400).json({

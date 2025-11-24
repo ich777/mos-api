@@ -51,55 +51,77 @@ const { checkRole } = require('../middleware/auth.middleware');
  *         command:
  *           type: string
  *           description: |
- *             Auszuführender Befehl (optional, ohne command wird shell verwendet)
+ *             Command to execute (optional, if omitted shell is used)
  *
- *             Beispiele:
- *             - "docker" für Container-Zugriff
- *             - "tail" für Log-Viewing
- *             - "lxc-attach" für LXC Container
- *             - "watch" für Monitoring
+ *             Examples:
+ *             - "docker" for container access
+ *             - "tail" for log viewing
+ *             - "lxc-attach" for LXC containers
+ *             - "watch" for monitoring
  *           example: "docker"
  *         args:
  *           type: array
  *           items:
  *             type: string
  *           description: |
- *             Befehl-Argumente
+ *             Command arguments
  *
- *             Beispiele:
- *             - ["exec", "-it", "nginx", "/bin/sh"] für Docker
- *             - ["-f", "-n", "100", "/var/log/syslog"] für tail
- *             - ["-n", "ubuntu"] für lxc-attach
+ *             Examples:
+ *             - ["exec", "-it", "nginx", "/bin/sh"] for Docker
+ *             - ["-f", "-n", "100", "/var/log/syslog"] for tail
+ *             - ["-n", "ubuntu"] for lxc-attach
  *           example: ["exec", "-it", "nginx", "/bin/sh"]
  *         shell:
  *           type: string
  *           default: "/bin/bash"
- *           description: Standard-Shell (nur wenn kein command angegeben)
+ *           description: Default shell (only if no command is specified)
  *           example: "/bin/bash"
+ *         width:
+ *           type: integer
+ *           minimum: 180
+ *           maximum: 3000
+ *           description: |
+ *             Terminal width in pixels (recommended, easier for frontend)
+ *             Automatically converted to cols (~9px per character)
+ *             Alternative to 'cols'
+ *           example: 800
+ *         height:
+ *           type: integer
+ *           minimum: 200
+ *           maximum: 2000
+ *           description: |
+ *             Terminal height in pixels (recommended, easier for frontend)
+ *             Automatically converted to rows (~20px per line)
+ *             Alternative to 'rows'
+ *           example: 600
  *         cols:
  *           type: integer
  *           minimum: 20
  *           maximum: 200
  *           default: 80
- *           description: Terminal-Breite in Spalten
+ *           description: |
+ *             Terminal width in columns
+ *             Alternative to 'width' (legacy)
  *         rows:
  *           type: integer
  *           minimum: 10
  *           maximum: 50
  *           default: 24
- *           description: Terminal-Höhe in Zeilen
+ *           description: |
+ *             Terminal height in rows
+ *             Alternative to 'height' (legacy)
  *         cwd:
  *           type: string
  *           default: "/"
- *           description: Arbeitsverzeichnis für den Befehl
+ *           description: Working directory for the command
  *           example: "/home/user"
  *         readOnly:
  *           type: boolean
  *           default: false
  *           description: |
- *             Terminal nur lesend (empfohlen für Logs/Monitoring)
+ *             Terminal is read-only (recommended for logs/monitoring)
  *
- *             Bei readOnly=true können keine Eingaben gemacht werden
+ *             When readOnly=true, no input can be made
  *           example: true
  */
 
@@ -107,17 +129,17 @@ const { checkRole } = require('../middleware/auth.middleware');
  * @swagger
  * /terminal/sessions:
  *   get:
- *     summary: Liste alle Terminal-Sessions
+ *     summary: List all terminal sessions
  *     description: |
- *       Zeigt alle aktiven Terminal-Sessions mit Details (admin only)
+ *       Shows all active terminal sessions with details (admin only)
  *
- *       Hilfreich für Monitoring und Session-Management.
+ *       Useful for monitoring and session management.
  *     tags: [Terminal]
  *     security:
  *       - bearerAuth: []
  *     responses:
  *       200:
- *         description: Liste der Terminal-Sessions
+ *         description: List of terminal sessions
  *         content:
  *           application/json:
  *             schema:
@@ -141,9 +163,6 @@ const { checkRole } = require('../middleware/auth.middleware');
  *                       startTime:
  *                         type: string
  *                         format: date-time
- *                       lastActivity:
- *                         type: string
- *                         format: date-time
  *                       cols:
  *                         type: integer
  *                       rows:
@@ -157,7 +176,6 @@ const { checkRole } = require('../middleware/auth.middleware');
  *                   args: ["exec", "-it", "nginx", "/bin/sh"]
  *                   readOnly: false
  *                   startTime: "2024-01-01T12:00:00.000Z"
- *                   lastActivity: "2024-01-01T12:05:00.000Z"
  *                   cols: 120
  *                   rows: 40
  *                   cwd: "/"
@@ -166,7 +184,6 @@ const { checkRole } = require('../middleware/auth.middleware');
  *                   args: ["-f", "/var/log/syslog"]
  *                   readOnly: true
  *                   startTime: "2024-01-01T11:30:00.000Z"
- *                   lastActivity: "2024-01-01T12:04:00.000Z"
  *                   cols: 80
  *                   rows: 24
  *                   cwd: "/"
@@ -188,13 +205,23 @@ router.get('/sessions', checkRole('admin'), (req, res) => {
  * @swagger
  * /terminal/create:
  *   post:
- *     summary: Erstelle neue Terminal-Session
+ *     summary: Create new terminal session
  *     description: |
- *       Erstellt eine neue Terminal-Session mit flexiblen Optionen (admin only)
+ *       Creates a new terminal session with flexible options (admin only)
  *
- *       **Verwendungsbeispiele:**
+ *       **Usage Examples:**
  *
- *       **Root Shell:**
+ *       **Root Shell (with Pixel Dimensions - recommended):**
+ *       ```json
+ *       {
+ *         "shell": "/bin/bash",
+ *         "cwd": "/",
+ *         "width": 1024,
+ *         "height": 768
+ *       }
+ *       ```
+ *
+ *       **Root Shell (with Cols/Rows - legacy):**
  *       ```json
  *       {
  *         "shell": "/bin/bash",
@@ -245,7 +272,7 @@ router.get('/sessions', checkRole('admin'), (req, res) => {
  *       }
  *       ```
  *
- *       Nach der Erstellung verbinden Sie sich via WebSocket mit der Session-ID.
+ *       After creation, connect via WebSocket using the session ID.
  *     tags: [Terminal]
  *     security:
  *       - bearerAuth: []
@@ -257,19 +284,21 @@ router.get('/sessions', checkRole('admin'), (req, res) => {
  *             $ref: '#/components/schemas/TerminalConfig'
  *           examples:
  *             shell:
- *               summary: Root Shell
- *               description: Standard Bash Shell
+ *               summary: Root Shell (Pixel)
+ *               description: Standard Bash Shell with pixel dimensions
  *               value:
  *                 shell: "/bin/bash"
  *                 cwd: "/"
- *                 cols: 120
- *                 rows: 40
+ *                 width: 1024
+ *                 height: 768
  *             docker:
  *               summary: Docker Container
- *               description: Zugriff auf Docker Container
+ *               description: Access Docker container
  *               value:
  *                 command: "docker"
  *                 args: ["exec", "-it", "nginx", "/bin/sh"]
+ *                 width: 800
+ *                 height: 600
  *             logs:
  *               summary: Log Viewer
  *               description: Read-Only Log Viewing
@@ -277,15 +306,19 @@ router.get('/sessions', checkRole('admin'), (req, res) => {
  *                 command: "tail"
  *                 args: ["-f", "-n", "100", "/var/log/syslog"]
  *                 readOnly: true
+ *                 width: 1200
+ *                 height: 800
  *             lxc:
  *               summary: LXC Container
  *               description: LXC Container Attach
  *               value:
  *                 command: "lxc-attach"
  *                 args: ["-n", "ubuntu"]
+ *                 width: 900
+ *                 height: 600
  *     responses:
  *       201:
- *         description: Terminal-Session erfolgreich erstellt
+ *         description: Terminal session created successfully
  *         content:
  *           application/json:
  *             schema:
@@ -300,18 +333,18 @@ router.get('/sessions', checkRole('admin'), (req, res) => {
  *               cwd: "/"
  *               created: "2024-01-01T12:00:00.000Z"
  *       400:
- *         description: Ungültige Konfiguration oder Command nicht verfügbar
+ *         description: Invalid configuration or command not available
  *         content:
  *           application/json:
  *             schema:
  *               $ref: '#/components/schemas/Error'
  *             examples:
  *               invalid_shell:
- *                 summary: Shell nicht verfügbar
+ *                 summary: Shell not available
  *                 value:
  *                   error: "Failed to create terminal session: spawn /bin/invalid ENOENT"
  *               docker_error:
- *                 summary: Docker Container nicht verfügbar
+ *                 summary: Docker container not available
  *                 value:
  *                   error: "Failed to create terminal session: docker exec failed"
  *       401:
@@ -335,8 +368,8 @@ router.post('/create', checkRole('admin'), async (req, res) => {
  * @swagger
  * /terminal/{sessionId}:
  *   get:
- *     summary: Terminal-Session Info
- *     description: Zeigt Informationen über eine spezifische Terminal-Session (admin only)
+ *     summary: Terminal session info
+ *     description: Shows information about a specific terminal session (admin only)
  *     tags: [Terminal]
  *     security:
  *       - bearerAuth: []
@@ -346,16 +379,16 @@ router.post('/create', checkRole('admin'), async (req, res) => {
  *         required: true
  *         schema:
  *           type: string
- *         description: Terminal Session-ID
+ *         description: Terminal Session ID
  *     responses:
  *       200:
- *         description: Session-Informationen
+ *         description: Session information
  *         content:
  *           application/json:
  *             schema:
  *               $ref: '#/components/schemas/TerminalSession'
  *       404:
- *         description: Session nicht gefunden
+ *         description: Session not found
  *         content:
  *           application/json:
  *             schema:
@@ -382,8 +415,7 @@ router.get('/:sessionId', checkRole('admin'), (req, res) => {
       cols: session.options.cols,
       rows: session.options.rows,
       cwd: session.options.cwd,
-      startTime: session.startTime,
-      lastActivity: session.lastActivity
+      startTime: session.startTime
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -394,8 +426,13 @@ router.get('/:sessionId', checkRole('admin'), (req, res) => {
  * @swagger
  * /terminal/{sessionId}/resize:
  *   post:
- *     summary: Terminal-Größe ändern
- *     description: Ändert die Terminal-Größe für eine Session (admin only)
+ *     summary: Resize terminal
+ *     description: |
+ *       Changes the terminal size for a session (admin only)
+ *
+ *       Supports two modes:
+ *       - **Pixel-based (recommended)**: `width` and `height` in pixels
+ *       - **Legacy**: `cols` and `rows` in characters/lines
  *     tags: [Terminal]
  *     security:
  *       - bearerAuth: []
@@ -405,26 +442,55 @@ router.get('/:sessionId', checkRole('admin'), (req, res) => {
  *         required: true
  *         schema:
  *           type: string
- *         description: Terminal Session-ID
+ *         description: Terminal Session ID
  *     requestBody:
  *       required: true
  *       content:
  *         application/json:
  *           schema:
  *             type: object
- *             required: [cols, rows]
+ *             oneOf:
+ *               - required: [width, height]
+ *               - required: [cols, rows]
  *             properties:
+ *               width:
+ *                 type: integer
+ *                 minimum: 180
+ *                 maximum: 3000
+ *                 description: Terminal width in pixels (recommended)
+ *                 example: 1024
+ *               height:
+ *                 type: integer
+ *                 minimum: 200
+ *                 maximum: 2000
+ *                 description: Terminal height in pixels (recommended)
+ *                 example: 768
  *               cols:
  *                 type: integer
  *                 minimum: 20
  *                 maximum: 200
+ *                 description: Terminal width in columns (legacy)
+ *                 example: 120
  *               rows:
  *                 type: integer
  *                 minimum: 10
  *                 maximum: 50
+ *                 description: Terminal height in rows (legacy)
+ *                 example: 40
+ *           examples:
+ *             pixels:
+ *               summary: Pixel-based (recommended)
+ *               value:
+ *                 width: 1024
+ *                 height: 768
+ *             legacy:
+ *               summary: Cols/Rows (legacy)
+ *               value:
+ *                 cols: 120
+ *                 rows: 40
  *     responses:
  *       200:
- *         description: Terminal-Größe erfolgreich geändert
+ *         description: Terminal size changed successfully
  *         content:
  *           application/json:
  *             schema:
@@ -434,16 +500,51 @@ router.get('/:sessionId', checkRole('admin'), (req, res) => {
  *                   type: boolean
  *                 cols:
  *                   type: integer
+ *                   description: Calculated column count
  *                 rows:
  *                   type: integer
+ *                   description: Calculated row count
+ *                 width:
+ *                   type: integer
+ *                   description: Optional - Original width in pixels (if sent with width/height)
+ *                 height:
+ *                   type: integer
+ *                   description: Optional - Original height in pixels (if sent with width/height)
+ *             examples:
+ *               pixels:
+ *                 summary: Response for pixel input
+ *                 value:
+ *                   success: true
+ *                   cols: 113
+ *                   rows: 38
+ *                   width: 1024
+ *                   height: 768
+ *               legacy:
+ *                 summary: Response for cols/rows input
+ *                 value:
+ *                   success: true
+ *                   cols: 120
+ *                   rows: 40
  *       400:
- *         description: Ungültige Parameter
+ *         description: |
+ *           Invalid parameters
+ *           - Neither (width, height) nor (cols, rows) provided
+ *           - Values outside allowed ranges
  *         content:
  *           application/json:
  *             schema:
  *               $ref: '#/components/schemas/Error'
+ *             examples:
+ *               missing:
+ *                 summary: Missing parameters
+ *                 value:
+ *                   error: "Either (width, height) or (cols, rows) must be provided"
+ *               invalid:
+ *                 summary: Invalid values
+ *                 value:
+ *                   error: "Invalid width/height values (width: 180-3000px, height: 200-2000px)"
  *       404:
- *         description: Session nicht gefunden
+ *         description: Session not found
  *         content:
  *           application/json:
  *             schema:
@@ -456,14 +557,26 @@ router.get('/:sessionId', checkRole('admin'), (req, res) => {
 router.post('/:sessionId/resize', checkRole('admin'), (req, res) => {
   try {
     const { sessionId } = req.params;
-    const { cols, rows } = req.body;
+    const { cols, rows, width, height } = req.body;
 
-    if (!cols || !rows || cols < 20 || cols > 200 || rows < 10 || rows > 50) {
-      return res.status(400).json({ error: 'Invalid cols/rows values' });
+    // Support both pixel dimensions and cols/rows
+    if (width && height) {
+      // Pixel-based resize
+      if (width < 180 || width > 3000 || height < 200 || height > 2000) {
+        return res.status(400).json({ error: 'Invalid width/height values (width: 180-3000px, height: 200-2000px)' });
+      }
+      const result = terminalService.resizeSession(sessionId, { width, height });
+      res.json({ success: true, ...result, width, height });
+    } else if (cols && rows) {
+      // Traditional cols/rows resize
+      if (cols < 20 || cols > 200 || rows < 10 || rows > 50) {
+        return res.status(400).json({ error: 'Invalid cols/rows values' });
+      }
+      const result = terminalService.resizeSession(sessionId, { cols, rows });
+      res.json({ success: true, ...result });
+    } else {
+      return res.status(400).json({ error: 'Either (width, height) or (cols, rows) must be provided' });
     }
-
-    terminalService.resizeSession(sessionId, cols, rows);
-    res.json({ success: true, cols, rows });
   } catch (error) {
     if (error.message === 'Session not found') {
       return res.status(404).json({ error: error.message });
@@ -476,8 +589,8 @@ router.post('/:sessionId/resize', checkRole('admin'), (req, res) => {
  * @swagger
  * /terminal/{sessionId}:
  *   delete:
- *     summary: Terminal-Session beenden
- *     description: Beendet eine Terminal-Session (admin only)
+ *     summary: Terminate terminal session
+ *     description: Terminates a terminal session (admin only)
  *     tags: [Terminal]
  *     security:
  *       - bearerAuth: []
@@ -487,10 +600,10 @@ router.post('/:sessionId/resize', checkRole('admin'), (req, res) => {
  *         required: true
  *         schema:
  *           type: string
- *         description: Terminal Session-ID
+ *         description: Terminal Session ID
  *     responses:
  *       200:
- *         description: Session erfolgreich beendet
+ *         description: Session terminated successfully
  *         content:
  *           application/json:
  *             schema:
@@ -501,7 +614,7 @@ router.post('/:sessionId/resize', checkRole('admin'), (req, res) => {
  *                 message:
  *                   type: string
  *       404:
- *         description: Session nicht gefunden
+ *         description: Session not found
  *         content:
  *           application/json:
  *             schema:

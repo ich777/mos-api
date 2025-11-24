@@ -513,8 +513,7 @@ class UserService {
     try {
       const envVars = await this.getEnvVars();
       return {
-        jwt_expiry_days: parseInt(envVars.JWT_EXPIRY_DAYS) || 1,
-        jwt_expiry_string: `${parseInt(envVars.JWT_EXPIRY_DAYS) || 1}d`
+        expiryDays: parseInt(envVars.JWT_EXPIRY_DAYS) || 1
       };
     } catch (error) {
       throw new Error(`Error getting JWT settings: ${error.message}`);
@@ -550,7 +549,7 @@ class UserService {
         success: true,
         message: `JWT expiry updated to ${days} day(s)`,
         data: {
-          jwt_expiry_days: days,
+          expiryDays: days,
           updated_at: new Date().toISOString()
         }
       };

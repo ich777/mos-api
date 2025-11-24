@@ -40,8 +40,25 @@ class TerminalWebSocketManager {
         socket.join(sessionId);
         socket.terminalSessionId = sessionId;
 
-        // Check if there are already listeners on this PTY process
-        const existingListeners = session.ptyProcess.listeners('data').length;
+        // Send buffered output if available
+        if (session.outputBuffer && session.outputBuffer.length > 0) {
+          // Send all buffered data to the client
+          for (const data of session.outputBuffer) {
+            socket.emit('terminal-output', data);
+          }
+          // Remove the buffer listener and clear the buffer
+          if (session.bufferData) {
+            session.ptyProcess.removeListener('data', session.bufferData);
+            delete session.bufferData;
+          }
+          // Clear the buffer to free memory
+          session.outputBuffer = [];
+        }
+
+        // Check if there are already real listeners (not the buffer listener)
+        const existingListeners = session.ptyProcess.listeners('data').filter(
+          listener => listener !== session.bufferData
+        ).length;
 
         if (existingListeners === 0) {
           // No existing listeners, add new ones for this session
@@ -51,7 +68,8 @@ class TerminalWebSocketManager {
 
           const onExit = (code) => {
             this.io.to(sessionId).emit('terminal-exit', { code });
-            this.terminalService.killSession(sessionId);
+            // Clean up session from map without killing (process already exited)
+            this.terminalService.sessions.delete(sessionId);
             session.ptyProcess.removeListener('data', onData);
             session.ptyProcess.removeListener('exit', onExit);
           };
@@ -79,7 +97,14 @@ class TerminalWebSocketManager {
             }, 100);
           }
         } else {
-          // For existing sessions, add individual socket listener
+          // For existing sessions, send any remaining buffered output
+          if (session.outputBuffer && session.outputBuffer.length > 0) {
+            for (const data of session.outputBuffer) {
+              socket.emit('terminal-output', data);
+            }
+          }
+
+          // Add individual socket listener for this client
           const onData = (data) => {
             socket.emit('terminal-output', data);
           };
@@ -165,6 +190,21 @@ class TerminalWebSocketManager {
           // Store active session
           this.activeSessions.set(sessionId, { socket, session });
 
+          // Send buffered output if available
+          if (session.outputBuffer && session.outputBuffer.length > 0) {
+            // Send all buffered data to the client
+            for (const data of session.outputBuffer) {
+              socket.emit('terminal-output', data);
+            }
+            // Remove the buffer listener and clear the buffer
+            if (session.bufferData) {
+              session.ptyProcess.removeListener('data', session.bufferData);
+              delete session.bufferData;
+            }
+            // Clear the buffer to free memory
+            session.outputBuffer = [];
+          }
+
           // Setup PTY event listeners for immediate output
           const onData = (data) => {
             socket.emit('terminal-output', data);
@@ -176,7 +216,8 @@ class TerminalWebSocketManager {
             this.io.to(sessionId).emit('terminal-exit', { code });
             socket.leave(sessionId);
             this.activeSessions.delete(sessionId);
-            this.terminalService.killSession(sessionId);
+            // Clean up session from map without killing (process already exited)
+            this.terminalService.sessions.delete(sessionId);
             session.ptyProcess.removeListener('data', onData);
             session.ptyProcess.removeListener('exit', onExit);
           };
@@ -235,10 +276,22 @@ class TerminalWebSocketManager {
           return;
         }
 
-        const { cols, rows } = data;
-        this.terminalService.resizeSession(socket.terminalSessionId, cols, rows);
+        const { cols, rows, width, height } = data;
 
-        socket.emit('terminal-resized', { cols, rows });
+        // Support both pixel dimensions and cols/rows
+        let dimensions;
+        if (width && height) {
+          dimensions = { width, height };
+        } else if (cols && rows) {
+          dimensions = { cols, rows };
+        } else {
+          socket.emit('error', { message: 'Either (width, height) or (cols, rows) must be provided' });
+          return;
+        }
+
+        const result = this.terminalService.resizeSession(socket.terminalSessionId, dimensions);
+
+        socket.emit('terminal-resized', result);
       } catch (error) {
         socket.emit('error', { message: error.message });
       }
@@ -326,6 +379,17 @@ class TerminalWebSocketManager {
 
         socket.emit('session-left', { sessionId });
         console.log(`Client ${socket.id} left terminal session: ${sessionId}`);
+
+        // Check if there are any other clients still connected to this session
+        // Since this.io is a namespace, use this.io.adapter directly
+        const room = this.io.adapter.rooms.get(sessionId);
+        const hasOtherClients = room && room.size > 0;
+
+        if (!hasOtherClients) {
+          // No other clients connected, kill the session
+          console.log(`No clients remaining for session ${sessionId}, terminating session`);
+          this.terminalService.killSession(sessionId);
+        }
       }
     });
 
@@ -374,6 +438,17 @@ class TerminalWebSocketManager {
 
         socket.leave(sessionId);
         this.activeSessions.delete(sessionId);
+
+        // Check if there are any other clients still connected to this session
+        // Since this.io is a namespace, use this.io.adapter directly
+        const room = this.io.adapter.rooms.get(sessionId);
+        const hasOtherClients = room && room.size > 0;
+
+        if (!hasOtherClients) {
+          // No other clients connected, kill the session
+          console.log(`No clients remaining for session ${sessionId}, terminating session`);
+          this.terminalService.killSession(sessionId);
+        }
       }
     });
   }

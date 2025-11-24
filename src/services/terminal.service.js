@@ -5,10 +5,27 @@ const path = require('path');
 class TerminalService {
   constructor() {
     this.sessions = new Map(); // sessionId -> { ptyProcess, options, startTime }
-    this.sessionTimeout = 30 * 60 * 1000; // 30 minutes
-    this.cleanupInterval = setInterval(() => {
-      this.cleanupSessions();
-    }, 10 * 60 * 1000); // Cleanup every 10 minutes
+
+    // Default character dimensions for pixel conversion
+    this.charWidth = 9;   // pixels per character (monospace)
+    this.charHeight = 20; // pixels per line
+  }
+
+  /**
+   * Convert pixel dimensions to rows and columns
+   * @param {number} width - Width in pixels
+   * @param {number} height - Height in pixels
+   * @returns {Object} - { cols, rows }
+   */
+  pixelsToSize(width, height) {
+    const cols = Math.floor(width / this.charWidth);
+    const rows = Math.floor(height / this.charHeight);
+
+    // Ensure minimum values
+    return {
+      cols: Math.max(cols, 20),
+      rows: Math.max(rows, 10)
+    };
   }
 
   /**
@@ -26,15 +43,22 @@ class TerminalService {
         rows: 24,
         shell: '/bin/bash',
         cwd: '/',
-        env: { ...process.env, TERM: 'xterm-256color' }
+        env: { ...process.env, TERM: 'xterm-color' }
       };
 
       const config = { ...defaultOptions, ...options };
+
+      // Convert pixel dimensions to rows/cols if provided
+      if (options.width && options.height) {
+        const size = this.pixelsToSize(options.width, options.height);
+        config.cols = size.cols;
+        config.rows = size.rows;
+      }
       let ptyProcess;
 
       // Flexible terminal - can execute anything
       if (config.command) {
-        // Arbitrary command with arguments
+        // Arbitrary command with arguments - no login shell
         const args = config.args || [];
         ptyProcess = pty.spawn(config.command, args, {
           name: 'xterm-color',
@@ -44,8 +68,10 @@ class TerminalService {
           env: config.env
         });
       } else {
-        // Standard Shell
-        ptyProcess = pty.spawn(config.shell, [], {
+        // Standard Shell - start as login shell to load /etc/profile.d scripts
+        // Only for normal shell sessions (no command)
+        const shellArgs = config.shell === '/bin/bash' ? ['-l'] : [];
+        ptyProcess = pty.spawn(config.shell, shellArgs, {
           name: 'xterm-color',
           cols: config.cols,
           rows: config.rows,
@@ -64,12 +90,29 @@ class TerminalService {
         // Session is automatically cleaned up by socket handler
       });
 
+      // Buffer to store initial output before client connects
+      const outputBuffer = [];
+      const maxBufferSize = 500000; // ~500KB buffer for initial output (handles 1000+ lines)
+      let bufferSize = 0;
+
+      // Capture initial output immediately
+      const bufferData = (data) => {
+        const dataSize = Buffer.byteLength(data, 'utf8');
+        if (bufferSize + dataSize <= maxBufferSize) {
+          outputBuffer.push(data);
+          bufferSize += dataSize;
+        }
+      };
+
+      ptyProcess.on('data', bufferData);
+
       // Session saved
       const session = {
         ptyProcess,
         options: config,
         startTime: new Date(),
-        lastActivity: new Date()
+        outputBuffer,
+        bufferData
       };
 
       this.sessions.set(sessionId, session);
@@ -115,25 +158,36 @@ class TerminalService {
     }
 
     session.ptyProcess.write(data);
-    session.lastActivity = new Date();
   }
 
   /**
    * Resize terminal
    * @param {string} sessionId - Session ID
-   * @param {number} cols - Number of columns
-   * @param {number} rows - Number of rows
+   * @param {Object} dimensions - { cols, rows } OR { width, height }
    */
-  resizeSession(sessionId, cols, rows) {
+  resizeSession(sessionId, dimensions) {
     const session = this.getSession(sessionId);
     if (!session) {
       throw new Error('Session not found');
     }
 
+    let cols, rows;
+
+    // Support both pixel dimensions and direct cols/rows
+    if (dimensions.width && dimensions.height) {
+      const size = this.pixelsToSize(dimensions.width, dimensions.height);
+      cols = size.cols;
+      rows = size.rows;
+    } else {
+      cols = dimensions.cols;
+      rows = dimensions.rows;
+    }
+
     session.ptyProcess.resize(cols, rows);
     session.options.cols = cols;
     session.options.rows = rows;
-    session.lastActivity = new Date();
+
+    return { cols, rows };
   }
 
   /**
@@ -147,7 +201,15 @@ class TerminalService {
     }
 
     try {
-      session.ptyProcess.kill();
+      // Remove buffer listener if it still exists
+      if (session.bufferData) {
+        session.ptyProcess.removeListener('data', session.bufferData);
+      }
+
+      // Only kill if the process is still running
+      if (!session.ptyProcess.killed && session.ptyProcess.exitCode === null) {
+        session.ptyProcess.kill();
+      }
     } catch (error) {
       console.warn(`Warning killing session ${sessionId}:`, error.message);
     }
@@ -169,7 +231,6 @@ class TerminalService {
         args: session.options.args || [],
         readOnly: session.options.readOnly,
         startTime: session.startTime,
-        lastActivity: session.lastActivity,
         cols: session.options.cols,
         rows: session.options.rows,
         cwd: session.options.cwd
@@ -179,27 +240,10 @@ class TerminalService {
   }
 
   /**
-   * Clean up inactive sessions
-   */
-  cleanupSessions() {
-    const now = new Date();
-    for (const [sessionId, session] of this.sessions.entries()) {
-      const inactive = now - session.lastActivity;
-      if (inactive > this.sessionTimeout) {
-        console.log(`Cleaning up inactive terminal session: ${sessionId}`);
-        this.killSession(sessionId);
-      }
-    }
-  }
-
-  /**
    * Service shutdown - close all sessions
    */
   shutdown() {
-    if (this.cleanupInterval) {
-      clearInterval(this.cleanupInterval);
-    }
-
+    console.log(`Shutting down terminal service, closing ${this.sessions.size} active sessions`);
     for (const sessionId of this.sessions.keys()) {
       this.killSession(sessionId);
     }
