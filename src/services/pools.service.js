@@ -8858,6 +8858,46 @@ class PoolsService {
     }
   }
 
+  /**
+   * Get available pool types based on system capabilities
+   * Returns static pool types and conditionally includes 'nonraid' based on:
+   * - md-nonraid kernel module availability
+   * - No existing nonraid pool
+   * @returns {Promise<Array<string>>} - Array of available pool types
+   */
+  async getAvailablePoolTypes() {
+    // Start with static pool types
+    const poolTypes = ['single', 'multi', 'mergerfs'];
+
+    try {
+      // Check if md-nonraid module is available (without loading it)
+      let moduleAvailable = false;
+      try {
+        await execPromise('modinfo md-nonraid');
+        moduleAvailable = true;
+      } catch (error) {
+        // Module not available
+        moduleAvailable = false;
+      }
+
+      // If module is available, check if there's already a nonraid pool - disabled for now
+      // if (moduleAvailable) {
+      //   const pools = await this._readPools();
+      //   const hasNonRaidPool = pools.some(pool => pool.type === 'nonraid');
+
+      //   // Only add nonraid if module is available AND no nonraid pool exists
+      //   if (!hasNonRaidPool) {
+      //     poolTypes.push('nonraid');
+      //   }
+      // }
+    } catch (error) {
+      // If there's any error reading pools, just return the basic types
+      console.warn(`Warning: Could not check nonraid availability: ${error.message}`);
+    }
+
+    return poolTypes;
+  }
+
 }
 
 // Export the class
