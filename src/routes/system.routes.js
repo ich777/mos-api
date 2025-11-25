@@ -256,8 +256,8 @@ const mosService = require('../services/mos.service');
  *       properties:
  *         number:
  *           type: integer
- *           description: Core number
- *           example: 1
+ *           description: Core number (0-based)
+ *           example: 0
  *         load:
  *           type: object
  *           properties:
@@ -280,8 +280,8 @@ const mosService = require('../services/mos.service');
  *           example: false
  *         physicalCoreNumber:
  *           type: integer
- *           description: The physical core number this logical core belongs to
- *           example: 1
+ *           description: The physical core number this logical core belongs to (0-based)
+ *           example: 0
  *         coreArchitecture:
  *           type: string
  *           description: Core architecture type (Performance, Mixed/Efficiency, or Standard)
@@ -811,29 +811,29 @@ router.get('/detailed', checkRole(['admin']), async (req, res) => {
  *                   hyperThreadingEnabled: true
  *                   architecture: "Family 6, Model 151"
  *                 cores:
- *                   - number: 1
+ *                   - number: 0
  *                     load:
  *                       total: 45.67
  *                     temperature: 65.5
  *                     isPhysical: true
  *                     isHyperThreaded: false
- *                     physicalCoreNumber: 1
+ *                     physicalCoreNumber: 0
  *                     coreArchitecture: "Performance"
- *                   - number: 2
+ *                   - number: 1
  *                     load:
  *                       total: 38.92
  *                     temperature: 67.2
  *                     isPhysical: true
  *                     isHyperThreaded: false
- *                     physicalCoreNumber: 2
+ *                     physicalCoreNumber: 1
  *                     coreArchitecture: "Performance"
- *                   - number: 13
+ *                   - number: 12
  *                     load:
  *                       total: 22.15
  *                     temperature: 63.1
  *                     isPhysical: false
  *                     isHyperThreaded: true
- *                     physicalCoreNumber: 1
+ *                     physicalCoreNumber: 0
  *                     coreArchitecture: "Performance"
  *               temperature:
  *                 main: 68.2

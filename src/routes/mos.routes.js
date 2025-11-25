@@ -3287,4 +3287,234 @@ router.post('/dashboard', async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /mos/fsnavigator:
+ *   get:
+ *     summary: Browse filesystem with directory/file picker
+ *     description: |
+ *       Navigate directories and files with optional virtual root.
+ *       - Without `roots` parameter: Full filesystem access (real `/` with all directories)
+ *       - With `roots` parameter: Virtual root showing only specified directories
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: path
+ *         required: false
+ *         schema:
+ *           type: string
+ *           default: "/"
+ *         description: Path to browse
+ *         examples:
+ *           root:
+ *             value: "/"
+ *             summary: Browse root directory
+ *           mnt:
+ *             value: "/mnt"
+ *             summary: Browse /mnt directory
+ *           nested:
+ *             value: "/mnt/nvme/appdata"
+ *             summary: Browse nested directory
+ *       - in: query
+ *         name: type
+ *         required: false
+ *         schema:
+ *           type: string
+ *           enum: [directories, all]
+ *           default: directories
+ *         description: Type of items to return - "directories" shows only folders, "all" shows folders and files
+ *         examples:
+ *           directories:
+ *             value: "directories"
+ *             summary: Show only directories
+ *           all:
+ *             value: "all"
+ *             summary: Show directories and files
+ *       - in: query
+ *         name: roots
+ *         required: false
+ *         schema:
+ *           type: string
+ *         description: |
+ *           Optional comma-separated list of allowed root directories for virtual root.
+ *           When specified with path="/", creates a virtual root showing only these directories.
+ *           Without this parameter, full filesystem access is granted.
+ *         examples:
+ *           restricted:
+ *             value: "/mnt,/var/mergerfs"
+ *             summary: Virtual root with only /mnt and /var/mergerfs
+ *           single:
+ *             value: "/mnt"
+ *             summary: Restrict to /mnt only
+ *     responses:
+ *       200:
+ *         description: Directory listing with navigation info
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 isVirtualRoot:
+ *                   type: boolean
+ *                   description: True if showing virtual root
+ *                   example: false
+ *                 currentPath:
+ *                   type: string
+ *                   description: Current directory path
+ *                   example: "/mnt/nvme"
+ *                 parentPath:
+ *                   type: string
+ *                   nullable: true
+ *                   description: Parent directory path (null if at virtual root)
+ *                   example: "/mnt"
+ *                 canGoUp:
+ *                   type: boolean
+ *                   description: Whether user can navigate to parent
+ *                   example: true
+ *                 items:
+ *                   type: array
+ *                   description: List of directories and/or files
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       name:
+ *                         type: string
+ *                         description: Item name
+ *                         example: "appdata"
+ *                       path:
+ *                         type: string
+ *                         description: Full path to item
+ *                         example: "/mnt/nvme/appdata"
+ *                       type:
+ *                         type: string
+ *                         enum: [directory, file]
+ *                         description: Item type
+ *                         example: "directory"
+ *                       size:
+ *                         type: integer
+ *                         nullable: true
+ *                         description: File size in bytes (null for directories)
+ *                         example: null
+ *                       modified:
+ *                         type: string
+ *                         format: date-time
+ *                         description: Last modified timestamp
+ *                         example: "2024-11-25T14:30:00.000Z"
+ *             examples:
+ *               virtualRoot:
+ *                 summary: Virtual root response
+ *                 value:
+ *                   isVirtualRoot: true
+ *                   currentPath: "/"
+ *                   parentPath: null
+ *                   canGoUp: false
+ *                   items:
+ *                     - name: "mnt"
+ *                       path: "/mnt"
+ *                       type: "directory"
+ *                       displayPath: "/mnt"
+ *                     - name: "mergerfs"
+ *                       path: "/var/mergerfs"
+ *                       type: "directory"
+ *                       displayPath: "/var/mergerfs"
+ *               normalDirectory:
+ *                 summary: Normal directory response
+ *                 value:
+ *                   isVirtualRoot: false
+ *                   currentPath: "/mnt/nvme"
+ *                   parentPath: "/mnt"
+ *                   canGoUp: true
+ *                   items:
+ *                     - name: "appdata"
+ *                       path: "/mnt/nvme/appdata"
+ *                       type: "directory"
+ *                       size: null
+ *                       modified: "2024-11-25T14:30:00.000Z"
+ *                     - name: "backup"
+ *                       path: "/mnt/nvme/backup"
+ *                       type: "directory"
+ *                       size: null
+ *                       modified: "2024-11-20T10:15:00.000Z"
+ *       400:
+ *         description: Invalid type parameter
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *             example:
+ *               error: "Invalid type. Must be 'directories' or 'all'"
+ *       403:
+ *         description: Path outside allowed directories
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *             example:
+ *               error: "Path outside allowed directories"
+ *       404:
+ *         description: Path does not exist
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *             example:
+ *               error: "Path does not exist"
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+
+// GET: Filesystem Navigator - Browse directories and files
+router.get('/fsnavigator', async (req, res) => {
+  try {
+    const { path = '/', type = 'directories', roots } = req.query;
+
+    // Validate type parameter
+    if (type !== 'directories' && type !== 'all') {
+      return res.status(400).json({
+        error: 'Invalid type. Must be "directories" or "all"'
+      });
+    }
+
+    // Parse roots parameter (comma-separated list)
+    let allowedRoots = null;
+    if (roots) {
+      allowedRoots = roots.split(',').map(r => r.trim()).filter(r => r.length > 0);
+
+      // Validate that roots are absolute paths
+      for (const root of allowedRoots) {
+        if (!root.startsWith('/')) {
+          return res.status(400).json({
+            error: `Invalid root path "${root}". Root paths must be absolute (start with /)`
+          });
+        }
+      }
+    }
+
+    const result = await mosService.browseFilesystem(path, type, allowedRoots);
+    res.json(result);
+  } catch (error) {
+    if (error.message.includes('outside allowed directories')) {
+      res.status(403).json({ error: error.message });
+    } else if (error.message.includes('does not exist')) {
+      res.status(404).json({ error: error.message });
+    } else if (error.message.includes('not a directory')) {
+      res.status(400).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
 module.exports = router;

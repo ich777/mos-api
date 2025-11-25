@@ -268,7 +268,7 @@ class SystemService {
         // Determine core type information
         const isPhysical = index < cpu.physicalCores;
         const isHyperThreaded = index >= cpu.physicalCores;
-        const physicalCoreNumber = isPhysical ? index + 1 : (index - cpu.physicalCores) + 1;
+        const physicalCoreNumber = isPhysical ? index : index - cpu.physicalCores;
 
         // Try to detect Performance vs Efficiency cores (mainly for Intel 12th gen+)
         let coreArchitecture = 'Standard';
@@ -285,7 +285,7 @@ class SystemService {
         }
 
         coreInfos.push({
-          number: index + 1,
+          number: index,
           isPhysical: isPhysical,
           isHyperThreaded: isHyperThreaded,
           physicalCoreNumber: physicalCoreNumber,
@@ -317,7 +317,7 @@ class SystemService {
 
       // Prepare core-specific load data only
       const coreData = currentLoad.cpus.map((core, index) => ({
-        number: index + 1,
+        number: index,
         load: {
           total: Math.round(core.load * 100) / 100
         }
@@ -347,7 +347,7 @@ class SystemService {
           cores: temp.cores
         },
         cores: temp.cores.map((temp, index) => ({
-          number: index + 1,
+          number: index,
           temperature: temp
         }))
       };
@@ -368,7 +368,7 @@ class SystemService {
 
       // Prepare core-specific load and temperature data
       const coreData = currentLoad.cpus.map((core, index) => ({
-        number: index + 1,
+        number: index,
         load: {
           total: Math.round(core.load * 100) / 100
         },

@@ -3143,6 +3143,190 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
       throw error;
     }
   }
+
+  /**
+   * Filesystem Navigator - Browse directories and files with optional virtual root
+   * @param {string} requestPath - Path to browse
+   * @param {string} type - "directories" or "all"
+   * @param {Array<string>} allowedRoots - Optional array of allowed root directories for virtual root
+   * @returns {Promise<Object>} Directory listing with items and navigation info
+   */
+  async browseFilesystem(requestPath, type = 'directories', allowedRoots = null) {
+    const normalizedPath = requestPath?.trim() || '/';
+
+    // If allowedRoots are specified, create a virtual root
+    if (allowedRoots && allowedRoots.length > 0) {
+      // Special case: Virtual Root (show only specified start directories)
+      if (normalizedPath === '/' || normalizedPath === '') {
+        return await this._getVirtualRoot(allowedRoots, type);
+      }
+
+      // Normal path: check if within allowed roots
+      const resolvedPath = path.resolve(normalizedPath);
+
+      if (!this._isWithinAllowedRoots(resolvedPath, allowedRoots)) {
+        throw new Error('Path outside allowed directories');
+      }
+
+      // Browse real directory with virtual root boundary
+      return await this._browseDirectory(resolvedPath, type, allowedRoots);
+    }
+
+    // No roots specified: Browse filesystem normally (full access)
+    const resolvedPath = path.resolve(normalizedPath);
+    
+    // Browse without restrictions
+    return await this._browseDirectory(resolvedPath, type, null);
+  }
+
+  /**
+   * Returns virtual root with configured start directories
+   * @private
+   */
+  async _getVirtualRoot(fsNavigatorRoots, type) {
+    const items = [];
+
+    for (const rootPath of fsNavigatorRoots) {
+      try {
+        const stats = await fs.stat(rootPath);
+        if (stats.isDirectory()) {
+          items.push({
+            name: path.basename(rootPath) || rootPath,
+            path: rootPath,
+            type: 'directory',
+            displayPath: rootPath
+          });
+        }
+      } catch (error) {
+        // Root doesn't exist or isn't accessible, skip it
+        console.warn(`Filesystem navigator root ${rootPath} not accessible:`, error.message);
+      }
+    }
+
+    return {
+      isVirtualRoot: true,
+      currentPath: '/',
+      parentPath: null,
+      canGoUp: false,
+      items: items
+    };
+  }
+
+  /**
+   * Browse a real directory
+   * @private
+   */
+  async _browseDirectory(dirPath, type, fsNavigatorRoots) {
+    // Check if path exists
+    let stats;
+    try {
+      stats = await fs.stat(dirPath);
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        throw new Error('Path does not exist');
+      }
+      throw error;
+    }
+
+    if (!stats.isDirectory()) {
+      throw new Error('Path is not a directory');
+    }
+
+    // Read directory contents
+    const entries = await fs.readdir(dirPath, { withFileTypes: true });
+
+    // Filter: Only directories or all
+    let filteredEntries = entries;
+    if (type === 'directories') {
+      filteredEntries = entries.filter(e => e.isDirectory());
+    }
+
+    // Filter out hidden files/folders (starting with .)
+    filteredEntries = filteredEntries.filter(e => !e.name.startsWith('.'));
+
+    // Create items with metadata
+    const items = await Promise.all(
+      filteredEntries.map(async (entry) => {
+        const fullPath = path.join(dirPath, entry.name);
+        let itemStats;
+        try {
+          itemStats = await fs.stat(fullPath);
+        } catch (error) {
+          // Skip items that can't be accessed
+          return null;
+        }
+
+        return {
+          name: entry.name,
+          path: fullPath,
+          type: entry.isDirectory() ? 'directory' : 'file',
+          size: entry.isFile() ? itemStats.size : null,
+          modified: itemStats.mtime
+        };
+      })
+    );
+
+    // Filter out null entries (inaccessible items)
+    const validItems = items.filter(item => item !== null);
+
+    // Sort: directories first, then alphabetically
+    validItems.sort((a, b) => {
+      if (a.type !== b.type) {
+        return a.type === 'directory' ? -1 : 1;
+      }
+      return a.name.localeCompare(b.name, undefined, { numeric: true });
+    });
+
+    // Determine parent path (with virtual root logic)
+    const parentPath = this._getParentPath(dirPath, fsNavigatorRoots);
+
+    return {
+      isVirtualRoot: false,
+      currentPath: dirPath,
+      parentPath: parentPath,
+      canGoUp: parentPath !== null,
+      items: validItems
+    };
+  }
+
+  /**
+   * Check if path is within allowed roots
+   * @private
+   */
+  _isWithinAllowedRoots(checkPath, fsNavigatorRoots) {
+    return fsNavigatorRoots.some(root => {
+      return checkPath === root || checkPath.startsWith(root + '/');
+    });
+  }
+
+  /**
+   * Get parent path with optional virtual root boundary
+   * @private
+   */
+  _getParentPath(currentPath, fsNavigatorRoots) {
+    // If no roots specified, allow normal navigation
+    if (!fsNavigatorRoots || fsNavigatorRoots.length === 0) {
+      if (currentPath === '/') {
+        return null;  // Already at root
+      }
+      return path.dirname(currentPath);
+    }
+
+    // With virtual root: Check if we're at a root directory
+    if (fsNavigatorRoots.includes(currentPath)) {
+      return '/';  // Go back to virtual root
+    }
+
+    const parent = path.dirname(currentPath);
+
+    // Check if parent is still within allowed roots
+    if (this._isWithinAllowedRoots(parent, fsNavigatorRoots)) {
+      return parent;
+    }
+
+    // Parent is outside allowed roots → go back to virtual root
+    return '/';
+  }
 }
 
 module.exports = new MosService();
