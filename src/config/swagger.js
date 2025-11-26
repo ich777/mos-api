@@ -86,8 +86,8 @@ const options = {
         description: 'MOS System Configuration and Settings Management'
       },
       {
-        name: 'MOS Hub',
-        description: 'Hub Repository Management'
+        name: 'Hub',
+        description: 'MOS Hub Repository Management'
       },
       {
         name: 'Terminal',
