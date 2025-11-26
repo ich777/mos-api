@@ -4,18 +4,11 @@ const hubService = require('../services/hub.service');
 
 /**
  * @swagger
- * tags:
- *   name: Hub
- *   description: MOS Hub - Repository management
- */
-
-/**
- * @swagger
  * /mos/hub/repositories:
  *   get:
  *     summary: Get all repository URLs
  *     description: Retrieves list of configured repository URLs
- *     tags: [Hub]
+ *     tags: [MOS Hub]
  *     security:
  *       - bearerAuth: []
  *     responses:
@@ -48,7 +41,7 @@ router.get('/repositories', async (req, res) => {
  *   post:
  *     summary: Set repository URLs
  *     description: Replaces all repository URLs with the provided list
- *     tags: [Hub]
+ *     tags: [MOS Hub]
  *     security:
  *       - bearerAuth: []
  *     requestBody:
@@ -95,7 +88,7 @@ router.post('/repositories', async (req, res) => {
  *   post:
  *     summary: Update repositories
  *     description: Downloads all configured repositories via git clone
- *     tags: [Hub]
+ *     tags: [MOS Hub]
  *     security:
  *       - bearerAuth: []
  *     responses:
@@ -154,7 +147,7 @@ router.post('/update', async (req, res) => {
  *   get:
  *     summary: Get template index
  *     description: Returns all templates from all repositories with maintainer info
- *     tags: [Hub]
+ *     tags: [MOS Hub]
  *     security:
  *       - bearerAuth: []
  *     parameters:
@@ -253,7 +246,7 @@ router.get('/index', async (req, res) => {
  *   post:
  *     summary: Get docker template content
  *     description: Returns the raw content of a docker template JSON
- *     tags: [Hub]
+ *     tags: [MOS Hub]
  *     security:
  *       - bearerAuth: []
  *     requestBody:
@@ -300,7 +293,7 @@ router.post('/docker', async (req, res) => {
  *   post:
  *     summary: Get compose files content
  *     description: Returns name, yaml, env and icon from compose template
- *     tags: [Hub]
+ *     tags: [MOS Hub]
  *     security:
  *       - bearerAuth: []
  *     requestBody:
