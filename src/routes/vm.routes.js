@@ -657,12 +657,12 @@ router.put('/machines/:name/autostart', async (req, res) => {
   try {
     const { name } = req.params;
     const { enabled } = req.body;
-    
+
     // Validate request body
     if (typeof enabled !== 'boolean') {
       return res.status(400).json({ error: 'enabled field is required and must be a boolean' });
     }
-    
+
     const result = await vmService.setAutostart(name, enabled);
     res.json(result);
   } catch (error) {

@@ -27,6 +27,7 @@ const usersRoutes = require('./routes/users.routes');
 const cronRoutes = require('./routes/cron.routes');
 const terminalRoutes = require('./routes/terminal.routes');
 const notificationsRoutes = require('./routes/notifications.routes');
+const hubRoutes = require('./routes/hub.routes');
 const poolsWebSocketRoutes = require('./routes/websocket/pools.websocket.routes');
 const systemWebSocketRoutes = require('./routes/websocket/system.websocket.routes');
 const terminalWebSocketRoutes = require('./routes/websocket/terminal.websocket.routes');
@@ -149,6 +150,7 @@ async function startServer() {
   app.use('/api/v1/lxc', authenticateToken, lxcRoutes);
   app.use('/api/v1/vm', authenticateToken, vmRoutes);
   app.use('/api/v1/mos', authenticateToken, mosRoutes);
+  app.use('/api/v1/mos/hub', authenticateToken, hubRoutes);
   app.use('/api/v1/shares', authenticateToken, sharesRoutes);
   app.use('/api/v1/remotes', authenticateToken, remotesRoutes);
   app.use('/api/v1/iscsi', authenticateToken, iscsiRoutes);

@@ -3174,7 +3174,7 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
 
     // No roots specified: Browse filesystem normally (full access)
     const resolvedPath = path.resolve(normalizedPath);
-    
+
     // Browse without restrictions
     return await this._browseDirectory(resolvedPath, type, null);
   }
