@@ -242,8 +242,8 @@ router.get('/index', async (req, res) => {
 
 /**
  * @swagger
- * /mos/hub/docker:
- *   post:
+ * /mos/hub/docker/template:
+ *   get:
  *     summary: Get docker template content
  *     description: Returns the raw content of a docker template JSON
  *     tags: [MOS Hub]
@@ -271,7 +271,7 @@ router.get('/index', async (req, res) => {
  *       500:
  *         description: Server error
  */
-router.post('/docker', async (req, res) => {
+router.get('/docker/template', async (req, res) => {
   try {
     const { template } = req.body;
     const content = await hubService.getDockerTemplate(template);
@@ -289,8 +289,8 @@ router.post('/docker', async (req, res) => {
 
 /**
  * @swagger
- * /mos/hub/compose:
- *   post:
+ * /mos/hub/compose/template:
+ *   get:
  *     summary: Get compose files content
  *     description: Returns name, yaml, env and icon from compose template
  *     tags: [MOS Hub]
@@ -338,7 +338,7 @@ router.post('/docker', async (req, res) => {
  *       500:
  *         description: Server error
  */
-router.post('/compose', async (req, res) => {
+router.get('/compose/template', async (req, res) => {
   try {
     const { template, yaml, env } = req.body;
     const content = await hubService.getComposeFiles(template, yaml, env);
