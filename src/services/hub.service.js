@@ -10,6 +10,18 @@ class HubService {
   }
 
   /**
+   * Default configuration structure
+   */
+  _getDefaultConfig() {
+    return {
+      enabled: false,
+      initial_update: false,
+      schedule: '',
+      repositories: []
+    };
+  }
+
+  /**
    * Ensures the hub.json file exists with default structure
    * @returns {Promise<void>}
    */
@@ -22,8 +34,8 @@ class HubService {
         const dir = path.dirname(this.hubConfigPath);
         await fs.mkdir(dir, { recursive: true });
 
-        // Create default config (empty array)
-        await fs.writeFile(this.hubConfigPath, '[]', 'utf8');
+        // Create default config
+        await fs.writeFile(this.hubConfigPath, JSON.stringify(this._getDefaultConfig(), null, 2), 'utf8');
       } else {
         throw error;
       }
@@ -37,7 +49,10 @@ class HubService {
   async _readConfig() {
     await this._ensureConfigExists();
     const data = await fs.readFile(this.hubConfigPath, 'utf8');
-    return JSON.parse(data);
+    const config = JSON.parse(data);
+
+    // Merge with defaults to ensure all fields exist
+    return { ...this._getDefaultConfig(), ...config };
   }
 
   /**
@@ -66,13 +81,83 @@ class HubService {
   }
 
   /**
+   * Gets the hub settings (without repositories)
+   * @returns {Promise<Object>} Hub settings
+   */
+  async getSettings() {
+    try {
+      const config = await this._readConfig();
+      const { repositories, ...settings } = config;
+      return settings;
+    } catch (error) {
+      throw new Error(`Error reading hub settings: ${error.message}`);
+    }
+  }
+
+  /**
+   * Updates the hub settings
+   * @param {Object} settings - Settings to update
+   * @returns {Promise<Object>} Updated settings
+   */
+  async setSettings(settings) {
+    try {
+      const current = await this._readConfig();
+      let scheduleChanged = false;
+
+      // Update only provided fields
+      if (typeof settings.enabled === 'boolean') {
+        current.enabled = settings.enabled;
+      }
+      if (typeof settings.initial_update === 'boolean') {
+        current.initial_update = settings.initial_update;
+      }
+      if (settings.schedule !== undefined && (typeof settings.schedule === 'string' || settings.schedule === null)) {
+        const newSchedule = settings.schedule || '';
+        if (current.schedule !== newSchedule) {
+          scheduleChanged = true;
+        }
+        current.schedule = newSchedule;
+      }
+
+      await this._writeConfig(current);
+
+      // Trigger cron update if schedule changed
+      if (scheduleChanged) {
+        try {
+          await execPromise('/usr/local/bin/mos-cron_update');
+        } catch (cronError) {
+          console.warn(`Hub: Failed to update cron: ${cronError.message}`);
+        }
+      }
+
+      const { repositories, ...result } = current;
+      return result;
+    } catch (error) {
+      throw new Error(`Error saving hub settings: ${error.message}`);
+    }
+  }
+
+  /**
+   * Gets the hub enabled status for /mos/services
+   * @returns {Promise<boolean>} Hub enabled status
+   */
+  async getHubEnabledStatus() {
+    try {
+      const config = await this._readConfig();
+      return config.enabled === true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Gets all repository URLs
    * @returns {Promise<Array<string>>} List of repository URLs
    */
   async getRepositories() {
     try {
-      const data = await this._readConfig();
-      return Array.isArray(data) ? data : [];
+      const config = await this._readConfig();
+      return Array.isArray(config.repositories) ? config.repositories : [];
     } catch (error) {
       throw new Error(`Error reading repositories: ${error.message}`);
     }
@@ -100,7 +185,9 @@ class HubService {
         }
       }
 
-      await this._writeConfig(validUrls);
+      const config = await this._readConfig();
+      config.repositories = validUrls;
+      await this._writeConfig(config);
       return validUrls;
     } catch (error) {
       throw new Error(`Error saving repositories: ${error.message}`);

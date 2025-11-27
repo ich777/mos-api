@@ -4,6 +4,7 @@ const { exec } = require('child_process');
 const util = require('util');
 const execPromise = util.promisify(exec);
 const PoolsService = require('./pools.service');
+const hubService = require('./hub.service');
 
 class MosService {
   constructor() {
@@ -1987,10 +1988,11 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
   async getAllServiceStatus() {
     try {
       // Execute all status reads in parallel for maximum performance
-      const [dockerEnabled, lxcEnabled, vmEnabled, networkServices] = await Promise.all([
+      const [dockerEnabled, lxcEnabled, vmEnabled, hubEnabled, networkServices] = await Promise.all([
         this._getDockerEnabledStatus(),
         this._getLxcEnabledStatus(),
         this._getVmEnabledStatus(),
+        hubService.getHubEnabledStatus(),
         this._getNetworkServicesStatus()
       ]);
 
@@ -1998,6 +2000,7 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
         docker: { enabled: dockerEnabled },
         lxc: { enabled: lxcEnabled },
         vm: { enabled: vmEnabled },
+        hub: { enabled: hubEnabled },
         ...networkServices
       };
 

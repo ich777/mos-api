@@ -4,6 +4,85 @@ const hubService = require('../services/hub.service');
 
 /**
  * @swagger
+ * /mos/hub/settings:
+ *   get:
+ *     summary: Get hub settings
+ *     description: Retrieves hub configuration (enabled, initial_update, schedule)
+ *     tags: [MOS Hub]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Hub settings
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 enabled:
+ *                   type: boolean
+ *                 initial_update:
+ *                   type: boolean
+ *                 schedule:
+ *                   type: string
+ *       500:
+ *         description: Server error
+ */
+router.get('/settings', async (req, res) => {
+  try {
+    const settings = await hubService.getSettings();
+    res.json(settings);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /mos/hub/settings:
+ *   post:
+ *     summary: Update hub settings
+ *     description: Updates hub configuration (enabled, initial_update, schedule)
+ *     tags: [MOS Hub]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               enabled:
+ *                 type: boolean
+ *               initial_update:
+ *                 type: boolean
+ *               schedule:
+ *                 type: string
+ *                 description: Cron schedule string
+ *           example:
+ *             enabled: true
+ *             initial_update: false
+ *             schedule: "0 3 * * *"
+ *     responses:
+ *       200:
+ *         description: Updated settings
+ *       400:
+ *         description: Invalid request
+ *       500:
+ *         description: Server error
+ */
+router.post('/settings', async (req, res) => {
+  try {
+    const settings = await hubService.setSettings(req.body);
+    res.json(settings);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
  * /mos/hub/repositories:
  *   get:
  *     summary: Get all repository URLs
