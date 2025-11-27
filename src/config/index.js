@@ -90,9 +90,9 @@ class Config {
         await fs.writeFile(ENV_FILE, newEnvContent, { mode: 0o600 });
 
         if (!fileExists) {
-          console.log('New environment configuration created at:', ENV_FILE);
+          console.info('New environment configuration created at:', ENV_FILE);
         } else {
-          console.log('Environment configuration updated with missing variables at:', ENV_FILE);
+          console.info('Environment configuration updated with missing variables at:', ENV_FILE);
         }
       }
 
@@ -116,11 +116,6 @@ class Config {
 
       const configFile = path.join(CONFIG_DIR, 'api.json');
       const defaultConfig = {
-        logging: {
-          enabled: true,
-          path: '/var/log',
-          level: 'info'
-        },
         usersFile: path.join(CONFIG_DIR, 'users.json'),
         tokenFile: path.join(CONFIG_DIR, 'token'),
         adminTokensFile: path.join(CONFIG_DIR, 'admin-tokens.json')
@@ -133,11 +128,6 @@ class Config {
       } catch (error) {
         this.config = defaultConfig;
         await fs.writeFile(configFile, JSON.stringify(defaultConfig, null, 2));
-      }
-
-      // Ensure log directory exists if logging is enabled
-      if (this.config.logging.enabled) {
-        await fs.mkdir(this.config.logging.path, { recursive: true });
       }
 
       // Check and generate boot token if needed
@@ -160,20 +150,20 @@ class Config {
 
         // Check if token is empty
         if (!this.isValidToken(token)) {
-          console.log('Boot token clear');
+          console.info('Boot token clear');
           return;
         }
 
-        console.log('Boot token is in place and valid');
+        console.info('Boot token is in place and valid');
       } catch {
         // Only generate new token if file doesn't exist
         token = crypto.randomBytes(32).toString('hex');
         await fs.mkdir(path.dirname(tokenFile), { recursive: true });
         await fs.writeFile(tokenFile, token, { mode: 0o600 });
-        console.log('New boot token generated');
+        console.info('New boot token generated');
       }
 
-      console.log('Boot token available at:', tokenFile);
+      console.info('Boot token available at:', tokenFile);
     } catch (error) {
       throw new Error('Failed to ensure boot token: ' + error.message);
     }
@@ -190,18 +180,6 @@ class Config {
     } catch (error) {
       return null;
     }
-  }
-
-  get loggingEnabled() {
-    return this.config?.logging.enabled ?? true;
-  }
-
-  get loggingPath() {
-    return this.config?.logging.path ?? '/var/log';
-  }
-
-  get loggingLevel() {
-    return this.config?.logging.level ?? 'info';
   }
 
   get usersFilePath() {

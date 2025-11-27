@@ -10,7 +10,7 @@ class CronService {
   }
 
   /**
-   * Erstellt das Verzeichnis falls es nicht existiert
+   * Creates the directory if it does not exist
    * @private
    */
   async _ensureDirectoryExists() {
@@ -548,6 +548,11 @@ class CronService {
       let scriptFileName = scriptName.endsWith('.sh') ? scriptName : scriptName + '.sh';
       let directPath = path.join(scriptsDir, scriptFileName);
 
+      // Check if the script is in /usr/local/bin (protected path)
+      if (directPath.startsWith('/usr/local/bin')) {
+        throw new Error('Editing scripts in /usr/local/bin not allowed');
+      }
+
       // First try: direct script file access
       try {
         await fs.access(directPath);
@@ -587,6 +592,11 @@ class CronService {
         }
       }
 
+      // Check if resolved scriptPath is in /usr/local/bin (protected path)
+      if (scriptPath && scriptPath.startsWith('/usr/local/bin')) {
+        throw new Error('Editing scripts in /usr/local/bin not allowed');
+      }
+
       const stats = await fs.stat(scriptPath);
       const content = await fs.readFile(scriptPath, 'utf8');
 
@@ -617,6 +627,11 @@ class CronService {
       // Add .sh if not present
       let scriptFileName = scriptName.endsWith('.sh') ? scriptName : scriptName + '.sh';
       let directPath = path.join(scriptsDir, scriptFileName);
+
+      // Check if the script is in /usr/local/bin (protected path)
+      if (directPath.startsWith('/usr/local/bin')) {
+        throw new Error('Editing scripts in /usr/local/bin not allowed');
+      }
 
       // First try: direct script file access
       try {
@@ -655,6 +670,11 @@ class CronService {
         } else {
           throw error;
         }
+      }
+
+      // Check if resolved scriptPath is in /usr/local/bin (protected path)
+      if (scriptPath && scriptPath.startsWith('/usr/local/bin')) {
+        throw new Error('Editing scripts in /usr/local/bin not allowed');
       }
 
       // Update script content

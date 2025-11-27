@@ -1,8 +1,6 @@
 const express = require('express');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
-const winston = require('winston');
-const path = require('path');
 const swaggerUi = require('swagger-ui-express');
 const swaggerSpecs = require('./config/swagger');
 const config = require('./config');
@@ -40,33 +38,6 @@ const errorHandler = require('./middleware/error.middleware');
 async function startServer() {
   // Load configuration
   await config.load();
-
-  // Logger Configuration
-  let logger;
-  if (config.loggingEnabled) {
-    logger = winston.createLogger({
-      level: config.loggingLevel,
-      format: winston.format.json(),
-      transports: [
-        new winston.transports.File({
-          filename: path.join(config.loggingPath, 'api')
-        })
-      ]
-    });
-
-    if (process.env.NODE_ENV !== 'production') {
-      logger.add(new winston.transports.Console({
-        format: winston.format.simple()
-      }));
-    }
-  } else {
-    logger = {
-      info: () => {},
-      error: () => {},
-      warn: () => {},
-      debug: () => {}
-    };
-  }
 
   const app = express();
 
@@ -338,53 +309,45 @@ async function startServer() {
 
   // Setup namespace handlers
   poolsNamespace.on('connection', (socket) => {
-    logger.info(`Pools WebSocket client connected: ${socket.id}`);
+    console.info(`Pools WebSocket client connected: ${socket.id}`);
     poolWebSocketManager.handleConnection(socket);
   });
 
   systemNamespace.on('connection', (socket) => {
-    logger.info(`System Load WebSocket client connected: ${socket.id}`);
+    console.info(`System Load WebSocket client connected: ${socket.id}`);
     systemLoadWebSocketManager.handleConnection(socket);
   });
 
   // Terminal namespace for terminal connections
   terminalNamespace.on('connection', (socket) => {
-    logger.info(`Terminal WebSocket client connected: ${socket.id}`);
+    console.info(`Terminal WebSocket client connected: ${socket.id}`);
     terminalWebSocketManager.handleConnection(socket);
   });
 
   // Docker namespace for Docker operations
   dockerNamespace.on('connection', (socket) => {
-    logger.info(`Docker WebSocket client connected: ${socket.id}`);
+    console.info(`Docker WebSocket client connected: ${socket.id}`);
     dockerWebSocketManager.handleConnection(socket);
   });
 
   server.listen(PORT, '0.0.0.0', async () => {
-    logger.info(`Server running on port ${PORT}`);
-    logger.info(`WebSocket Terminal available at: ws://localhost:${PORT}/`);
-    logger.info(`Swagger Documentation available at: http://localhost:${PORT}/api-docs`);
+    console.info(`API running on port ${PORT}`);
 
-    // Initialisiere Startup-Caches nach dem Server-Start
+    // Initialize Startup-Caches after server start
     try {
       const disksService = require('./services/disks.service');
-      logger.info('Initialisiere Disk Startup-Cache...');
       await disksService.initializeStartupCache({ wakeStandbyDisks: false });
-      logger.info('Disk Startup-Cache erfolgreich initialisiert');
     } catch (error) {
-      logger.error(`Fehler beim Initialisieren des Disk Startup-Cache: ${error.message}`);
-      // Nicht kritisch - API kann trotzdem laufen
+      console.error(`Error initializing Disk Startup-Cache: ${error.message}`);
     }
 
-    // Pool-Service wurde auf neue Version umgestellt
+    // Initialize Pools after server start
     try {
       const PoolsService = require('./services/pools.service');
       const poolsService = new PoolsService();
-      logger.info('Initialisiere Pools...');
       await poolsService.listPools();
-      logger.info('Pools erfolgreich initialisiert');
     } catch (error) {
-      logger.error(`Fehler beim Initialisieren der Pools: ${error.message}`);
-      // Nicht kritisch - API kann trotzdem laufen
+      console.error(`Error initializing Pools: ${error.message}`);
     }
   });
 }
@@ -394,7 +357,7 @@ startServer().catch(error => {
   process.exit(1);
 });
 
-// Graceful shutdown - Terminal-Sessions beenden
+// Graceful shutdown - end Terminal-Sessions
 process.on('SIGTERM', () => {
   console.log('SIGTERM received, shutting down gracefully...');
   const terminalService = require('./services/terminal.service');
