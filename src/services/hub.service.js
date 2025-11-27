@@ -608,10 +608,6 @@ class HubService {
       }
     }
 
-    if (templates.length === 0) {
-      throw new Error('No templates found in repositories');
-    }
-
     // Filter results
     let filtered = templates;
 
@@ -639,11 +635,6 @@ class HubService {
         if (!Array.isArray(t.category)) return false;
         return t.category.some(c => c.toLowerCase().includes(categoryLower));
       });
-    }
-
-    if (filtered.length === 0) {
-      const filters = [search, category, type].filter(Boolean).join(', ');
-      throw new Error(`No templates found matching "${filters}"`);
     }
 
     // Sort results
@@ -686,7 +677,10 @@ class HubService {
       });
     }
 
-    return filtered;
+    return {
+      results: filtered,
+      count: filtered.length
+    };
   }
 
   /**

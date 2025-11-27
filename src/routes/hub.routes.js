@@ -261,58 +261,60 @@ router.post('/update', async (req, res) => {
  *         description: Sort order - for timestamps desc means newest first
  *     responses:
  *       200:
- *         description: List of all templates
+ *         description: Template index with results and count
  *         content:
  *           application/json:
  *             schema:
- *               type: array
- *               items:
- *                 type: object
- *                 properties:
- *                   name:
- *                     type: string
- *                   maintainer:
- *                     type: string
- *                   maintainer_donate:
- *                     type: string
- *                   type:
- *                     type: string
- *                     enum: [docker, compose]
- *                   category:
- *                     type: array
- *                   description:
- *                     type: string
- *                   website:
- *                     type: string
- *                   icon:
- *                     type: string
- *                   repository:
- *                     type: string
- *                   created_at:
- *                     type: integer
- *                     description: Unix timestamp when template was first added
- *                   updated_at:
- *                     type: integer
- *                     description: Unix timestamp when template was last modified
- *                   stack_images:
- *                     type: array
+ *               type: object
+ *               properties:
+ *                 results:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       name:
+ *                         type: string
+ *                       maintainer:
+ *                         type: string
+ *                       maintainer_donate:
+ *                         type: string
+ *                       type:
+ *                         type: string
+ *                         enum: [docker, compose]
+ *                       category:
+ *                         type: array
+ *                       description:
+ *                         type: string
+ *                       website:
+ *                         type: string
+ *                       icon:
+ *                         type: string
+ *                       repository:
+ *                         type: string
+ *                       created_at:
+ *                         type: integer
+ *                         description: Unix timestamp when template was first added
+ *                       updated_at:
+ *                         type: integer
+ *                         description: Unix timestamp when template was last modified
+ *                       stack_images:
+ *                         type: array
+ *                 count:
+ *                   type: integer
+ *                   description: Number of templates found
  *       400:
  *         description: No repositories downloaded
- *       404:
- *         description: No templates found
  *       500:
  *         description: Server error
  */
 router.get('/index', async (req, res) => {
   try {
     const { search, category, type, sort, order } = req.query;
-    const templates = await hubService.buildIndex({ search, category, type, sort, order });
-    res.json(templates);
+    const result = await hubService.buildIndex({ search, category, type, sort, order });
+    res.json(result);
   } catch (error) {
     if (error.message.includes('No repositories downloaded')) {
       res.status(400).json({ error: error.message });
-    } else if (error.message.includes('No templates found')) {
-      res.status(404).json({ error: error.message });
     } else {
       res.status(500).json({ error: error.message });
     }
