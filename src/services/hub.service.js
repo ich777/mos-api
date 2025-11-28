@@ -17,6 +17,7 @@ class HubService {
       enabled: false,
       initial_update: false,
       schedule: '',
+      page_entries: 24,
       repositories: []
     };
   }
@@ -117,6 +118,9 @@ class HubService {
           scheduleChanged = true;
         }
         current.schedule = newSchedule;
+      }
+      if (typeof settings.page_entries === 'number' && settings.page_entries > 0) {
+        current.page_entries = settings.page_entries;
       }
 
       await this._writeConfig(current);
@@ -690,8 +694,13 @@ class HubService {
       filtered = filtered.slice(0, limit);
     }
 
+    // Get page_entries from config
+    const config = await this._readConfig();
+    const pageEntries = config.page_entries || 24;
+
     return {
       results: filtered,
+      page_entries: pageEntries,
       count: totalCount
     };
   }

@@ -25,6 +25,8 @@ const hubService = require('../services/hub.service');
  *                   type: boolean
  *                 schedule:
  *                   type: string
+ *                 page_entries:
+ *                   type: integer
  *       500:
  *         description: Server error
  */
@@ -60,10 +62,14 @@ router.get('/settings', async (req, res) => {
  *               schedule:
  *                 type: string
  *                 description: Cron schedule string
+ *               page_entries:
+ *                 type: integer
+ *                 description: Number of entries per page
  *           example:
  *             enabled: true
  *             initial_update: false
  *             schedule: "0 3 * * *"
+ *             page_entries: 24
  *     responses:
  *       200:
  *         description: Updated settings
@@ -309,9 +315,12 @@ router.post('/update', async (req, res) => {
  *                         description: Unix timestamp when template was last modified
  *                       stack_images:
  *                         type: array
+ *                 page_entries:
+ *                   type: integer
+ *                   description: Configured entries per page
  *                 count:
  *                   type: integer
- *                   description: Number of templates found
+ *                   description: Total number of templates found
  *       400:
  *         description: No repositories downloaded
  *       500:
