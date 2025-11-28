@@ -259,6 +259,16 @@ router.post('/update', async (req, res) => {
  *           enum: [asc, desc]
  *           default: asc
  *         description: Sort order - for timestamps desc means newest first
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *         description: Max number of results to return
+ *       - in: query
+ *         name: skip
+ *         schema:
+ *           type: integer
+ *         description: Number of results to skip for pagination
  *     responses:
  *       200:
  *         description: Template index with results and count
@@ -309,8 +319,16 @@ router.post('/update', async (req, res) => {
  */
 router.get('/index', async (req, res) => {
   try {
-    const { search, category, type, sort, order } = req.query;
-    const result = await hubService.buildIndex({ search, category, type, sort, order });
+    const { search, category, type, sort, order, limit, skip } = req.query;
+    const result = await hubService.buildIndex({
+      search,
+      category,
+      type,
+      sort,
+      order,
+      limit: limit ? parseInt(limit, 10) : undefined,
+      skip: skip ? parseInt(skip, 10) : undefined
+    });
     res.json(result);
   } catch (error) {
     if (error.message.includes('No repositories downloaded')) {

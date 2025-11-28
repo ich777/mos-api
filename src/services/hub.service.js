@@ -531,16 +531,18 @@ class HubService {
 
   /**
    * Builds index of all templates from all repositories
-   * @param {Object} options - Filter and sort options
+   * @param {Object} options - Filter, sort and pagination options
    * @param {string} options.search - Search in name, maintainer, description
    * @param {string} options.category - Filter by category
    * @param {string} options.type - Filter by type (docker/compose)
-   * @param {string} options.sort - Sort by field (name)
+   * @param {string} options.sort - Sort by field (name, created, updated)
    * @param {string} options.order - Sort order (asc/desc)
-   * @returns {Promise<Array>} Array of all templates
+   * @param {number} options.limit - Max number of results to return
+   * @param {number} options.skip - Number of results to skip
+   * @returns {Promise<Object>} Object with results array and count
    */
   async buildIndex(options = {}) {
-    const { search, category, type, sort, order = 'asc' } = options;
+    const { search, category, type, sort, order = 'asc', limit, skip } = options;
     const reposPath = '/var/mos/hub/repositories';
     const templates = [];
     const searchLower = search ? search.toLowerCase() : null;
@@ -677,9 +679,20 @@ class HubService {
       });
     }
 
+    // Store total count before pagination
+    const totalCount = filtered.length;
+
+    // Apply pagination
+    if (skip && skip > 0) {
+      filtered = filtered.slice(skip);
+    }
+    if (limit && limit > 0) {
+      filtered = filtered.slice(0, limit);
+    }
+
     return {
       results: filtered,
-      count: filtered.length
+      count: totalCount
     };
   }
 
