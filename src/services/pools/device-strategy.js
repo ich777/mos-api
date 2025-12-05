@@ -251,7 +251,7 @@ class LuksDeviceStrategy extends DeviceStrategy {
 
     console.log(`Closing LUKS devices for pool '${pool.name}' (slots: ${slots.join(', ')})`);
 
-    await this._closeLuksDevicesWithSlots(
+    await this.poolsService._closeLuksDevicesWithSlots(
       physicalDevices,
       pool.name,
       slots,
@@ -405,49 +405,6 @@ class LuksDeviceStrategy extends DeviceStrategy {
     }
 
     return mappedDevices;
-  }
-
-  /**
-   * Close LUKS devices using slot-based naming
-   * @private
-   */
-  async _closeLuksDevicesWithSlots(devices, poolName, slots, isParity = false) {
-    for (let i = 0; i < devices.length; i++) {
-      const slot = slots[i];
-
-      // Use slot-based naming scheme
-      let luksName;
-      if (isParity) {
-        luksName = `parity_${poolName}_${slot}`;
-      } else {
-        luksName = `${poolName}_${slot}`;
-      }
-
-      const partitionName = `${luksName}p1`;
-
-      // Try to close partition first
-      try {
-        await execPromise(`cryptsetup luksClose ${partitionName}`);
-        console.log(`Closed LUKS partition: ${partitionName}`);
-      } catch (error) {
-        console.warn(`Warning: Could not close LUKS partition ${partitionName}: ${error.message}`);
-      }
-
-      // Then close main device
-      try {
-        await execPromise(`cryptsetup luksClose ${luksName}`);
-        console.log(`Closed LUKS device: ${luksName}`);
-      } catch (error) {
-        console.warn(`Warning: Could not close LUKS device ${luksName}: ${error.message}`);
-        // Try dmsetup as fallback
-        try {
-          await execPromise(`dmsetup remove ${luksName}`);
-          console.log(`Force removed LUKS device using dmsetup: ${luksName}`);
-        } catch (dmError) {
-          console.warn(`Warning: Could not force remove LUKS device ${luksName}: ${dmError.message}`);
-        }
-      }
-    }
   }
 
   /**

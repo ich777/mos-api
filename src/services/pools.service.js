@@ -3570,6 +3570,25 @@ class PoolsService {
         `parity_${poolName}_${slot}` :
         `${poolName}_${slot}`;
 
+      const partitionName = `${luksName}p1`;
+
+      // Try to close partition first (e.g., pool_1p1)
+      try {
+        const { stdout: partitionInfo } = await execPromise(`dmsetup info ${partitionName} 2>/dev/null || true`);
+        if (partitionInfo && partitionInfo.includes('State')) {
+          await execPromise(`cryptsetup luksClose ${partitionName}`);
+          console.log(`Closed LUKS partition: ${partitionName}`);
+        }
+      } catch (error) {
+        // Try dmsetup as fallback for partition
+        try {
+          await execPromise(`dmsetup remove ${partitionName} 2>/dev/null`);
+          console.log(`Force removed LUKS partition using dmsetup: ${partitionName}`);
+        } catch (dmError) {
+          // Partition might not exist, that's okay
+        }
+      }
+
       // Check if LUKS device is active before trying to close
       try {
         const { stdout } = await execPromise(`dmsetup info ${luksName} 2>/dev/null || true`);
