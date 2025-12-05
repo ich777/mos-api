@@ -615,6 +615,37 @@ class DisksService {
   }
 
   /**
+   * Prüft ob eine einzelne Partition eine System-Partition ist
+   * @param {string} partitionDevice - Partition device path (z.B. /dev/sda1)
+   * @param {Map} mounts - Pre-loaded mounts map (optional)
+   * @returns {Promise<boolean>} true wenn System-Partition
+   */
+  async _isSystemPartition(partitionDevice, mounts = null) {
+    try {
+      if (!mounts) {
+        mounts = await this._getMountInfo();
+      }
+
+      const mountInfo = mounts.get(partitionDevice);
+      if (!mountInfo) {
+        return false; // Nicht gemountet = keine System-Partition
+      }
+
+      const mp = mountInfo.mountpoint;
+
+      // System-relevante Mount-Punkte
+      if (mp === '/boot' || mp === '/' || mp === '/usr' || mp === '/var' ||
+          mp === '/etc' || mp.startsWith('/mnt/system') || mp === '/boot/efi') {
+        return true;
+      }
+
+      return false;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  /**
    * Prüft ob ein Device eine Partition eines anderen Devices ist (NVMe-kompatibel)
    */
   _isPartitionOfDevice(partitionDevice, parentDevice) {
@@ -1478,9 +1509,58 @@ class DisksService {
 
       // Check each disk
       for (const disk of allDisks) {
-        // Skip system disks
+        // Check if disk is a system disk
         const isSystem = await this._isSystemDisk(disk.device);
+
         if (isSystem) {
+          // System disk - but check for non-system partitions (e.g. sda3 on boot disk)
+          if (disk.partitions && disk.partitions.length > 0) {
+            for (const partition of disk.partitions) {
+              // Skip system partitions
+              const isSystemPartition = await this._isSystemPartition(partition.device, mounts);
+              if (isSystemPartition) {
+                continue;
+              }
+
+              // Skip swap partitions
+              if (partition.mountpoint === '[SWAP]') {
+                continue;
+              }
+
+              // Skip partitions already in a pool
+              if (poolDisks.has(partition.device)) {
+                continue;
+              }
+
+              // Skip partitions mounted at pool-related paths
+              if (partition.mountpoint &&
+                  (partition.mountpoint.startsWith('/mnt/disks/') ||
+                   partition.mountpoint.startsWith('/mnt/remotes/'))) {
+                continue;
+              }
+
+              // This is a non-system partition on the boot disk - add as unassigned
+              // Create a disk-like entry for this partition
+              unassignedDisks.push({
+                device: partition.device,
+                name: partition.device.replace('/dev/', ''),
+                size: partition.size,
+                sizeHuman: this.formatBytes(partition.size, user),
+                type: disk.type,
+                rotational: disk.rotational,
+                removable: disk.removable,
+                model: disk.model,
+                serial: disk.serial,
+                powerStatus: disk.powerStatus,
+                partitions: [], // Partition has no sub-partitions
+                filesystem: partition.filesystem,
+                uuid: partition.uuid,
+                label: partition.label,
+                isPartition: true,
+                parentDisk: disk.device
+              });
+            }
+          }
           continue;
         }
 
@@ -1504,14 +1584,12 @@ class DisksService {
 
           // Has partitions but not mounted elsewhere - unassigned
           unassignedDisks.push({
-            ...disk,
-            reason: 'has_partitions_but_not_mounted'
+            ...disk
           });
         } else {
           // No partitions and not in use - unassigned
           unassignedDisks.push({
-            ...disk,
-            reason: 'no_partitions_or_filesystem'
+            ...disk
           });
         }
       }
