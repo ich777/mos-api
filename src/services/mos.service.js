@@ -2967,9 +2967,10 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
    * Executes MOS installation to disk using the mos-install script
    * @param {string} disk - Disk device (e.g., /dev/sda)
    * @param {string} filesystem - Filesystem type (vfat, ext4, btrfs, xfs)
+   * @param {boolean} extra_partition - Whether to create an extra partition (default: false)
    * @returns {Promise<Object>} Installation status
    */
-  async installToDisk(disk, filesystem) {
+  async installToDisk(disk, filesystem, extra_partition = false) {
     try {
       // Parameter validation
       if (!disk || typeof disk !== 'string') {
@@ -2986,8 +2987,8 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
         throw new Error(`filesystem must be one of: ${validFilesystems.join(', ')}`);
       }
 
-      // Build command: bash /usr/local/bin/mos-install disk filesystem quiet
-      const command = `bash /usr/local/bin/mos-install ${disk} ${filesystem} quiet`;
+      // Build command: bash /usr/local/bin/mos-install disk filesystem quiet extra_partition
+      const command = `bash /usr/local/bin/mos-install ${disk} ${filesystem} quiet ${extra_partition}`;
 
       // Execute script
       const { stdout, stderr } = await execPromise(command);
@@ -2997,6 +2998,7 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
         message: 'MOS installation to disk initiated successfully',
         disk,
         filesystem,
+        extra_partition,
         command,
         output: stdout,
         error: stderr || null,
