@@ -1513,10 +1513,22 @@ class DisksService {
         const isSystem = await this._isSystemDisk(disk.device);
 
         if (isSystem) {
-          // System disk - but check for non-system partitions (e.g. sda3 on boot disk)
-          if (disk.partitions && disk.partitions.length > 0) {
+          // System disk - check for 3rd partition (or higher) that could be used as storage
+          // Typical layout: p1 = EFI/boot, p2 = root, p3+ = extra storage
+          if (disk.partitions && disk.partitions.length >= 3) {
             for (const partition of disk.partitions) {
-              // Skip system partitions
+              // Extract partition number from device name
+              // sda3 -> 3, nvme0n1p3 -> 3
+              const partNumMatch = partition.device.match(/(\d+)$/);
+              if (!partNumMatch) continue;
+              const partNum = parseInt(partNumMatch[1]);
+
+              // Only consider partition 3 or higher
+              if (partNum < 3) {
+                continue;
+              }
+
+              // Skip system partitions (just in case p3 is used for /var or similar)
               const isSystemPartition = await this._isSystemPartition(partition.device, mounts);
               if (isSystemPartition) {
                 continue;
@@ -1539,8 +1551,7 @@ class DisksService {
                 continue;
               }
 
-              // This is a non-system partition on the boot disk - add as unassigned
-              // Create a disk-like entry for this partition
+              // This is partition 3+ on the boot disk - add as unassigned
               unassignedDisks.push({
                 device: partition.device,
                 name: partition.device.replace('/dev/', ''),
@@ -1552,7 +1563,7 @@ class DisksService {
                 model: disk.model,
                 serial: disk.serial,
                 powerStatus: disk.powerStatus,
-                partitions: [], // Partition has no sub-partitions
+                partitions: [],
                 filesystem: partition.filesystem,
                 uuid: partition.uuid,
                 label: partition.label,
