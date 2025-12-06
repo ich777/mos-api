@@ -1788,6 +1788,7 @@ class DisksService {
 
   /**
    * Disk in Standby versetzen
+   * Wait for disk to go to standby (timeout 12s)
    */
   async sleepDisk(device, mode = 'standby') {
     try {
@@ -1818,6 +1819,20 @@ class DisksService {
         // Traditional HDD
         const command = mode === 'sleep' ? `hdparm -Y ${devicePath}` : `hdparm -y ${devicePath}`;
         await execPromise(command);
+      }
+
+      // Wait for standby confirmation (max 12s, poll every 1s)
+      this.powerStatusCache.delete(devicePath);
+      const startTime = Date.now();
+
+      while (Date.now() - startTime < 12000) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        this.powerStatusCache.delete(devicePath);
+
+        const powerStatus = await this._getLiveDiskPowerStatus(devicePath);
+        if (powerStatus.status === 'standby' || powerStatus.active === false) {
+          break;
+        }
       }
 
       return {
