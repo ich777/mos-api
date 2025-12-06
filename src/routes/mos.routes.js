@@ -2819,9 +2819,15 @@ router.post('/rollbackkernel', async (req, res) => {
  *                 enum: [vfat, ext4, btrfs, xfs]
  *                 description: Filesystem type for the installation
  *                 example: "ext4"
+ *               extra_partition:
+ *                 type: boolean
+ *                 description: Whether to create an extra partition
+ *                 default: false
+ *                 example: false
  *           example:
  *             disk: "/dev/sda"
  *             filesystem: "ext4"
+ *             extra_partition: false
  *     responses:
  *       200:
  *         description: MOS installation to disk initiated successfully
@@ -2842,9 +2848,12 @@ router.post('/rollbackkernel', async (req, res) => {
  *                 filesystem:
  *                   type: string
  *                   example: "ext4"
+ *                 extra_partition:
+ *                   type: boolean
+ *                   example: false
  *                 command:
  *                   type: string
- *                   example: "bash /usr/local/bin/mos-install /dev/sda ext4 quiet"
+ *                   example: "bash /usr/local/bin/mos-install /dev/sda ext4 quiet false"
  *                 output:
  *                   type: string
  *                   example: "Installation process started..."
@@ -2891,7 +2900,7 @@ router.post('/rollbackkernel', async (req, res) => {
 // POST: Install MOS to disk
 router.post('/installtodisk', async (req, res) => {
   try {
-    const { disk, filesystem } = req.body;
+    const { disk, filesystem, extra_partition = false } = req.body;
 
     if (!disk) {
       return res.status(400).json({
@@ -2907,7 +2916,7 @@ router.post('/installtodisk', async (req, res) => {
       });
     }
 
-    const result = await mosService.installToDisk(disk, filesystem);
+    const result = await mosService.installToDisk(disk, filesystem, extra_partition);
 
     if (result.success) {
       res.json(result);
