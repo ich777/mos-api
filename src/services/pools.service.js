@@ -8900,15 +8900,13 @@ class PoolsService {
       }
 
       // If module is available, check if there's already a nonraid pool - disabled for now
-      // if (moduleAvailable) {
-      //   const pools = await this._readPools();
-      //   const hasNonRaidPool = pools.some(pool => pool.type === 'nonraid');
+      const pools = await this._readPools();
+      const hasNonRaidPool = pools.some(pool => pool.type === 'nonraid');
 
-      //   // Only add nonraid if module is available AND no nonraid pool exists
-      //   if (!hasNonRaidPool) {
-      //     poolTypes.push('nonraid');
-      //   }
-      // }
+      // Only add nonraid if module is available AND no nonraid pool exists
+      if (!hasNonRaidPool) {
+        poolTypes.push('nonraid');
+      }
     } catch (error) {
       // If there's any error reading pools, just return the basic types
       console.warn(`Warning: Could not check nonraid availability: ${error.message}`);
