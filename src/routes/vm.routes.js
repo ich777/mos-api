@@ -1232,4 +1232,169 @@ router.put('/machines/:name/config', async (req, res) => {
   }
 });
 
+// ============================================================
+// VirtIO ISO Management
+// ============================================================
+
+/**
+ * @swagger
+ * /vm/virtioiso/versions:
+ *   get:
+ *     summary: Get available VirtIO ISO versions
+ *     description: Fetches the list of all available VirtIO driver versions from the Fedora archive
+ *     tags: [VM]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: List of available VirtIO versions
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: string
+ *               example: ["0.1.285-1", "0.1.271-1", "0.1.266-1"]
+ *       500:
+ *         description: Failed to fetch versions
+ */
+router.get('/virtioiso/versions', async (req, res) => {
+  try {
+    const versions = await vmService.getVirtioVersions();
+    res.json(versions);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /vm/virtioiso/installed:
+ *   get:
+ *     summary: Get installed VirtIO ISOs
+ *     description: Lists all VirtIO driver ISOs that are currently installed
+ *     tags: [VM]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: List of installed VirtIO versions
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: string
+ *               example: ["0.1.271-1", "0.1.266-1"]
+ *       500:
+ *         description: Failed to get installed versions
+ */
+router.get('/virtioiso/installed', async (req, res) => {
+  try {
+    const versions = await vmService.getInstalledVirtioVersions();
+    res.json(versions);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /vm/virtioiso/download:
+ *   post:
+ *     summary: Download a VirtIO ISO
+ *     description: Starts a background download of the specified VirtIO driver version. A notification is sent when complete.
+ *     tags: [VM]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - version
+ *             properties:
+ *               version:
+ *                 type: string
+ *                 description: VirtIO version to download
+ *                 example: "0.1.271-1"
+ *     responses:
+ *       200:
+ *         description: Download started
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 message:
+ *                   type: string
+ *                 version:
+ *                   type: string
+ *                 path:
+ *                   type: string
+ *       400:
+ *         description: Invalid version or already installed
+ *       500:
+ *         description: Failed to start download
+ */
+router.post('/virtioiso/download', async (req, res) => {
+  try {
+    const { version } = req.body;
+
+    if (!version) {
+      return res.status(400).json({ error: 'version is required' });
+    }
+
+    const result = await vmService.downloadVirtioIso(version);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /vm/virtioiso/cleanup:
+ *   post:
+ *     summary: Cleanup old VirtIO ISOs
+ *     description: Deletes all installed VirtIO ISOs except the newest version
+ *     tags: [VM]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Cleanup completed
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 message:
+ *                   type: string
+ *                 kept:
+ *                   type: string
+ *                   description: Version that was kept
+ *                 deleted:
+ *                   type: array
+ *                   items:
+ *                     type: string
+ *                   description: Versions that were deleted
+ *       500:
+ *         description: Failed to cleanup
+ */
+router.post('/virtioiso/cleanup', async (req, res) => {
+  try {
+    const result = await vmService.cleanupVirtioIsos();
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 module.exports = router;

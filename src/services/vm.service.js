@@ -1,7 +1,9 @@
-const { exec } = require('child_process');
+const { exec, spawn } = require('child_process');
 const util = require('util');
 const fs = require('fs').promises;
 const path = require('path');
+const net = require('net');
+const https = require('https');
 const execPromise = util.promisify(exec);
 
 // Import mosService for VM settings
@@ -12,6 +14,13 @@ const getMosService = () => {
   }
   return mosService;
 };
+
+// Define MOS notify socket path
+const MOS_NOTIFY_SOCKET = '/var/run/mos-notify.sock';
+
+// VirtIO constants
+const VIRTIO_ARCHIVE_URL = 'https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/';
+const VIRTIO_ISO_DIR = '/etc/libvirt/virtio-isos';
 
 /**
  * VM Service
@@ -444,9 +453,10 @@ class VmService {
    */
   async getVmCapabilities() {
     try {
-      const [machines, networks] = await Promise.all([
+      const [machines, networks, virtioVersions] = await Promise.all([
         this.getQemuMachines(),
-        this.getNetworkInterfaces()
+        this.getNetworkInterfaces(),
+        this.getInstalledVirtioVersions().catch(() => [])
       ]);
 
       // Check which BIOS files exist
@@ -460,6 +470,12 @@ class VmService {
         }
       }
 
+      // Build VirtIO ISOs list with paths
+      const virtioIsos = virtioVersions.map(version => ({
+        version,
+        path: path.join(VIRTIO_ISO_DIR, `${version}.iso`)
+      }));
+
       return {
         qemuPath: this.QEMU_PATH,
         libvirtPath: this.LIBVIRT_QEMU_PATH,
@@ -471,7 +487,8 @@ class VmService {
         networkModels: this.VALID_NETWORK_MODELS,
         graphicsTypes: this.VALID_GRAPHICS_TYPES,
         machines,
-        networks
+        networks,
+        virtioIsos
       };
     } catch (error) {
       throw new Error(`Failed to get VM capabilities: ${error.message}`);
@@ -1681,6 +1698,251 @@ class VmService {
       };
     } catch (error) {
       throw new Error(`Failed to create disk: ${error.message}`);
+    }
+  }
+
+  // ============================================================
+  // VirtIO Driver Management
+  // ============================================================
+
+  /**
+   * Send notification via mos-notify socket
+   * @private
+   */
+  _sendNotification(title, message, priority = 'normal') {
+    return new Promise((resolve) => {
+      const client = net.createConnection(MOS_NOTIFY_SOCKET, () => {
+        const payload = JSON.stringify({ title, message, priority });
+        client.write(payload);
+        client.end();
+        resolve(true);
+      });
+      client.on('error', () => {
+        // Ignore notification errors - non-critical
+        resolve(false);
+      });
+    });
+  }
+
+  /**
+   * Fetch HTML content from URL
+   * @private
+   */
+  _fetchUrl(url) {
+    return new Promise((resolve, reject) => {
+      https.get(url, (res) => {
+        if (res.statusCode !== 200) {
+          reject(new Error(`HTTP ${res.statusCode}`));
+          return;
+        }
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => resolve(data));
+      }).on('error', reject);
+    });
+  }
+
+  /**
+   * Get available VirtIO versions from Fedora archive
+   * @returns {Promise<Array>} List of available versions
+   */
+  async getVirtioVersions() {
+    try {
+      const html = await this._fetchUrl(VIRTIO_ARCHIVE_URL);
+
+      // Parse directory listing - extract virtio-win-X.X.XXX-X folders
+      const versionRegex = /href="virtio-win-([\d.]+-\d+)\/"/g;
+      const versions = [];
+      let match;
+
+      while ((match = versionRegex.exec(html)) !== null) {
+        versions.push(match[1]);
+      }
+
+      // Sort versions descending (newest first)
+      versions.sort((a, b) => {
+        const parseVersion = (v) => {
+          const parts = v.split(/[.-]/).map(Number);
+          return parts;
+        };
+        const aParts = parseVersion(a);
+        const bParts = parseVersion(b);
+        for (let i = 0; i < Math.max(aParts.length, bParts.length); i++) {
+          const diff = (bParts[i] || 0) - (aParts[i] || 0);
+          if (diff !== 0) return diff;
+        }
+        return 0;
+      });
+
+      return versions;
+    } catch (error) {
+      throw new Error(`Failed to fetch VirtIO versions: ${error.message}`);
+    }
+  }
+
+  /**
+   * Get installed VirtIO ISOs
+   * @returns {Promise<Array>} List of installed versions
+   */
+  async getInstalledVirtioVersions() {
+    try {
+      // Ensure directory exists
+      try {
+        await fs.mkdir(VIRTIO_ISO_DIR, { recursive: true });
+      } catch (e) {
+        // Ignore
+      }
+
+      const files = await fs.readdir(VIRTIO_ISO_DIR);
+      const versions = files
+        .filter(f => f.endsWith('.iso'))
+        .map(f => f.replace('.iso', ''))
+        .sort((a, b) => {
+          const parseVersion = (v) => v.split(/[.-]/).map(Number);
+          const aParts = parseVersion(a);
+          const bParts = parseVersion(b);
+          for (let i = 0; i < Math.max(aParts.length, bParts.length); i++) {
+            const diff = (bParts[i] || 0) - (aParts[i] || 0);
+            if (diff !== 0) return diff;
+          }
+          return 0;
+        });
+
+      return versions;
+    } catch (error) {
+      throw new Error(`Failed to get installed VirtIO versions: ${error.message}`);
+    }
+  }
+
+  /**
+   * Download a VirtIO ISO
+   * @param {string} version - Version to download (e.g., "0.1.271-1")
+   * @returns {Promise<Object>} Download status
+   */
+  async downloadVirtioIso(version) {
+    try {
+      // Validate version format
+      if (!/^[\d.]+-\d+$/.test(version)) {
+        throw new Error('Invalid version format. Expected format: X.X.XXX-X (e.g., 0.1.271-1)');
+      }
+
+      // Ensure directory exists
+      await fs.mkdir(VIRTIO_ISO_DIR, { recursive: true });
+
+      const isoPath = path.join(VIRTIO_ISO_DIR, `${version}.iso`);
+
+      // URL structure: folder is virtio-win-0.1.285-1, but ISO is virtio-win-0.1.285.iso (without build number)
+      // Version format: 0.1.285-1 -> baseVersion: 0.1.285, buildNumber: 1
+      const lastDashIndex = version.lastIndexOf('-');
+      const baseVersion = version.substring(0, lastDashIndex);
+      const downloadUrl = `${VIRTIO_ARCHIVE_URL}virtio-win-${version}/virtio-win-${baseVersion}.iso`;
+
+      // Check if already exists
+      let redownload = false;
+      try {
+        await fs.access(isoPath);
+        redownload = true;
+      } catch (e) {
+        // File doesn't exist
+      }
+
+      // Start download in background using wget
+      const downloadProcess = spawn('wget', [
+        '-q',
+        '-O', isoPath,
+        downloadUrl
+      ], {
+        detached: true,
+        stdio: 'ignore'
+      });
+
+      downloadProcess.unref();
+
+      // Monitor download completion in background
+      downloadProcess.on('close', async (code) => {
+        if (code === 0) {
+          await this._sendNotification(
+            'VMs',
+            `Download of VirtIO ISO ${version} finished`,
+            'normal'
+          );
+        } else {
+          // Clean up failed download
+          try {
+            await fs.unlink(isoPath);
+          } catch (e) {
+            // Ignore
+          }
+          await this._sendNotification(
+            'VMs',
+            `Download of VirtIO ISO ${version} failed`,
+            'warning'
+          );
+        }
+      });
+
+      return {
+        success: true,
+        message: redownload
+          ? `Redownloading VirtIO ISO ${version}`
+          : `Download of VirtIO ISO ${version} started`,
+        version,
+        path: isoPath
+      };
+    } catch (error) {
+      throw new Error(`Failed to download VirtIO ISO: ${error.message}`);
+    }
+  }
+
+  /**
+   * Cleanup old VirtIO ISOs - keeps only the newest version
+   * @returns {Promise<Object>} Cleanup result
+   */
+  async cleanupVirtioIsos() {
+    try {
+      const versions = await this.getInstalledVirtioVersions();
+
+      if (versions.length === 0) {
+        return {
+          success: true,
+          message: 'No VirtIO ISOs installed',
+          kept: null,
+          deleted: []
+        };
+      }
+
+      if (versions.length === 1) {
+        return {
+          success: true,
+          message: 'Only one VirtIO ISO installed, nothing to cleanup',
+          kept: versions[0],
+          deleted: []
+        };
+      }
+
+      // Versions are already sorted newest first
+      const newest = versions[0];
+      const toDelete = versions.slice(1);
+      const deleted = [];
+
+      for (const version of toDelete) {
+        const isoPath = path.join(VIRTIO_ISO_DIR, `${version}.iso`);
+        try {
+          await fs.unlink(isoPath);
+          deleted.push(version);
+        } catch (e) {
+          // Ignore deletion errors
+        }
+      }
+
+      return {
+        success: true,
+        message: `Cleanup completed, kept ${newest}`,
+        kept: newest,
+        deleted
+      };
+    } catch (error) {
+      throw new Error(`Failed to cleanup VirtIO ISOs: ${error.message}`);
     }
   }
 }
