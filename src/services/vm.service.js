@@ -453,10 +453,11 @@ class VmService {
    */
   async getVmCapabilities() {
     try {
-      const [machines, networks, virtioVersions] = await Promise.all([
+      const [machines, networks, virtioVersions, vmSettings] = await Promise.all([
         this.getQemuMachines(),
         this.getNetworkInterfaces(),
-        this.getInstalledVirtioVersions().catch(() => [])
+        this.getInstalledVirtioVersions().catch(() => []),
+        getMosService().getVmSettings().catch(() => ({}))
       ]);
 
       // Check which BIOS files exist
@@ -477,6 +478,7 @@ class VmService {
       }));
 
       return {
+        vdisk_directory: vmSettings.vdisk_directory || null,
         qemuPath: this.QEMU_PATH,
         libvirtPath: this.LIBVIRT_QEMU_PATH,
         biosTypes: this.VALID_BIOS_TYPES,
