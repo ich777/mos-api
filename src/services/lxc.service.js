@@ -123,7 +123,8 @@ class LxcService {
           unprivileged,
           distribution,
           description,
-          custom_icon: this.hasCustomIcon(name)
+          custom_icon: this.hasCustomIcon(name),
+          config: `/var/lib/lxc/${name}/config`
         });
       }
 
