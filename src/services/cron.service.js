@@ -773,35 +773,45 @@ class CronService {
         return false;
       }
 
-      // Use pgrep to check if the process is running
-      // -f searches the full command line
-      // Exit code: 0 if processes found, 1 if none found
       try {
-        const { stdout } = await execPromise(`pgrep -f "${searchPattern}"`);
+        // Use ps aux with grep to find processes
+        // grep -F uses fixed string matching (no regex interpretation)
+        // Multiple grep -v to exclude:
+        // - grep itself (appears in process list while running)
+        // - ps aux command
+        // - This Node.js process checking the status
+        const { stdout } = await execPromise(
+          `ps aux | grep -F "${searchPattern}" | grep -v "grep -F" | grep -v "ps aux" | grep -v "${process.pid}"`
+        );
 
-        // If pgrep finds processes, stdout will contain PIDs (one per line)
-        const pids = stdout.trim().split('\n').filter(pid => pid.length > 0);
+        // Parse the output - each line is a process
+        const lines = stdout.trim().split('\n').filter(line => {
+          if (!line || line.length === 0) return false;
 
-        // Get our own PID and parent PIDs to exclude them
-        const currentPid = process.pid;
+          // Additional filtering: Make sure the line actually contains our script path
+          // and is running bash/sh (not just any process that happens to have the path in args)
+          const lowerLine = line.toLowerCase();
+          const isActualScript = (
+            lowerLine.includes('bash') ||
+            lowerLine.includes('/bin/sh') ||
+            lowerLine.includes('sleep') ||  // Long-running scripts often have sleep
+            line.includes(searchPattern)
+          );
 
-        // Filter out:
-        // 1. The current Node.js process (API server)
-        // 2. Any empty PIDs
-        const validPids = pids.filter(pid => {
-          const pidNum = parseInt(pid, 10);
-          return !isNaN(pidNum) && pidNum !== currentPid;
+          return isActualScript;
         });
 
-        // If we still have PIDs left after filtering, the job is running
-        return validPids.length > 0;
+        return lines.length > 0;
       } catch (error) {
-        // pgrep returns exit code 1 when no processes are found
-        // This is expected and means the job is not running
-        if (error.code === 1) {
+        // grep returns exit code 1 when no matches found - this is expected
+        if (error.code === 1 || (error.stderr && error.stderr === '')) {
           return false;
         }
-        throw error;
+        // Only log unexpected errors
+        if (error.code !== 1) {
+          console.warn(`Unexpected error in _isJobRunning: ${error.message}`);
+        }
+        return false;
       }
     } catch (error) {
       console.warn(`Warning: Could not check if job is running: ${error.message}`);
@@ -858,6 +868,38 @@ class CronService {
   }
 
   /**
+   * Gets the PIDs of processes running a specific job
+   * @param {Object} job - Cron job object
+   * @returns {Promise<Array<number>>} Array of PIDs
+   * @private
+   */
+  async _getJobPids(job) {
+    try {
+      const searchPattern = this._getProcessSearchPattern(job);
+      if (!searchPattern) {
+        return [];
+      }
+
+      const { stdout } = await execPromise(
+        `ps aux | grep -F "${searchPattern}" | grep -v "grep -F" | grep -v "ps aux" | grep -v "${process.pid}" | awk '{print $2}'`
+      );
+
+      const pids = stdout.trim().split('\n')
+        .filter(pid => pid && pid.length > 0)
+        .map(pid => parseInt(pid, 10))
+        .filter(pid => !isNaN(pid) && pid !== process.pid);
+
+      return pids;
+    } catch (error) {
+      // grep returns exit code 1 when no matches found
+      if (error.code === 1) {
+        return [];
+      }
+      return [];
+    }
+  }
+
+  /**
    * Stops a running cron job
    * @param {string} identifier - ID or name of the Cron-Job
    * @returns {Promise<Object>} Stopped job
@@ -869,24 +911,35 @@ class CronService {
         throw new Error(`Cron-Job with ID/Name "${identifier}" not found`);
       }
 
-      // Check if the job is running
-      if (!await this._isJobRunning(job)) {
+      // Check if the job is running and get PIDs
+      const pids = await this._getJobPids(job);
+
+      if (pids.length === 0) {
         throw new Error(`Cron-Job "${job.name}" is not currently running`);
       }
 
-      // Find and kill the process
-      const searchPattern = this._getProcessSearchPattern(job);
-
-      if (!searchPattern) {
-        throw new Error('Cannot determine process to stop');
+      // Kill each PID individually for precise control
+      for (const pid of pids) {
+        try {
+          await execPromise(`kill ${pid}`);
+        } catch (error) {
+          // Process might have already terminated
+          console.warn(`Warning: Could not kill PID ${pid}: ${error.message}`);
+        }
       }
-
-      // Use pkill to terminate the process
-      // -f searches the full command line
-      await execPromise(`pkill -f "${searchPattern}"`);
 
       // Give it a moment to terminate
       await new Promise(resolve => setTimeout(resolve, 500));
+
+      // If processes are still running, try SIGKILL
+      const remainingPids = await this._getJobPids(job);
+      for (const pid of remainingPids) {
+        try {
+          await execPromise(`kill -9 ${pid}`);
+        } catch (error) {
+          // Ignore errors
+        }
+      }
 
       // Get the status after stopping
       const status = await this._getJobStatus(job);
