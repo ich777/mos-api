@@ -670,4 +670,566 @@ router.put('/machines/:name/autostart', async (req, res) => {
   }
 });
 
+// ============================================================
+// QEMU Capabilities & System Info
+// ============================================================
+
+/**
+ * @swagger
+ * /vm/machinetypes:
+ *   get:
+ *     summary: Get available QEMU machine types
+ *     description: |
+ *       Returns list of available machine types (pc-i440fx and pc-q35 only).
+ *       Sorted with i440fx alias first, then i440fx versions descending, then q35 alias, then q35 versions descending.
+ *     tags: [VM]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: List of available QEMU machine types
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: object
+ *                 properties:
+ *                   name:
+ *                     type: string
+ *                     description: Machine type name (use this in platform field when creating VM)
+ *                     example: "i440fx"
+ *                   description:
+ *                     type: string
+ *                     example: "Standard PC (i440FX + PIIX, 1996) (alias of pc-i440fx-10.1)"
+ */
+router.get('/machinetypes', async (req, res) => {
+  try {
+    const machines = await vmService.getQemuMachines();
+    res.json(machines);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /vm/capabilities:
+ *   get:
+ *     summary: Get VM capabilities
+ *     description: Returns available BIOS types, disk options, network options, and machine types
+ *     tags: [VM]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: VM capabilities and available resources
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 qemuPath:
+ *                   type: string
+ *                   example: "/usr/bin/qemu-system-x86_64"
+ *                 libvirtPath:
+ *                   type: string
+ *                   example: "/etc/libvirt/qemu"
+ *                 biosTypes:
+ *                   type: array
+ *                   items:
+ *                     type: string
+ *                   example: ["seabios", "ovmf", "ovmf-tpm"]
+ *                 biosFiles:
+ *                   type: object
+ *                   description: BIOS file availability
+ *                 diskBuses:
+ *                   type: array
+ *                   items:
+ *                     type: string
+ *                   example: ["virtio", "sata", "usb", "scsi", "ide"]
+ *                 diskFormats:
+ *                   type: array
+ *                   items:
+ *                     type: string
+ *                   example: ["qcow2", "raw"]
+ *                 networkTypes:
+ *                   type: array
+ *                   items:
+ *                     type: string
+ *                   example: ["bridge", "macvtap", "network"]
+ *                 networkModels:
+ *                   type: array
+ *                   items:
+ *                     type: string
+ *                   example: ["virtio", "e1000", "rtl8139"]
+ *                 graphicsTypes:
+ *                   type: array
+ *                   items:
+ *                     type: string
+ *                   example: ["vnc", "spice", "none"]
+ *                 machines:
+ *                   type: array
+ *                   description: Available QEMU machine types
+ *                 networks:
+ *                   type: object
+ *                   properties:
+ *                     bridges:
+ *                       type: array
+ *                       items:
+ *                         type: string
+ *                       example: ["br0", "docker0"]
+ *                     libvirtNetworks:
+ *                       type: array
+ *                       items:
+ *                         type: string
+ *                       example: ["default"]
+ */
+router.get('/capabilities', async (req, res) => {
+  try {
+    const capabilities = await vmService.getVmCapabilities();
+    res.json(capabilities);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================
+// VM Creation & Deletion
+// ============================================================
+
+/**
+ * @swagger
+ * /vm/machines:
+ *   post:
+ *     summary: Create a new virtual machine
+ *     description: Create a new VM with the specified configuration. Disks are automatically created if they don't exist and a size is specified.
+ *     tags: [VM]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - name
+ *             properties:
+ *               name:
+ *                 type: string
+ *                 description: VM name (letters, numbers, underscores, hyphens only)
+ *               memory:
+ *                 type: string
+ *                 description: Memory size. Supports units like "4G", "4GB", "4GiB", "512M", "512MB" or plain number in MiB
+ *                 example: "4G"
+ *                 default: 1024
+ *               cpus:
+ *                 type: integer
+ *                 description: Number of vCPUs
+ *                 default: 1
+ *               cpuPins:
+ *                 type: array
+ *                 description: Host CPU cores to pin each vCPU to (e.g., [0, 10, 2, 12] pins vCPU0->core0, vCPU1->core10, etc.)
+ *                 items:
+ *                   type: integer
+ *                 example: [0, 10, 2, 12]
+ *               platform:
+ *                 type: string
+ *                 description: Machine type - use 'i440fx' or 'q35' for latest version, or specific like 'pc-q35-9.2'. Note - q35 is recommended for modern systems.
+ *                 default: q35
+ *               bios:
+ *                 type: string
+ *                 enum: [seabios, ovmf, ovmf-tpm]
+ *                 description: BIOS type. Note - q35 platform should use 'ovmf' or 'ovmf-tpm', not seabios. Use seabios only with i440fx.
+ *                 default: ovmf
+ *               disks:
+ *                 type: array
+ *                 description: Disks are auto-created if source doesn't exist and size is provided
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     type:
+ *                       type: string
+ *                       enum: [virtio, sata, usb, scsi, ide]
+ *                     source:
+ *                       type: string
+ *                       description: Path to disk file
+ *                     size:
+ *                       type: string
+ *                       description: Disk size (e.g., "50G") - only needed if disk should be created
+ *                     format:
+ *                       type: string
+ *                       enum: [qcow2, raw]
+ *                     boot_order:
+ *                       type: integer
+ *               cdroms:
+ *                 type: array
+ *                 description: CD-ROM/ISO drives
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     source:
+ *                       type: string
+ *                       description: Path to ISO file (optional - can be empty for ejected drive)
+ *                     bus:
+ *                       type: string
+ *                       enum: [sata, ide]
+ *                       default: sata
+ *                     boot_order:
+ *                       type: integer
+ *               networks:
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     type:
+ *                       type: string
+ *                       enum: [bridge, macvtap, network]
+ *                     source:
+ *                       type: string
+ *                     model:
+ *                       type: string
+ *                       enum: [virtio, e1000, rtl8139]
+ *                     mac:
+ *                       type: string
+ *               graphics:
+ *                 type: object
+ *                 properties:
+ *                   type:
+ *                     type: string
+ *                     enum: [vnc, spice, none]
+ *                   port:
+ *                     type: integer
+ *                     nullable: true
+ *                     description: VNC/Spice port. Use null for autoport (recommended).
+ *                     default: null
+ *                   listen:
+ *                     type: string
+ *                     default: "0.0.0.0"
+ *               hostdevices:
+ *                 type: array
+ *                 description: PCI passthrough devices
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     address:
+ *                       type: string
+ *                       description: PCI address (e.g., "0000:01:00.0")
+ *                       example: "0000:01:00.0"
+ *               usbdevices:
+ *                 type: array
+ *                 description: USB passthrough devices
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     vendor:
+ *                       type: string
+ *                       description: USB vendor ID with 0x prefix
+ *                       example: "0x8564"
+ *                     product:
+ *                       type: string
+ *                       description: USB product ID with 0x prefix
+ *                       example: "0x1000"
+ *     responses:
+ *       200:
+ *         description: VM created successfully
+ *       400:
+ *         description: Invalid configuration
+ *       500:
+ *         description: Failed to create VM
+ */
+router.post('/machines', async (req, res) => {
+  try {
+    const config = req.body;
+
+    if (!config.name) {
+      return res.status(400).json({ error: 'VM name is required' });
+    }
+
+    const result = await vmService.createVm(config);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /vm/machines/{name}:
+ *   delete:
+ *     summary: Delete a virtual machine
+ *     description: Delete a VM and optionally remove its disk files. NVRAM is kept by default to preserve TPM/UEFI state.
+ *     tags: [VM]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: name
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: removeDisks
+ *         schema:
+ *           type: boolean
+ *         description: Whether to remove associated disk files
+ *       - in: query
+ *         name: removeNvram
+ *         schema:
+ *           type: boolean
+ *         description: Whether to remove NVRAM (default false - keeps NVRAM for TPM/UEFI VMs)
+ *     responses:
+ *       200:
+ *         description: VM deleted successfully
+ *       500:
+ *         description: Failed to delete VM
+ */
+router.delete('/machines/:name', async (req, res) => {
+  try {
+    const { name } = req.params;
+    const options = {
+      removeDisks: req.query.removeDisks === 'true',
+      removeNvram: req.query.removeNvram === 'true'
+    };
+    const result = await vmService.deleteVm(name, options);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================
+// XML Management
+// ============================================================
+
+/**
+ * @swagger
+ * /vm/machines/{name}/xml:
+ *   get:
+ *     summary: Get raw VM XML
+ *     description: Returns the libvirt XML configuration for a VM wrapped in JSON
+ *     tags: [VM]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: name
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: VM XML wrapped in JSON
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 xml:
+ *                   type: string
+ */
+router.get('/machines/:name/xml', async (req, res) => {
+  try {
+    const { name } = req.params;
+    const xml = await vmService.getVmXml(name);
+    res.json({ xml });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /vm/machines/{name}/xml:
+ *   put:
+ *     summary: Update VM XML directly
+ *     description: Replace the VM's XML configuration. VM must be stopped.
+ *     tags: [VM]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: name
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: validate
+ *         schema:
+ *           type: boolean
+ *           default: true
+ *         description: Whether to validate XML before applying
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - xml
+ *             properties:
+ *               xml:
+ *                 type: string
+ *                 description: The VM XML configuration
+ *     responses:
+ *       200:
+ *         description: XML updated successfully
+ *       400:
+ *         description: VM is running or XML is invalid
+ *       500:
+ *         description: Failed to update XML
+ */
+router.put('/machines/:name/xml', async (req, res) => {
+  try {
+    const { name } = req.params;
+    const validate = req.query.validate !== 'false';
+    const { xml } = req.body;
+
+    if (!xml) {
+      return res.status(400).json({ error: 'xml field is required in request body' });
+    }
+
+    const result = await vmService.updateVmXml(name, xml, validate);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /vm/xml/validate:
+ *   post:
+ *     summary: Validate VM XML
+ *     description: Validate XML without applying it
+ *     tags: [VM]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - xml
+ *             properties:
+ *               xml:
+ *                 type: string
+ *                 description: The VM XML to validate
+ *     responses:
+ *       200:
+ *         description: Validation result
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 valid:
+ *                   type: boolean
+ *                 message:
+ *                   type: string
+ */
+router.post('/xml/validate', async (req, res) => {
+  try {
+    const { xml } = req.body;
+
+    if (!xml) {
+      return res.status(400).json({ error: 'xml field is required in request body' });
+    }
+
+    const result = await vmService.validateVmXml(xml);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================
+// Simplified Config
+// ============================================================
+
+/**
+ * @swagger
+ * /vm/machines/{name}/config:
+ *   get:
+ *     summary: Get simplified VM configuration
+ *     description: Returns parsed VM configuration in a simplified format
+ *     tags: [VM]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: name
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Simplified VM configuration
+ */
+router.get('/machines/:name/config', async (req, res) => {
+  try {
+    const { name } = req.params;
+    const config = await vmService.getVmConfig(name, req.user);
+    res.json(config);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /vm/machines/{name}/config:
+ *   put:
+ *     summary: Update VM with simplified configuration
+ *     description: Update VM configuration using simplified format. VM must be stopped.
+ *     tags: [VM]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: name
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               memory:
+ *                 type: integer
+ *               cpus:
+ *                 type: integer
+ *               platform:
+ *                 type: string
+ *               bios:
+ *                 type: string
+ *               disks:
+ *                 type: array
+ *               networks:
+ *                 type: array
+ *               graphics:
+ *                 type: object
+ *     responses:
+ *       200:
+ *         description: Configuration updated successfully
+ *       500:
+ *         description: Failed to update configuration
+ */
+router.put('/machines/:name/config', async (req, res) => {
+  try {
+    const { name } = req.params;
+    const updates = req.body;
+    const result = await vmService.updateVmConfig(name, updates);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 module.exports = router;
