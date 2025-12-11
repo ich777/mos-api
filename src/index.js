@@ -304,9 +304,9 @@ async function startServer() {
   // Initialize system load WebSocket manager with system namespace
   // Pass poolsService and disksService for dashboard pools performance monitoring
   const systemLoadWebSocketManager = new SystemLoadWebSocketManager(
-    systemNamespace, 
-    systemService, 
-    poolsServiceInstance, 
+    systemNamespace,
+    systemService,
+    poolsServiceInstance,
     disksServiceInstance
   );
 

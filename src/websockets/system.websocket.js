@@ -338,7 +338,7 @@ class SystemLoadWebSocketManager {
       // Add performance and temperature data to each disk and pool total
       const poolsWithData = await Promise.all(pools.map(async pool => {
         const enrichedPool = { ...pool };
-        
+
         if (this.disksService) {
           // Add performance + temperature to data_devices
           if (enrichedPool.data_devices) {
@@ -346,7 +346,7 @@ class SystemLoadWebSocketManager {
               enrichedPool.data_devices.map(async disk => {
                 const perf = this.disksService.getDiskThroughput(disk.device, user);
                 const enrichedDisk = { ...disk, performance: perf };
-                
+
                 // Add temperature only if disk is active (won't wake standby disks)
                 if (disk.powerStatus === 'active') {
                   const tempData = await this.disksService.getDiskTemperature(disk.device);
@@ -354,19 +354,19 @@ class SystemLoadWebSocketManager {
                 } else {
                   enrichedDisk.temperature = null;
                 }
-                
+
                 return enrichedDisk;
               })
             );
           }
-          
+
           // Add performance + temperature to parity_devices
           if (enrichedPool.parity_devices) {
             enrichedPool.parity_devices = await Promise.all(
               enrichedPool.parity_devices.map(async disk => {
                 const perf = this.disksService.getDiskThroughput(disk.device, user);
                 const enrichedDisk = { ...disk, performance: perf };
-                
+
                 // Add temperature only if disk is active
                 if (disk.powerStatus === 'active') {
                   const tempData = await this.disksService.getDiskTemperature(disk.device);
@@ -374,7 +374,7 @@ class SystemLoadWebSocketManager {
                 } else {
                   enrichedDisk.temperature = null;
                 }
-                
+
                 return enrichedDisk;
               })
             );
@@ -385,13 +385,13 @@ class SystemLoadWebSocketManager {
           enrichedPool.performance = devices.length > 0
             ? this.disksService.getPoolThroughput(devices, user)
             : null;
-          
+
           // Remove disks array from pool performance (already on each disk)
           if (enrichedPool.performance) {
             delete enrichedPool.performance.disks;
           }
         }
-        
+
         return enrichedPool;
       }));
 
@@ -516,7 +516,7 @@ class SystemLoadWebSocketManager {
         for (const device of devices) {
           const baseDiskPath = this.disksService._getBaseDisk(device);
           const baseDisk = baseDiskPath.replace('/dev/', '');
-          
+
           // Skip duplicates within the same pool
           if (temperatures.some(t => t.device === baseDisk)) continue;
 
@@ -595,7 +595,7 @@ class SystemLoadWebSocketManager {
           const poolPerf = devices.length > 0
             ? this.disksService.getPoolThroughput(devices, user)
             : null;
-          
+
           if (poolPerf) {
             delete poolPerf.disks;
           }

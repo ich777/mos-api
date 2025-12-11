@@ -82,6 +82,9 @@ class DockerWebSocketManager extends EventEmitter {
           case 'compose-delete':
             await this.executeComposeDelete(operationId, params);
             break;
+          case 'compose-upgrade':
+            await this.executeComposeUpgrade(operationId, params);
+            break;
           default:
             this.sendUpdate(socket, operationId, 'error', {
               message: `Unknown operation: ${operation}`
@@ -203,28 +206,48 @@ class DockerWebSocketManager extends EventEmitter {
     try {
       // If no specific container name is given and not forced, only update containers with available updates
       if (!name && !force_update) {
+        // Get Docker containers with updates
         const containers = await this.dockerService.getDockerImages();
         const containersWithUpdates = containers.filter(c => c.update_available);
 
-        if (containersWithUpdates.length === 0) {
+        // Get Compose stacks with updates
+        let stacksWithUpdates = [];
+        try {
+          const composeContainers = await this.dockerComposeService._readComposeContainers();
+          stacksWithUpdates = composeContainers.filter(stack => {
+            if (!stack.services) return false;
+            return Object.values(stack.services).some(service =>
+              service.local !== service.remote
+            );
+          });
+        } catch (err) {
+          // compose-containers file doesn't exist or error reading
+        }
+
+        const totalUpdates = containersWithUpdates.length + stacksWithUpdates.length;
+
+        if (totalUpdates === 0) {
           this.sendUpdate(null, operationId, 'completed', {
             success: true,
-            message: 'No updates available for any container'
+            message: 'No updates available for any container or stack'
           });
           return;
         }
 
         this.sendUpdate(null, operationId, 'running', {
-          output: `Found ${containersWithUpdates.length} container(s) with available updates\n`,
+          output: `Found ${containersWithUpdates.length} container(s) and ${stacksWithUpdates.length} stack(s) with available updates\n`,
           stream: 'stdout'
         });
 
-        // Update each container sequentially
+        let currentItem = 0;
+
+        // Update Docker containers sequentially
         for (let i = 0; i < containersWithUpdates.length; i++) {
+          currentItem++;
           const container = containersWithUpdates[i];
 
           this.sendUpdate(null, operationId, 'running', {
-            output: `\n=== Upgrading container ${i + 1}/${containersWithUpdates.length}: ${container.name} ===\n`,
+            output: `\n=== Upgrading container ${currentItem}/${totalUpdates}: ${container.name} ===\n`,
             stream: 'stdout'
           });
 
@@ -238,9 +261,39 @@ class DockerWebSocketManager extends EventEmitter {
           }
         }
 
+        // Update Compose stacks sequentially
+        for (let i = 0; i < stacksWithUpdates.length; i++) {
+          currentItem++;
+          const stack = stacksWithUpdates[i];
+
+          this.sendUpdate(null, operationId, 'running', {
+            output: `\n=== Upgrading stack ${currentItem}/${totalUpdates}: ${stack.stack} ===\n`,
+            stream: 'stdout'
+          });
+
+          const scriptPath = '/usr/local/bin/mos-update_containers';
+          const forceArg = '""';
+
+          try {
+            await this.executeCommandWithStream(
+              operationId,
+              scriptPath,
+              [stack.stack, forceArg, 'compose'],
+              'compose-upgrade',
+              params
+            );
+
+            // Update compose-containers file after upgrade
+            await this.dockerComposeService._updateStackInComposeContainers(stack.stack);
+          } catch (error) {
+            // Continue with next stack even if one fails
+          }
+        }
+
+        this.activeOperations.delete(operationId);
         this.sendUpdate(null, operationId, 'completed', {
           success: true,
-          message: `Updated ${containersWithUpdates.length} container(s)`
+          message: `Updated ${containersWithUpdates.length} container(s) and ${stacksWithUpdates.length} stack(s)`
         });
       } else {
         // Update specific container or force update all
@@ -251,9 +304,17 @@ class DockerWebSocketManager extends EventEmitter {
         if (force_update) args.push('force_update');
 
         await this.executeCommandWithStream(operationId, scriptPath, args, 'upgrade', params);
+
+        // Send completion manually since 'upgrade' is a managed operation
+        this.activeOperations.delete(operationId);
+        this.sendUpdate(null, operationId, 'completed', {
+          success: true,
+          message: name ? `Container '${name}' upgraded` : 'All containers upgraded'
+        });
       }
 
     } catch (error) {
+      this.activeOperations.delete(operationId);
       this.sendUpdate(null, operationId, 'error', {
         message: `Upgrade failed: ${error.message}`
       });
@@ -261,7 +322,8 @@ class DockerWebSocketManager extends EventEmitter {
   }
 
   /**
-   * Execute Docker group upgrade operation with streaming output for each container
+   * Execute Docker group upgrade operation with streaming output
+   * Automatically detects if group is a Compose stack and handles accordingly
    */
   async executeUpgradeGroup(operationId, params) {
     const { groupId, force_update } = params || {};
@@ -280,60 +342,92 @@ class DockerWebSocketManager extends EventEmitter {
         throw new Error(`Group with ID '${groupId}' not found`);
       }
 
-      // If not forcing update, filter containers to only those with available updates
-      let containersToUpdate = group.containers;
+      const scriptPath = '/usr/local/bin/mos-update_containers';
 
-      if (!force_update) {
-        const allContainers = await this.dockerService.getDockerImages();
-        const containerUpdateMap = {};
-        allContainers.forEach(c => {
-          containerUpdateMap[c.name] = c.update_available;
-        });
-
-        containersToUpdate = group.containers.filter(name => containerUpdateMap[name] === true);
-
-        if (containersToUpdate.length === 0) {
-          this.activeOperations.delete(operationId);
-          this.sendUpdate(null, operationId, 'completed', {
-            success: true,
-            message: 'No updates available for any container in this group'
-          });
-          return;
-        }
-
+      // Check if this is a Compose stack
+      if (group.compose) {
+        // Compose stack - upgrade the whole stack with 'compose' argument
         this.sendUpdate(null, operationId, 'running', {
-          output: `Found ${containersToUpdate.length} of ${group.containers.length} container(s) with available updates\n`,
-          stream: 'stdout'
-        });
-      }
-
-      // Process each container sequentially
-      for (let i = 0; i < containersToUpdate.length; i++) {
-        const containerName = containersToUpdate[i];
-
-        this.sendUpdate(null, operationId, 'running', {
-          output: `\n=== Upgrading container ${i + 1}/${containersToUpdate.length}: ${containerName} ===\n`,
+          output: `Upgrading Compose stack: ${group.name}\n`,
           stream: 'stdout'
         });
 
-        const scriptPath = '/usr/local/bin/mos-update_containers';
-        const args = [containerName];
-        if (force_update) args.push('force_update');
+        const forceArg = force_update ? 'force_update' : '""';
 
         try {
-          await this.executeCommandWithStream(operationId, scriptPath, args, 'upgrade-group', params);
+          await this.executeCommandWithStream(
+            operationId,
+            scriptPath,
+            [group.name, forceArg, 'compose'],
+            'upgrade-group',
+            params
+          );
+
+          // Update compose-containers file after upgrade
+          await this.dockerComposeService._updateStackInComposeContainers(group.name);
         } catch (error) {
-          // Continue with next container even if one fails
+          // Error already handled by executeCommandWithStream
         }
+
+        this.activeOperations.delete(operationId);
+        this.sendUpdate(null, operationId, 'completed', {
+          success: true,
+          message: `Stack '${group.name}' upgraded`
+        });
+
+      } else {
+        // Regular Docker containers - process each container
+        let containersToUpdate = group.containers;
+
+        if (!force_update) {
+          const allContainers = await this.dockerService.getDockerImages();
+          const containerUpdateMap = {};
+          allContainers.forEach(c => {
+            containerUpdateMap[c.name] = c.update_available;
+          });
+
+          containersToUpdate = group.containers.filter(name => containerUpdateMap[name] === true);
+
+          if (containersToUpdate.length === 0) {
+            this.activeOperations.delete(operationId);
+            this.sendUpdate(null, operationId, 'completed', {
+              success: true,
+              message: 'No updates available for any container in this group'
+            });
+            return;
+          }
+
+          this.sendUpdate(null, operationId, 'running', {
+            output: `Found ${containersToUpdate.length} of ${group.containers.length} container(s) with available updates\n`,
+            stream: 'stdout'
+          });
+        }
+
+        // Process each container sequentially
+        for (let i = 0; i < containersToUpdate.length; i++) {
+          const containerName = containersToUpdate[i];
+
+          this.sendUpdate(null, operationId, 'running', {
+            output: `\n=== Upgrading container ${i + 1}/${containersToUpdate.length}: ${containerName} ===\n`,
+            stream: 'stdout'
+          });
+
+          const args = [containerName];
+          if (force_update) args.push('force_update');
+
+          try {
+            await this.executeCommandWithStream(operationId, scriptPath, args, 'upgrade-group', params);
+          } catch (error) {
+            // Continue with next container even if one fails
+          }
+        }
+
+        this.activeOperations.delete(operationId);
+        this.sendUpdate(null, operationId, 'completed', {
+          success: true,
+          message: `Group upgrade completed - updated ${containersToUpdate.length} container(s)`
+        });
       }
-
-      // Remove from active operations and send completion
-      this.activeOperations.delete(operationId);
-
-      this.sendUpdate(null, operationId, 'completed', {
-        success: true,
-        message: `Group upgrade completed - updated ${containersToUpdate.length} container(s)`
-      });
 
     } catch (error) {
       this.activeOperations.delete(operationId);
@@ -514,11 +608,13 @@ class DockerWebSocketManager extends EventEmitter {
         // Remove from active operations for operations that manage themselves
         // Don't auto-delete for: upgrade-group, compose-* (they manage their own lifecycle)
         const managedOperations = [
+          'upgrade',
           'upgrade-group',
           'compose-create-deploy',
           'compose-update-down',
           'compose-update-up',
-          'compose-delete'
+          'compose-delete',
+          'compose-upgrade'
         ];
 
         if (!managedOperations.includes(operationType)) {
@@ -561,11 +657,13 @@ class DockerWebSocketManager extends EventEmitter {
       process.on('error', (error) => {
         // Remove from active operations for operations that manage themselves
         const managedOperations = [
+          'upgrade',
           'upgrade-group',
           'compose-create-deploy',
           'compose-update-down',
           'compose-update-up',
-          'compose-delete'
+          'compose-delete',
+          'compose-upgrade'
         ];
 
         if (!managedOperations.includes(operationType)) {
@@ -798,6 +896,15 @@ class DockerWebSocketManager extends EventEmitter {
         });
       }
 
+      // Update compose-containers file with image SHAs
+      if (containerNames.length > 0) {
+        await this.dockerComposeService._updateStackInComposeContainers(name);
+        this.sendUpdate(null, operationId, 'running', {
+          output: `Updated compose-containers file\n`,
+          stream: 'stdout'
+        });
+      }
+
       // Send completion
       this.activeOperations.delete(operationId);
       this.sendUpdate(null, operationId, 'completed', {
@@ -1006,6 +1113,15 @@ class DockerWebSocketManager extends EventEmitter {
         await this.dockerService.updateGroup(existingGroup.id, {
           containers: containerNames,
           icon: iconPath ? name : existingGroup.icon
+        });
+      }
+
+      // Update compose-containers file with image SHAs
+      if (containerNames.length > 0) {
+        await this.dockerComposeService._updateStackInComposeContainers(name);
+        this.sendUpdate(null, operationId, 'running', {
+          output: `Updated compose-containers file\n`,
+          stream: 'stdout'
         });
       }
 
@@ -1237,6 +1353,13 @@ class DockerWebSocketManager extends EventEmitter {
         });
       }
 
+      // Remove from compose-containers file
+      await this.dockerComposeService._removeStackFromComposeContainers(name);
+      this.sendUpdate(null, operationId, 'running', {
+        output: `Removed from compose-containers file\n`,
+        stream: 'stdout'
+      });
+
       // Send completion
       this.activeOperations.delete(operationId);
       this.sendUpdate(null, operationId, 'completed', {
@@ -1248,6 +1371,80 @@ class DockerWebSocketManager extends EventEmitter {
       this.activeOperations.delete(operationId);
       this.sendUpdate(null, operationId, 'error', {
         message: `Compose delete failed: ${error.message}`
+      });
+    }
+  }
+
+  /**
+   * Execute Docker Compose stack upgrade with streaming output
+   */
+  async executeComposeUpgrade(operationId, params) {
+    const { name, force_update } = params || {};
+
+    if (!name) {
+      this.sendUpdate(null, operationId, 'error', {
+        message: 'Stack name is required for compose-upgrade operation'
+      });
+      return;
+    }
+
+    this.sendUpdate(null, operationId, 'started', {
+      operation: 'compose-upgrade',
+      name,
+      force_update: force_update || false
+    });
+
+    try {
+      this.dockerComposeService._validateStackName(name);
+
+      const stackPath = this.dockerComposeService._getStackPath(name);
+
+      // Check if stack exists
+      try {
+        await require('fs').promises.access(
+          require('path').join(stackPath, 'compose.yaml')
+        );
+      } catch (err) {
+        throw new Error(`Stack '${name}' not found`);
+      }
+
+      this.sendUpdate(null, operationId, 'running', {
+        output: `Upgrading stack '${name}'${force_update ? ' (force)' : ''}...\n`,
+        stream: 'stdout'
+      });
+
+      // Build command: mos-update_containers NAME [force_update|""] compose
+      const scriptPath = '/usr/local/bin/mos-update_containers';
+      const forceArg = force_update ? 'force_update' : '""';
+
+      await this.executeCommandWithStream(
+        operationId,
+        scriptPath,
+        [name, forceArg, 'compose'],
+        'compose-upgrade',
+        params
+      );
+
+      // Update compose-containers file after upgrade
+      await this.dockerComposeService._updateStackInComposeContainers(name);
+
+      this.sendUpdate(null, operationId, 'running', {
+        output: `\nUpdated compose-containers file\n`,
+        stream: 'stdout'
+      });
+
+      // Send completion
+      this.activeOperations.delete(operationId);
+      this.sendUpdate(null, operationId, 'completed', {
+        success: true,
+        stack: name,
+        message: `Stack '${name}' upgraded successfully`
+      });
+
+    } catch (error) {
+      this.activeOperations.delete(operationId);
+      this.sendUpdate(null, operationId, 'error', {
+        message: `Compose upgrade failed: ${error.message}`
       });
     }
   }

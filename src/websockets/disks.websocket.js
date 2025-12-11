@@ -1,12 +1,12 @@
 /**
  * Disks WebSocket Manager
  * Provides real-time disk I/O throughput and temperature monitoring
- * 
+ *
  * Events:
  * - subscribe-disks: Subscribe to disk updates (all or specific devices)
  * - unsubscribe-disks: Unsubscribe from disk updates
  * - get-disks: One-time request for disk data
- * 
+ *
  * Emits:
  * - disks-update: Throughput data (every 2s)
  * - disks-temperature-update: Temperature data (every 5-10s)
@@ -59,7 +59,7 @@ class DisksWebSocketManager {
 
         // Join disks room
         socket.join('disks');
-        console.log(`Client ${socket.id} (${authResult.user.role}) subscribed to disks:`, 
+        console.log(`Client ${socket.id} (${authResult.user.role}) subscribed to disks:`,
           devices.length > 0 ? devices : 'all');
 
         // Ensure disk stats sampling is running
@@ -285,7 +285,7 @@ class DisksWebSocketManager {
 
       try {
         let devices = subscription.devices;
-        
+
         // If no specific devices, get all tracked devices
         if (devices.length === 0) {
           const allDisks = this.disksService.getAllDisksThroughput();

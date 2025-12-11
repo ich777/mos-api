@@ -619,6 +619,59 @@ router.post('/stacks/:name/pull', async (req, res) => {
 
 /**
  * @swagger
+ * /docker/mos/compose/stacks/{name}/upgrade:
+ *   post:
+ *     summary: Upgrade a compose stack to latest images
+ *     description: Pulls latest images and redeploys the stack (admin only)
+ *     tags: [Docker Compose]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: name
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Stack name
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               force_update:
+ *                 type: boolean
+ *                 description: Force update even if no new version available
+ *                 default: false
+ *     responses:
+ *       200:
+ *         description: Stack upgraded successfully
+ *       401:
+ *         description: Not authenticated
+ *       403:
+ *         description: Admin permission required
+ *       404:
+ *         description: Stack not found
+ *       500:
+ *         description: Server error
+ */
+router.post('/stacks/:name/upgrade', async (req, res) => {
+  try {
+    const { name } = req.params;
+    const { force_update } = req.body || {};
+    const result = await dockerComposeService.upgradeStack(name, force_update === true);
+    res.json(result);
+  } catch (error) {
+    if (error.message.includes('not found')) {
+      res.status(404).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
+/**
+ * @swagger
  * /docker/mos/compose/removed:
  *   get:
  *     summary: Get all removed (deleted) compose stacks

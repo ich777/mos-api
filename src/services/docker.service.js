@@ -1020,6 +1020,20 @@ class DockerService {
       // Get running containers ONCE for all groups (performance optimization)
       const runningContainers = await this._getRunningContainers();
 
+      // Load compose-containers data for update_available check (array format)
+      let composeContainersMap = {};
+      try {
+        const composeContainersPath = '/var/lib/docker/mos/compose-containers';
+        const data = await fs.readFile(composeContainersPath, 'utf8');
+        const composeContainersArray = JSON.parse(data);
+        // Convert array to map for quick lookup
+        for (const entry of composeContainersArray) {
+          composeContainersMap[entry.stack] = entry;
+        }
+      } catch (err) {
+        // File doesn't exist or is invalid, use empty object
+      }
+
       // Track if any groups were modified (for cleanup)
       let groupsModified = false;
 
@@ -1045,11 +1059,22 @@ class DockerService {
         ).length;
 
         // Check if any container in the group has an update available
-        // (only relevant for non-compose groups)
-        const updateAvailable = !group.compose && filteredContainers.some(containerName => {
-          const container = containers.find(c => c.name === containerName);
-          return container && container.update_available === true;
-        });
+        let updateAvailable = false;
+        if (group.compose) {
+          // For compose groups, check compose-containers file
+          const stackData = composeContainersMap[group.name];
+          if (stackData && stackData.services) {
+            updateAvailable = Object.values(stackData.services).some(service =>
+              service.local !== service.remote
+            );
+          }
+        } else {
+          // For regular groups, check containers file
+          updateAvailable = filteredContainers.some(containerName => {
+            const container = containers.find(c => c.name === containerName);
+            return container && container.update_available === true;
+          });
+        }
 
         return {
           ...group,

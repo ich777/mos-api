@@ -189,7 +189,7 @@ class DisksService {
       // _getBaseDisk returns /dev/sdj, we need just 'sdj' for the history lookup
       const baseDiskPath = this._getBaseDisk(device);
       const baseDisk = baseDiskPath.replace('/dev/', '');
-      
+
       // Skip if we already processed this base disk
       if (processedDisks.has(baseDisk)) continue;
       processedDisks.add(baseDisk);

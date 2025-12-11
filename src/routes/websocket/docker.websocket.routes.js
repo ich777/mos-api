@@ -64,7 +64,7 @@ const { authenticateToken } = require('../../middleware/auth.middleware');
  *       **Simplified Event System:**
  *
  *       **Events to emit (client → server):**
- *       - `docker` - Start a Docker operation (pull, upgrade, upgrade-group, create, check-updates, compose-create, compose-update, compose-pull, compose-delete)
+ *       - `docker` - Start a Docker operation (pull, upgrade, upgrade-group, create, check-updates, compose-create, compose-update, compose-pull, compose-delete, compose-upgrade)
  *       - `docker-cancel` - Cancel an ongoing operation
  *       - `docker-get-operations` - Get list of active operations
  *
@@ -233,6 +233,17 @@ const { authenticateToken } = require('../../middleware/auth.middleware');
  *       REST Alternative: `DELETE /api/v1/docker/mos/compose/stacks/{name}`
  *       (waits for completion, no streaming)
  *
+ *       Upgrade a compose stack (with live streaming):
+ *       ```javascript
+ *       socket.emit('docker', {
+ *         token: 'your-jwt-token',
+ *         operation: 'compose-upgrade',
+ *         params: { name: 'my-stack', force_update: false }
+ *       });
+ *       ```
+ *       REST Alternative: `POST /api/v1/docker/mos/compose/stacks/{name}/upgrade`
+ *       (waits for completion, no streaming)
+ *
  *       Get active operations after reconnect:
  *       ```javascript
  *       socket.emit('docker-get-operations', { token: 'your-jwt-token' });
@@ -284,7 +295,7 @@ router.get('/websocket/events', (req, res) => {
           description: 'Start a Docker or Docker Compose operation',
           payload: {
             token: 'JWT token (required)',
-            operation: 'pull | upgrade | upgrade-group | create | check-updates | compose-create | compose-update | compose-pull | compose-delete',
+            operation: 'pull | upgrade | upgrade-group | create | check-updates | compose-create | compose-update | compose-pull | compose-delete | compose-upgrade',
             params: 'Operation-specific parameters'
           },
           examples: {
@@ -343,6 +354,11 @@ router.get('/websocket/events', (req, res) => {
               token: 'eyJ...',
               operation: 'compose-delete',
               params: { name: 'my-stack' }
+            },
+            'compose-upgrade': {
+              token: 'eyJ...',
+              operation: 'compose-upgrade',
+              params: { name: 'my-stack', force_update: false }
             }
           }
         },

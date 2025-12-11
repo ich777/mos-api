@@ -312,6 +312,176 @@ class DockerComposeService {
   }
 
   /**
+   * Get path to compose-containers file
+   * @returns {string} Path to compose-containers file
+   */
+  _getComposeContainersPath() {
+    return '/var/lib/docker/mos/compose-containers';
+  }
+
+  /**
+   * Read compose-containers file
+   * @returns {Promise<Array>} Compose containers data as array
+   */
+  async _readComposeContainers() {
+    try {
+      const filePath = this._getComposeContainersPath();
+      const data = await fs.readFile(filePath, 'utf8');
+      return JSON.parse(data);
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        return []; // File doesn't exist, return empty array
+      }
+      throw new Error(`Failed to read compose-containers: ${error.message}`);
+    }
+  }
+
+  /**
+   * Write compose-containers file
+   * @param {Object} data - Compose containers data
+   * @returns {Promise<void>}
+   */
+  async _writeComposeContainers(data) {
+    try {
+      const filePath = this._getComposeContainersPath();
+      const dir = path.dirname(filePath);
+
+      // Ensure directory exists
+      await fs.mkdir(dir, { recursive: true });
+
+      await fs.writeFile(filePath, JSON.stringify(data, null, 2), 'utf8');
+    } catch (error) {
+      throw new Error(`Failed to write compose-containers: ${error.message}`);
+    }
+  }
+
+  /**
+   * Get detailed container info for a stack (container name, image, local sha)
+   * @param {string} stackName - Stack name
+   * @returns {Promise<Object>} Object with service details
+   */
+  async _getStackContainerDetails(stackName) {
+    try {
+      const containerNames = await this._getStackContainers(stackName);
+      const services = {};
+
+      for (const containerName of containerNames) {
+        try {
+          // Get image name from container
+          const { stdout: imageStdout } = await execPromise(
+            `docker inspect --format='{{.Config.Image}}' ${containerName}`
+          );
+          const image = imageStdout.trim();
+
+          // Get local SHA from installed image
+          let localSha = null;
+          try {
+            const { stdout: shaStdout } = await execPromise(
+              `docker image inspect "${image}" --format '{{index .RepoDigests 0}}' | cut -d '@' -f2-`
+            );
+            localSha = shaStdout.trim() || null;
+          } catch (shaErr) {
+            console.warn(`Failed to get local SHA for image ${image}: ${shaErr.message}`);
+          }
+
+          // Extract service name from container name
+          // Format is usually: compose_stackname-servicename-1 (from working dir)
+          // or stackname-servicename-1 or stackname_servicename_1
+          let serviceName = containerName;
+          const prefixes = [
+            `compose_${stackName}-`,
+            `compose_${stackName}_`,
+            `${stackName}-`,
+            `${stackName}_`
+          ];
+          for (const prefix of prefixes) {
+            if (containerName.startsWith(prefix)) {
+              serviceName = containerName.slice(prefix.length);
+              // Remove trailing -1, _1, -2, etc.
+              serviceName = serviceName.replace(/[-_]\d+$/, '');
+              break;
+            }
+          }
+
+          services[serviceName] = {
+            container: containerName,
+            repo: image,
+            local: localSha,
+            remote: localSha // Same as local on create (image was just pulled)
+          };
+        } catch (err) {
+          console.warn(`Failed to get details for container ${containerName}: ${err.message}`);
+        }
+      }
+
+      return services;
+    } catch (error) {
+      throw new Error(`Failed to get stack container details: ${error.message}`);
+    }
+  }
+
+  /**
+   * Update or add a stack in compose-containers file
+   * @param {string} stackName - Stack name
+   * @returns {Promise<void>}
+   */
+  async _updateStackInComposeContainers(stackName) {
+    try {
+      const composeContainers = await this._readComposeContainers();
+      const services = await this._getStackContainerDetails(stackName);
+
+      // Find existing stack entry
+      const existingIndex = composeContainers.findIndex(s => s.stack === stackName);
+
+      // Preserve existing remote SHAs if available
+      if (existingIndex !== -1 && composeContainers[existingIndex].services) {
+        const existingServices = composeContainers[existingIndex].services;
+        for (const [serviceName, serviceData] of Object.entries(services)) {
+          if (existingServices[serviceName] && existingServices[serviceName].remote) {
+            serviceData.remote = existingServices[serviceName].remote;
+          }
+        }
+      }
+
+      const stackEntry = {
+        stack: stackName,
+        services: services
+      };
+
+      if (existingIndex !== -1) {
+        composeContainers[existingIndex] = stackEntry;
+      } else {
+        composeContainers.push(stackEntry);
+      }
+
+      await this._writeComposeContainers(composeContainers);
+    } catch (error) {
+      console.warn(`Failed to update compose-containers for stack ${stackName}: ${error.message}`);
+      // Don't throw - this is not critical for stack operation
+    }
+  }
+
+  /**
+   * Remove a stack from compose-containers file
+   * @param {string} stackName - Stack name
+   * @returns {Promise<void>}
+   */
+  async _removeStackFromComposeContainers(stackName) {
+    try {
+      const composeContainers = await this._readComposeContainers();
+      const index = composeContainers.findIndex(s => s.stack === stackName);
+
+      if (index !== -1) {
+        composeContainers.splice(index, 1);
+        await this._writeComposeContainers(composeContainers);
+      }
+    } catch (error) {
+      console.warn(`Failed to remove stack ${stackName} from compose-containers: ${error.message}`);
+      // Don't throw - this is not critical for stack deletion
+    }
+  }
+
+  /**
    * Deploy a compose stack
    * @param {string} stackName - Stack name
    * @returns {Promise<Object>} Object with stdout and stderr
@@ -481,6 +651,11 @@ class DockerComposeService {
         await dockerService.updateGroup(group.id, {
           containers: containerNames
         });
+      }
+
+      // Update compose-containers file with image SHAs (non-critical)
+      if (containerNames.length > 0) {
+        await this._updateStackInComposeContainers(name);
       }
 
       // Return result (even if deployment failed, files and group were created)
@@ -737,6 +912,11 @@ class DockerComposeService {
         });
       }
 
+      // Update compose-containers file with image SHAs (non-critical)
+      if (containerNames.length > 0) {
+        await this._updateStackInComposeContainers(name);
+      }
+
       // Combine output from down and up operations
       let combinedOutput = '';
       if (removeOutput.stdout || removeOutput.stderr) {
@@ -819,6 +999,9 @@ class DockerComposeService {
       } else {
         warnings.push('No Docker group found for this stack');
       }
+
+      // Remove stack from compose-containers file
+      await this._removeStackFromComposeContainers(name);
 
       const result = {
         success: true,
@@ -1018,6 +1201,55 @@ class DockerComposeService {
       };
     } catch (error) {
       throw new Error(`Failed to pull stack images: ${error.message}`);
+    }
+  }
+
+  /**
+   * Upgrade a compose stack to latest images
+   * @param {string} name - Stack name
+   * @param {boolean} forceUpdate - Force update even if no new version available
+   * @returns {Promise<Object>} Upgrade result
+   */
+  async upgradeStack(name, forceUpdate = false) {
+    try {
+      this._validateStackName(name);
+
+      const stackPath = this._getStackPath(name);
+
+      // Check if stack exists
+      try {
+        await fs.access(path.join(stackPath, 'compose.yaml'));
+      } catch (err) {
+        throw new Error(`Stack '${name}' not found`);
+      }
+
+      // Build command: mos-update_containers NAME [force_update|""] compose
+      const scriptPath = '/usr/local/bin/mos-update_containers';
+      const forceArg = forceUpdate ? 'force_update' : '""';
+      const command = `${scriptPath} ${name} ${forceArg} compose`;
+
+      // Execute upgrade script
+      const { stdout, stderr } = await execPromise(command);
+
+      // Update compose-containers file after upgrade
+      await this._updateStackInComposeContainers(name);
+
+      // Try to parse the output as JSON
+      try {
+        const result = JSON.parse(stdout);
+        if (stderr && stderr.trim() && result.message) {
+          result.message += '\n' + stderr.trim();
+        }
+        return result;
+      } catch (parseError) {
+        let message = stdout.trim();
+        if (stderr && stderr.trim()) {
+          message += '\n' + stderr.trim();
+        }
+        return { success: true, stack: name, message };
+      }
+    } catch (error) {
+      throw new Error(`Failed to upgrade stack: ${error.message}`);
     }
   }
 

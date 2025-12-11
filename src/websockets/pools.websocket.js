@@ -45,7 +45,7 @@ class PoolWebSocketManager {
 
         // Join pools room
         socket.join('pools');
-        console.log(`Client ${socket.id} (${authResult.user.role}) subscribed to pools with filters:`, filters, 
+        console.log(`Client ${socket.id} (${authResult.user.role}) subscribed to pools with filters:`, filters,
           includePerformance ? '(with performance)' : '');
 
         // Start disk stats sampling if performance is requested
@@ -64,8 +64,8 @@ class PoolWebSocketManager {
           this.startPerformanceMonitoring();
         }
 
-        socket.emit('pools-subscription-confirmed', { 
-          interval, 
+        socket.emit('pools-subscription-confirmed', {
+          interval,
           filters,
           includePerformance,
           performanceInterval: includePerformance ? this.performanceInterval : null
