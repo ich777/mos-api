@@ -10,6 +10,360 @@ class DisksService {
     // Cache für Power-Status (verhindert mehrfache smartctl-Aufrufe innerhalb kurzer Zeit)
     this.powerStatusCache = new Map();
     this.powerStatusCacheTTL = 10000; // 10 Sekunden Cache
+
+    // Background I/O Stats Sampling
+    this.diskStatsHistory = new Map(); // device -> { timestamp, readBytes, writeBytes, readSpeed, writeSpeed }
+    this.diskStatsSamplingInterval = null;
+    this.diskStatsSamplingRate = 2000; // 2 seconds
+
+    // Temperature cache (separate from power status)
+    this.temperatureCache = new Map(); // device -> { temperature, timestamp }
+    this.temperatureCacheTTL = 5000; // 5 seconds cache
+  }
+
+  // ============================================================
+  // BACKGROUND I/O STATS SAMPLING
+  // ============================================================
+
+  /**
+   * Start background sampling of disk I/O statistics
+   * Reads /proc/diskstats every 2 seconds and calculates throughput
+   * @param {number} intervalMs - Sampling interval in milliseconds (default: 2000)
+   */
+  startDiskStatsSampling(intervalMs = 2000) {
+    if (this.diskStatsSamplingInterval) {
+      return; // Already running
+    }
+
+    this.diskStatsSamplingRate = intervalMs;
+    // Initial sample
+    this._sampleDiskStats();
+
+    // Start interval
+    this.diskStatsSamplingInterval = setInterval(() => {
+      this._sampleDiskStats();
+    }, intervalMs);
+  }
+
+  /**
+   * Stop background sampling of disk I/O statistics
+   */
+  stopDiskStatsSampling() {
+    if (this.diskStatsSamplingInterval) {
+      clearInterval(this.diskStatsSamplingInterval);
+      this.diskStatsSamplingInterval = null;
+      this.diskStatsHistory.clear();
+      console.log('[DisksService] Stopped disk I/O stats sampling');
+    }
+  }
+
+  /**
+   * Check if disk stats sampling is active
+   * @returns {boolean}
+   */
+  isDiskStatsSamplingActive() {
+    return this.diskStatsSamplingInterval !== null;
+  }
+
+  /**
+   * Internal: Sample all disk stats from /proc/diskstats
+   * @private
+   */
+  async _sampleDiskStats() {
+    try {
+      const statsContent = await fs.readFile('/proc/diskstats', 'utf8');
+      const lines = statsContent.trim().split('\n');
+      const now = Date.now();
+
+      for (const line of lines) {
+        const parts = line.trim().split(/\s+/);
+        if (parts.length < 14) continue;
+
+        const deviceName = parts[2];
+
+        // Skip partitions, loop devices, dm-devices, etc.
+        // Only track physical disks: sd*, nvme*n*, mmc*, md*
+        if (!deviceName.match(/^(sd[a-z]+|nvme\d+n\d+|mmc\w+|md\d+)$/)) {
+          continue;
+        }
+
+        const readBytes = (parseInt(parts[5]) || 0) * 512; // sectors to bytes
+        const writeBytes = (parseInt(parts[9]) || 0) * 512;
+
+        const prev = this.diskStatsHistory.get(deviceName);
+
+        let readSpeed = 0;
+        let writeSpeed = 0;
+
+        if (prev) {
+          const timeDiffSeconds = (now - prev.timestamp) / 1000;
+          if (timeDiffSeconds > 0) {
+            readSpeed = Math.max(0, (readBytes - prev.readBytes) / timeDiffSeconds);
+            writeSpeed = Math.max(0, (writeBytes - prev.writeBytes) / timeDiffSeconds);
+          }
+        }
+
+        this.diskStatsHistory.set(deviceName, {
+          timestamp: now,
+          readBytes,
+          writeBytes,
+          readSpeed,
+          writeSpeed
+        });
+      }
+    } catch (error) {
+      console.error('[DisksService] Error sampling disk stats:', error.message);
+    }
+  }
+
+  /**
+   * Get current throughput for a specific disk
+   * @param {string} device - Device path or name (e.g., '/dev/sda1' or 'sda')
+   * @param {Object} user - User object with byte_format preference
+   * @returns {Object|null} Throughput data or null if not available
+   */
+  getDiskThroughput(device, user = null) {
+    // Map partition to base disk (e.g., sdj1 -> sdj, nvme0n1p1 -> nvme0n1)
+    const baseDiskPath = this._getBaseDisk(device);
+    const baseDisk = baseDiskPath.replace('/dev/', '');
+    const stats = this.diskStatsHistory.get(baseDisk);
+
+    if (!stats) {
+      return null;
+    }
+
+    return {
+      readSpeed: stats.readSpeed,
+      writeSpeed: stats.writeSpeed,
+      readSpeed_human: this.formatSpeed(stats.readSpeed, user),
+      writeSpeed_human: this.formatSpeed(stats.writeSpeed, user),
+      readBytes_total: stats.readBytes,
+      writeBytes_total: stats.writeBytes,
+      readBytes_total_human: this.formatBytes(stats.readBytes, user),
+      writeBytes_total_human: this.formatBytes(stats.writeBytes, user),
+      timestamp: stats.timestamp
+    };
+  }
+
+  /**
+   * Get current throughput for all tracked disks
+   * @param {Object} user - User object with byte_format preference
+   * @returns {Array} Array of throughput data for all disks
+   */
+  getAllDisksThroughput(user = null) {
+    const result = [];
+
+    for (const [deviceName, stats] of this.diskStatsHistory) {
+      result.push({
+        device: deviceName,
+        readSpeed: stats.readSpeed,
+        writeSpeed: stats.writeSpeed,
+        readSpeed_human: this.formatSpeed(stats.readSpeed, user),
+        writeSpeed_human: this.formatSpeed(stats.writeSpeed, user),
+        readBytes_total: stats.readBytes,
+        writeBytes_total: stats.writeBytes,
+        readBytes_total_human: this.formatBytes(stats.readBytes, user),
+        writeBytes_total_human: this.formatBytes(stats.writeBytes, user),
+        timestamp: stats.timestamp
+      });
+    }
+
+    return result;
+  }
+
+  /**
+   * Get cumulative throughput for a pool (sum of all disk speeds)
+   * @param {Array<string>} devices - Array of device paths or names
+   * @param {Object} user - User object with byte_format preference
+   * @returns {Object} Cumulative throughput for the pool
+   */
+  getPoolThroughput(devices, user = null) {
+    let totalReadSpeed = 0;
+    let totalWriteSpeed = 0;
+    let totalReadBytes = 0;
+    let totalWriteBytes = 0;
+    const diskStats = [];
+    const processedDisks = new Set(); // Avoid counting same disk twice
+
+    for (const device of devices) {
+      // _getBaseDisk returns /dev/sdj, we need just 'sdj' for the history lookup
+      const baseDiskPath = this._getBaseDisk(device);
+      const baseDisk = baseDiskPath.replace('/dev/', '');
+      
+      // Skip if we already processed this base disk
+      if (processedDisks.has(baseDisk)) continue;
+      processedDisks.add(baseDisk);
+
+      const stats = this.diskStatsHistory.get(baseDisk);
+
+      if (stats) {
+        totalReadSpeed += stats.readSpeed;
+        totalWriteSpeed += stats.writeSpeed;
+        totalReadBytes += stats.readBytes;
+        totalWriteBytes += stats.writeBytes;
+
+        diskStats.push({
+          device: baseDisk,
+          readSpeed: stats.readSpeed,
+          writeSpeed: stats.writeSpeed,
+          readSpeed_human: this.formatSpeed(stats.readSpeed, user),
+          writeSpeed_human: this.formatSpeed(stats.writeSpeed, user)
+        });
+      }
+    }
+
+    return {
+      readSpeed: totalReadSpeed,
+      writeSpeed: totalWriteSpeed,
+      readSpeed_human: this.formatSpeed(totalReadSpeed, user),
+      writeSpeed_human: this.formatSpeed(totalWriteSpeed, user),
+      readBytes_total: totalReadBytes,
+      writeBytes_total: totalWriteBytes,
+      readBytes_total_human: this.formatBytes(totalReadBytes, user),
+      writeBytes_total_human: this.formatBytes(totalWriteBytes, user),
+      disks: diskStats,
+      timestamp: Date.now()
+    };
+  }
+
+  // ============================================================
+  // DISK TEMPERATURE (with standby-safe check)
+  // ============================================================
+
+  /**
+   * Get disk temperature without waking up standby disks
+   * Uses smartctl -n standby to check power state first
+   * @param {string} device - Device path or name
+   * @returns {Object} Temperature data or null/standby status
+   */
+  async getDiskTemperature(device) {
+    const devicePath = device.startsWith('/dev/') ? device : `/dev/${device}`;
+    const deviceName = device.replace('/dev/', '');
+
+    // Check cache first
+    const cached = this.temperatureCache.get(deviceName);
+    if (cached && (Date.now() - cached.timestamp) < this.temperatureCacheTTL) {
+      return cached.data;
+    }
+
+    try {
+      // NVMe, eMMC, md devices - always active, can query directly
+      if (deviceName.includes('nvme') || deviceName.includes('mmc') || deviceName.match(/^md\d+$/)) {
+        const temp = await this._getSmartTemperature(devicePath);
+        const result = {
+          device: deviceName,
+          temperature: temp,
+          status: 'active',
+          timestamp: Date.now()
+        };
+        this.temperatureCache.set(deviceName, { data: result, timestamp: Date.now() });
+        return result;
+      }
+
+      // For other disks: Use smartctl -n standby to check without waking
+      // This returns temperature if disk is active, or standby status if not
+      const { stdout } = await execPromise(
+        `smartctl -n standby -A ${devicePath} 2>&1 || echo "EXIT_CODE:$?"`
+      );
+
+      // Check if disk is in standby
+      if (stdout.includes('Device is in STANDBY mode') || stdout.includes('EXIT_CODE:2')) {
+        const result = {
+          device: deviceName,
+          temperature: null,
+          status: 'standby',
+          timestamp: Date.now()
+        };
+        this.temperatureCache.set(deviceName, { data: result, timestamp: Date.now() });
+        return result;
+      }
+
+      // Parse temperature from output
+      let temperature = null;
+      const lines = stdout.split('\n');
+      for (const line of lines) {
+        // Standard SATA: "Temperature_Celsius" or "Airflow_Temperature"
+        // Format: "194 Temperature_Celsius 0x0022 100 100 000 Old_age Always - 35"
+        // The RAW_VALUE (last number) is the actual temperature
+        if (line.includes('Temperature_Celsius') || line.includes('Airflow_Temperature')) {
+          // Get the last number on the line (RAW_VALUE)
+          const match = line.match(/(\d+)\s*$/);
+          if (match) {
+            const temp = parseInt(match[1]);
+            // Sanity check: temperature should be reasonable (0-100°C)
+            if (temp >= 0 && temp <= 100) {
+              temperature = temp;
+              break;
+            }
+          }
+        }
+        // NVMe style: "Temperature:" followed by Celsius
+        if (line.includes('Temperature:') && line.includes('Celsius')) {
+          const match = line.match(/(\d+)\s*Celsius/);
+          if (match) {
+            temperature = parseInt(match[1]);
+            break;
+          }
+        }
+      }
+
+      const result = {
+        device: deviceName,
+        temperature,
+        status: 'active',
+        timestamp: Date.now()
+      };
+      this.temperatureCache.set(deviceName, { data: result, timestamp: Date.now() });
+      return result;
+
+    } catch (error) {
+      const result = {
+        device: deviceName,
+        temperature: null,
+        status: 'error',
+        error: error.message,
+        timestamp: Date.now()
+      };
+      this.temperatureCache.set(deviceName, { data: result, timestamp: Date.now() });
+      return result;
+    }
+  }
+
+  /**
+   * Get temperatures for multiple disks
+   * @param {Array<string>} devices - Array of device paths or names
+   * @returns {Promise<Array>} Array of temperature data
+   */
+  async getMultipleDisksTemperature(devices) {
+    const results = await Promise.all(
+      devices.map(device => this.getDiskTemperature(device))
+    );
+    return results;
+  }
+
+  /**
+   * Internal: Get temperature via smartctl (for always-active devices)
+   * @private
+   */
+  async _getSmartTemperature(devicePath) {
+    try {
+      const { stdout } = await execPromise(`smartctl -A ${devicePath} 2>&1`);
+      const lines = stdout.split('\n');
+
+      for (const line of lines) {
+        if (line.includes('Temperature_Celsius') || line.includes('Airflow_Temperature')) {
+          const match = line.match(/\s+(\d+)(?:\s+|$)/);
+          if (match) return parseInt(match[1]);
+        }
+        if (line.includes('Temperature:') && line.includes('Celsius')) {
+          const match = line.match(/(\d+)\s*Celsius/);
+          if (match) return parseInt(match[1]);
+        }
+      }
+      return null;
+    } catch {
+      return null;
+    }
   }
 
   /**

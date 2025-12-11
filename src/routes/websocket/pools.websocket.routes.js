@@ -22,6 +22,11 @@ const { authenticateToken } = require('../../middleware/auth.middleware');
  *           type: string
  *           description: JWT authentication token
  *           example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+ *         includePerformance:
+ *           type: boolean
+ *           description: Include real-time I/O throughput metrics (read/write speed per pool)
+ *           default: false
+ *           example: true
  *         filters:
  *           type: object
  *           description: Pool filters (same as REST API GET /pools)
@@ -40,6 +45,61 @@ const { authenticateToken } = require('../../middleware/auth.middleware');
  *               enum: [mergerfs, btrfs, xfs, ext4]
  *               description: Exclude pools of specific type
  *               example: "btrfs"
+ *     WebSocketPoolsPerformance:
+ *       type: object
+ *       properties:
+ *         pools:
+ *           type: array
+ *           items:
+ *             type: object
+ *             properties:
+ *               poolId:
+ *                 type: string
+ *                 example: "tank"
+ *               poolName:
+ *                 type: string
+ *                 example: "tank"
+ *               performance:
+ *                 type: object
+ *                 properties:
+ *                   readSpeed:
+ *                     type: number
+ *                     description: Read speed in bytes/s
+ *                     example: 157286400
+ *                   writeSpeed:
+ *                     type: number
+ *                     description: Write speed in bytes/s
+ *                     example: 31457280
+ *                   readSpeed_human:
+ *                     type: string
+ *                     description: Human-readable read speed
+ *                     example: "150 MiB/s"
+ *                   writeSpeed_human:
+ *                     type: string
+ *                     description: Human-readable write speed
+ *                     example: "30 MiB/s"
+ *                   readBytes_total:
+ *                     type: number
+ *                     description: Total bytes read since boot
+ *                   writeBytes_total:
+ *                     type: number
+ *                     description: Total bytes written since boot
+ *                   disks:
+ *                     type: array
+ *                     description: Per-disk throughput breakdown
+ *                     items:
+ *                       type: object
+ *                       properties:
+ *                         device:
+ *                           type: string
+ *                           example: "sda"
+ *                         readSpeed:
+ *                           type: number
+ *                         writeSpeed:
+ *                           type: number
+ *         timestamp:
+ *           type: number
+ *           example: 1702296720000
  *     WebSocketPoolsUpdate:
  *       type: array
  *       description: Array of pools (identical structure to GET /pools response)
@@ -117,6 +177,7 @@ const { authenticateToken } = require('../../middleware/auth.middleware');
  *       **Events to listen for (server → client):**
  *
  *       - `pools-update`: Real-time pool data updates
+ *       - `pools-performance-update`: Real-time I/O throughput (if includePerformance=true, every 2s)
  *       - `pools-error`: Error messages
  *       - `pools-subscription-confirmed`: Subscription confirmation
  *       - `pools-unsubscription-confirmed`: Unsubscription confirmation
@@ -188,10 +249,11 @@ router.get('/websocket/events', (req, res) => {
       client_to_server: [
         {
           event: 'subscribe-pools',
-          description: 'Subscribe to real-time pool updates with optional filters',
+          description: 'Subscribe to real-time pool updates with optional filters and performance metrics',
           payload: {
             interval: 30000,
             token: 'JWT token',
+            includePerformance: 'boolean (optional, default: false) - Enable I/O throughput monitoring',
             filters: {
               id: 'specific-pool-id (optional)',
               type: 'mergerfs|btrfs|xfs|ext4 (optional)',
@@ -220,11 +282,21 @@ router.get('/websocket/events', (req, res) => {
           payload: 'Array of pool objects (same as GET /pools)'
         },
         {
+          event: 'pools-performance-update',
+          description: 'Real-time I/O throughput for pools (sent every 2s if includePerformance=true)',
+          payload: {
+            pools: 'Array of { poolId, poolName, performance: { readSpeed, writeSpeed, disks: [...] } }',
+            timestamp: 'Unix timestamp'
+          }
+        },
+        {
           event: 'pools-subscription-confirmed',
           description: 'Confirmation of successful subscription',
           payload: {
             interval: 'Update interval',
-            filters: 'Applied filters'
+            filters: 'Applied filters',
+            includePerformance: 'Whether performance monitoring is enabled',
+            performanceInterval: 'Performance update interval (2000ms if enabled)'
           }
         },
         {

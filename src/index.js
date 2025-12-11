@@ -30,6 +30,7 @@ const poolsWebSocketRoutes = require('./routes/websocket/pools.websocket.routes'
 const systemWebSocketRoutes = require('./routes/websocket/system.websocket.routes');
 const terminalWebSocketRoutes = require('./routes/websocket/terminal.websocket.routes');
 const dockerWebSocketRoutes = require('./routes/websocket/docker.websocket.routes');
+const disksWebSocketRoutes = require('./routes/websocket/disks.websocket.routes');
 
 // Middleware
 const { authenticateToken } = require('./middleware/auth.middleware');
@@ -134,6 +135,7 @@ async function startServer() {
   app.use('/api/v1/system', systemWebSocketRoutes);
   app.use('/api/v1/terminal', terminalWebSocketRoutes);
   app.use('/api/v1/docker', dockerWebSocketRoutes);
+  app.use('/api/v1/disks', disksWebSocketRoutes);
 
   // Error Handling
   app.use(errorHandler);
@@ -251,6 +253,7 @@ async function startServer() {
   const SystemLoadWebSocketManager = require('./websockets/system.websocket');
   const TerminalWebSocketManager = require('./websockets/terminal.websocket');
   const DockerWebSocketManager = require('./websockets/docker.websocket');
+  const DisksWebSocketManager = require('./websockets/disks.websocket');
 
   // Initialize event emitter for service communication
   const EventEmitter = require('events');
@@ -261,6 +264,7 @@ async function startServer() {
   const systemNamespace = io.of('/system');
   const terminalNamespace = io.of('/terminal');
   const dockerNamespace = io.of('/docker');
+  const disksNamespace = io.of('/disks');
 
   // Initialize pool WebSocket manager with pools namespace
   const PoolsService = require('./services/pools.service');
@@ -271,8 +275,8 @@ async function startServer() {
       this.poolsService = new PoolsService(eventEmitter);
     }
 
-    async listPools() {
-      return await this.poolsService.listPools({});
+    async listPools(filters = {}) {
+      return await this.poolsService.listPools(filters);
     }
 
     async getPoolById(id) {
@@ -289,11 +293,22 @@ async function startServer() {
     }
   }
 
+  // Initialize Disks service (shared between pool and disks WebSocket managers)
+  // Note: disks.service exports a singleton instance, not a class
+  const disksServiceInstance = require('./services/disks.service');
+
   const poolsServiceInstance = new PoolsServiceWebSocketWrapper(serviceEventEmitter);
-  const poolWebSocketManager = new PoolWebSocketManager(poolsNamespace, poolsServiceInstance);
+  // Pass disksService to pool WebSocket manager for performance monitoring
+  const poolWebSocketManager = new PoolWebSocketManager(poolsNamespace, poolsServiceInstance, disksServiceInstance);
 
   // Initialize system load WebSocket manager with system namespace
-  const systemLoadWebSocketManager = new SystemLoadWebSocketManager(systemNamespace, systemService);
+  // Pass poolsService and disksService for dashboard pools performance monitoring
+  const systemLoadWebSocketManager = new SystemLoadWebSocketManager(
+    systemNamespace, 
+    systemService, 
+    poolsServiceInstance, 
+    disksServiceInstance
+  );
 
   // Initialize terminal WebSocket manager with terminal namespace
   const terminalWebSocketManager = new TerminalWebSocketManager(terminalNamespace, terminalService);
@@ -301,11 +316,15 @@ async function startServer() {
   // Initialize Docker WebSocket manager with docker namespace
   const dockerWebSocketManager = new DockerWebSocketManager(dockerNamespace, dockerService, dockerComposeService);
 
+  // Initialize Disks WebSocket manager with disks namespace
+  const disksWebSocketManager = new DisksWebSocketManager(disksNamespace, disksServiceInstance);
+
   // Make WebSocket managers available to routes
   app.locals.poolWebSocketManager = poolWebSocketManager;
   app.locals.systemLoadWebSocketManager = systemLoadWebSocketManager;
   app.locals.terminalWebSocketManager = terminalWebSocketManager;
   app.locals.dockerWebSocketManager = dockerWebSocketManager;
+  app.locals.disksWebSocketManager = disksWebSocketManager;
 
   // Setup namespace handlers
   poolsNamespace.on('connection', (socket) => {
@@ -328,6 +347,12 @@ async function startServer() {
   dockerNamespace.on('connection', (socket) => {
     console.info(`Docker WebSocket client connected: ${socket.id}`);
     dockerWebSocketManager.handleConnection(socket);
+  });
+
+  // Disks namespace for disk I/O and temperature monitoring
+  disksNamespace.on('connection', (socket) => {
+    console.info(`Disks WebSocket client connected: ${socket.id}`);
+    disksWebSocketManager.handleConnection(socket);
   });
 
   server.listen(PORT, '0.0.0.0', async () => {

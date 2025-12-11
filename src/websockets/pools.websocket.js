@@ -1,12 +1,17 @@
 
 class PoolWebSocketManager {
-  constructor(io, poolsService) {
+  constructor(io, poolsService, disksService = null) {
     this.io = io;
     this.poolsService = poolsService;
+    this.disksService = disksService;
     this.activeSubscriptions = new Map();
     this.dataCache = new Map();
     this.cacheDuration = 8000; // 8 seconds cache
     this.defaultInterval = 10000; // 10 seconds default update interval
+    this.performanceInterval = 2000; // 2 seconds for performance updates
+
+    // Client preferences: Map<socketId, { includePerformance: boolean, user: Object }>
+    this.clientPreferences = new Map();
   }
 
   /**
@@ -18,7 +23,7 @@ class PoolWebSocketManager {
     // Subscribe to pools with filters (replaces both single pool and all pools)
     socket.on('subscribe-pools', async (data) => {
       try {
-        const { interval = this.defaultInterval, token, filters = {} } = data;
+        const { interval = this.defaultInterval, token, filters = {}, includePerformance = false } = data;
 
         // Authenticate user
         const authResult = await this.authenticateUser(token);
@@ -29,10 +34,24 @@ class PoolWebSocketManager {
 
         socket.userId = authResult.user.userId;
         socket.userRole = authResult.user.role;
+        socket.user = authResult.user;
+
+        // Store client preferences
+        this.clientPreferences.set(socket.id, {
+          includePerformance,
+          user: authResult.user,
+          filters
+        });
 
         // Join pools room
         socket.join('pools');
-        console.log(`Client ${socket.id} (${authResult.user.role}) subscribed to pools with filters:`, filters);
+        console.log(`Client ${socket.id} (${authResult.user.role}) subscribed to pools with filters:`, filters, 
+          includePerformance ? '(with performance)' : '');
+
+        // Start disk stats sampling if performance is requested
+        if (includePerformance && this.disksService && !this.disksService.isDiskStatsSamplingActive()) {
+          this.disksService.startDiskStatsSampling(this.performanceInterval);
+        }
 
         // Send immediate update
         await this.sendPoolsUpdate(socket, false, filters);
@@ -40,7 +59,17 @@ class PoolWebSocketManager {
         // Start monitoring
         this.startPoolsMonitoring(interval, filters);
 
-        socket.emit('pools-subscription-confirmed', { interval, filters });
+        // Start performance monitoring if requested
+        if (includePerformance) {
+          this.startPerformanceMonitoring();
+        }
+
+        socket.emit('pools-subscription-confirmed', { 
+          interval, 
+          filters,
+          includePerformance,
+          performanceInterval: includePerformance ? this.performanceInterval : null
+        });
       } catch (error) {
         console.error('Error in subscribe-pools:', error);
         socket.emit('error', { message: 'Failed to subscribe to pools updates' });
@@ -51,6 +80,7 @@ class PoolWebSocketManager {
     socket.on('unsubscribe-pools', () => {
       try {
         socket.leave('pools');
+        this.clientPreferences.delete(socket.id);
         console.log(`Client ${socket.id} unsubscribed from pools`);
 
         // Check if we should stop monitoring
@@ -84,6 +114,7 @@ class PoolWebSocketManager {
     // Handle disconnect
     socket.on('disconnect', () => {
       console.log(`Client disconnected: ${socket.id}`);
+      this.clientPreferences.delete(socket.id);
       // Socket.io automatically handles room cleanup
       // Check if monitoring needs to be stopped
       this.checkStopPoolsMonitoring();
@@ -148,6 +179,12 @@ class PoolWebSocketManager {
           this.dataCache.delete(key);
         }
       }
+
+      // Stop performance monitoring
+      this.stopPerformanceMonitoring();
+
+      // Clear client preferences
+      this.clientPreferences.clear();
     }
   }
 
@@ -280,6 +317,199 @@ class PoolWebSocketManager {
     }
 
     return stats;
+  }
+
+  // ============================================================
+  // PERFORMANCE MONITORING (I/O throughput for pools)
+  // ============================================================
+
+  /**
+   * Start performance monitoring for pools
+   * Sends pool throughput updates every 2 seconds to clients who requested it
+   */
+  startPerformanceMonitoring() {
+    if (this.activeSubscriptions.has('pools-performance')) {
+      return; // Already running
+    }
+
+    if (!this.disksService) {
+      console.warn('[PoolsWebSocket] DisksService not available, cannot start performance monitoring');
+      return;
+    }
+
+    console.log(`[PoolsWebSocket] Starting performance monitoring (${this.performanceInterval}ms)`);
+
+    const intervalId = setInterval(async () => {
+      try {
+        const room = this.io.adapter.rooms.get('pools');
+        if (!room || room.size === 0) {
+          this.stopPerformanceMonitoring();
+          return;
+        }
+
+        // Check if any client wants performance data
+        let anyClientWantsPerformance = false;
+        for (const [, prefs] of this.clientPreferences) {
+          if (prefs.includePerformance) {
+            anyClientWantsPerformance = true;
+            break;
+          }
+        }
+
+        if (!anyClientWantsPerformance) {
+          this.stopPerformanceMonitoring();
+          return;
+        }
+
+        // Get pools and calculate performance for each
+        await this.broadcastPerformanceUpdates();
+      } catch (error) {
+        console.error('Error in pools performance monitoring:', error);
+      }
+    }, this.performanceInterval);
+
+    this.activeSubscriptions.set('pools-performance', {
+      intervalId,
+      interval: this.performanceInterval,
+      startTime: Date.now(),
+      type: 'performance'
+    });
+  }
+
+  /**
+   * Stop performance monitoring
+   */
+  stopPerformanceMonitoring() {
+    const perfSub = this.activeSubscriptions.get('pools-performance');
+    if (perfSub) {
+      clearInterval(perfSub.intervalId);
+      this.activeSubscriptions.delete('pools-performance');
+      console.log('[PoolsWebSocket] Stopped performance monitoring');
+    }
+  }
+
+  /**
+   * Broadcast performance updates to clients who requested it
+   */
+  async broadcastPerformanceUpdates() {
+    const room = this.io.adapter.rooms.get('pools');
+    if (!room) return;
+
+    try {
+      // Get all pools once
+      const pools = await this.poolsService.listPools({});
+
+      // Calculate performance for each pool
+      const poolsPerformance = [];
+      for (const pool of pools) {
+        // Get all disk devices from the pool
+        const poolDevices = this.extractPoolDevices(pool);
+
+        if (poolDevices.length > 0) {
+          // Get first client's user for formatting (they should all use same format ideally)
+          let user = null;
+          for (const [, prefs] of this.clientPreferences) {
+            if (prefs.includePerformance && prefs.user) {
+              user = prefs.user;
+              break;
+            }
+          }
+
+          const throughput = this.disksService.getPoolThroughput(poolDevices, user);
+
+          poolsPerformance.push({
+            poolId: pool.id || pool.name,
+            poolName: pool.name,
+            performance: throughput
+          });
+        }
+      }
+
+      // Send to each client who requested performance
+      for (const socketId of room) {
+        const socket = this.io.sockets.get(socketId);
+        if (!socket) continue;
+
+        const prefs = this.clientPreferences.get(socketId);
+        if (!prefs || !prefs.includePerformance) continue;
+
+        // Recalculate with client's byte format preference
+        const clientPerformance = poolsPerformance.map(pp => {
+          const throughput = this.disksService.getPoolThroughput(
+            this.extractPoolDevices(pools.find(p => (p.id || p.name) === pp.poolId)),
+            prefs.user
+          );
+          return {
+            poolId: pp.poolId,
+            poolName: pp.poolName,
+            performance: throughput
+          };
+        });
+
+        socket.emit('pools-performance-update', {
+          pools: clientPerformance,
+          timestamp: Date.now()
+        });
+      }
+    } catch (error) {
+      console.error('Error broadcasting performance updates:', error);
+    }
+  }
+
+  /**
+   * Extract disk devices from a pool structure
+   * @param {Object} pool - Pool object
+   * @returns {Array<string>} Array of device paths
+   */
+  extractPoolDevices(pool) {
+    const devices = [];
+
+    if (!pool) return devices;
+
+    // Handle data_devices array (MergerFS/SnapRAID style)
+    if (pool.data_devices && Array.isArray(pool.data_devices)) {
+      for (const disk of pool.data_devices) {
+        if (disk.device) devices.push(disk.device);
+      }
+    }
+
+    // Handle parity_devices array (SnapRAID parity)
+    if (pool.parity_devices && Array.isArray(pool.parity_devices)) {
+      for (const disk of pool.parity_devices) {
+        if (disk.device) devices.push(disk.device);
+      }
+    }
+
+    // Handle disks array
+    if (pool.disks && Array.isArray(pool.disks)) {
+      for (const disk of pool.disks) {
+        if (disk.device) devices.push(disk.device);
+        else if (disk.path) devices.push(disk.path);
+      }
+    }
+
+    // Handle vdevs structure (ZFS-style)
+    if (pool.vdevs && Array.isArray(pool.vdevs)) {
+      for (const vdev of pool.vdevs) {
+        if (vdev.disks && Array.isArray(vdev.disks)) {
+          for (const disk of vdev.disks) {
+            if (disk.device) devices.push(disk.device);
+            else if (disk.path) devices.push(disk.path);
+          }
+        }
+      }
+    }
+
+    // Handle devices array directly
+    if (pool.devices && Array.isArray(pool.devices)) {
+      for (const device of pool.devices) {
+        if (typeof device === 'string') devices.push(device);
+        else if (device.device) devices.push(device.device);
+        else if (device.path) devices.push(device.path);
+      }
+    }
+
+    return devices;
   }
 
   /**

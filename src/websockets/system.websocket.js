@@ -1,7 +1,9 @@
 class SystemLoadWebSocketManager {
-  constructor(io, systemService) {
+  constructor(io, systemService, poolsService = null, disksService = null) {
     this.io = io;
     this.systemService = systemService;
+    this.poolsService = poolsService;
+    this.disksService = disksService;
     this.activeSubscriptions = new Map();
     this.dataCache = new Map();
     this.staticDataCache = new Map();
@@ -18,6 +20,11 @@ class SystemLoadWebSocketManager {
     this.cpuInterval = 1000;
     this.memoryInterval = 8000;
     this.networkInterval = 2000;
+    this.poolsPerformanceInterval = 2000; // 2 seconds for pools performance
+    this.poolsTemperatureInterval = 10000; // 10 seconds for pools temperature
+
+    // Client preferences for pools
+    this.clientPoolsPreferences = new Map(); // socketId -> { includePools, includePerformance }
 
     // Start cache cleanup timer (every 10 minutes)
     setInterval(() => this.cleanupExpiredCaches(), 10 * 60 * 1000);
@@ -29,10 +36,10 @@ class SystemLoadWebSocketManager {
   handleConnection(socket) {
     // Only log when client actually subscribes to system load events
 
-    // Subscribe to system load updates
+    // Subscribe to system load updates (always includes pools + performance)
     socket.on('subscribe-load', async (data) => {
       try {
-        const { token } = data;
+        const { token } = data || {};
 
         // Authenticate user
         const authResult = await this.authenticateUser(token);
@@ -45,20 +52,37 @@ class SystemLoadWebSocketManager {
         socket.userRole = authResult.user.role;
         socket.user = authResult.user;
 
+        // Store user for byte format preferences
+        this.clientPoolsPreferences.set(socket.id, { user: authResult.user });
+
         // Join system load room
         socket.join('system-load');
         console.log(`Client ${socket.id} (${authResult.user.role}) subscribed to system load monitoring`);
 
+        // Start disk stats sampling for pools performance
+        if (this.disksService && !this.disksService.isDiskStatsSamplingActive()) {
+          this.disksService.startDiskStatsSampling(this.poolsPerformanceInterval);
+        }
+
         // Send immediate full update (includes static data)
         await this.sendSystemLoadUpdate(socket, true, true);
 
-        // Start monitoring
+        // Send initial pools data
+        if (this.poolsService) {
+          await this.sendInitialPoolsData(socket);
+        }
+
+        // Start monitoring (CPU/Memory/Network + Pools Performance + Pools Temperature)
         this.startSystemLoadMonitoring();
+        this.startPoolsPerformanceMonitoring();
+        this.startPoolsTemperatureMonitoring();
 
         socket.emit('load-subscription-confirmed', {
           cpuInterval: this.cpuInterval,
           memoryInterval: this.memoryInterval,
-          networkInterval: this.networkInterval
+          networkInterval: this.networkInterval,
+          poolsPerformanceInterval: this.poolsPerformanceInterval,
+          poolsTemperatureInterval: this.poolsTemperatureInterval
         });
       } catch (error) {
         console.error('Error in subscribe-load:', error);
@@ -105,6 +129,7 @@ class SystemLoadWebSocketManager {
       console.log(`Client disconnected: ${socket.id}`);
       // Clean up client tracking
       this.clientStaticDataSent.delete(socket.id);
+      this.clientPoolsPreferences.delete(socket.id);
       // Socket.io automatically handles room cleanup
       // Check if monitoring needs to be stopped
       this.checkStopSystemLoadMonitoring();
@@ -266,12 +291,18 @@ class SystemLoadWebSocketManager {
       this.activeSubscriptions.delete('system-load-network');
     }
 
+    // Stop Pools Performance monitoring
+    this.stopPoolsPerformanceMonitoring();
+    this.stopPoolsTemperatureMonitoring();
+
     // Clear caches
     this.dataCache.delete('cpu-data');
     this.dataCache.delete('memory-data');
     this.dataCache.delete('network-data');
+    this.dataCache.delete('pools-data');
     this.staticDataCache.clear();
     this.clientStaticDataSent.clear();
+    this.clientPoolsPreferences.clear();
 
     // Debug logging
     //console.log('System load monitoring stopped');
@@ -285,6 +316,355 @@ class SystemLoadWebSocketManager {
     if (!room || room.size === 0) {
       this.stopSystemLoadMonitoring();
     }
+  }
+
+  // ============================================================
+  // POOLS PERFORMANCE MONITORING (for Dashboard)
+  // ============================================================
+
+  /**
+   * Send initial pools data to a client (full pool info + performance + temperature per disk)
+   */
+  async sendInitialPoolsData(socket) {
+    if (!this.poolsService) return;
+
+    try {
+      const prefs = this.clientPoolsPreferences.get(socket.id);
+      const user = prefs?.user || socket.user;
+
+      // Get all pools
+      const pools = await this.poolsService.listPools();
+
+      // Add performance and temperature data to each disk and pool total
+      const poolsWithData = await Promise.all(pools.map(async pool => {
+        const enrichedPool = { ...pool };
+        
+        if (this.disksService) {
+          // Add performance + temperature to data_devices
+          if (enrichedPool.data_devices) {
+            enrichedPool.data_devices = await Promise.all(
+              enrichedPool.data_devices.map(async disk => {
+                const perf = this.disksService.getDiskThroughput(disk.device, user);
+                const enrichedDisk = { ...disk, performance: perf };
+                
+                // Add temperature only if disk is active (won't wake standby disks)
+                if (disk.powerStatus === 'active') {
+                  const tempData = await this.disksService.getDiskTemperature(disk.device);
+                  enrichedDisk.temperature = tempData?.temperature || null;
+                } else {
+                  enrichedDisk.temperature = null;
+                }
+                
+                return enrichedDisk;
+              })
+            );
+          }
+          
+          // Add performance + temperature to parity_devices
+          if (enrichedPool.parity_devices) {
+            enrichedPool.parity_devices = await Promise.all(
+              enrichedPool.parity_devices.map(async disk => {
+                const perf = this.disksService.getDiskThroughput(disk.device, user);
+                const enrichedDisk = { ...disk, performance: perf };
+                
+                // Add temperature only if disk is active
+                if (disk.powerStatus === 'active') {
+                  const tempData = await this.disksService.getDiskTemperature(disk.device);
+                  enrichedDisk.temperature = tempData?.temperature || null;
+                } else {
+                  enrichedDisk.temperature = null;
+                }
+                
+                return enrichedDisk;
+              })
+            );
+          }
+
+          // Add pool-level total performance
+          const devices = this.extractPoolDevices(pool);
+          enrichedPool.performance = devices.length > 0
+            ? this.disksService.getPoolThroughput(devices, user)
+            : null;
+          
+          // Remove disks array from pool performance (already on each disk)
+          if (enrichedPool.performance) {
+            delete enrichedPool.performance.disks;
+          }
+        }
+        
+        return enrichedPool;
+      }));
+
+      socket.emit('pools-initial', {
+        pools: poolsWithData,
+        timestamp: Date.now()
+      });
+    } catch (error) {
+      console.error('Error sending initial pools data:', error);
+    }
+  }
+
+  /**
+   * Start pools performance monitoring (every 2s)
+   */
+  startPoolsPerformanceMonitoring() {
+    if (this.activeSubscriptions.has('system-load-pools-performance')) {
+      return; // Already running
+    }
+
+    if (!this.poolsService || !this.disksService) {
+      console.warn('[SystemWebSocket] PoolsService or DisksService not available');
+      return;
+    }
+
+    const intervalId = setInterval(async () => {
+      try {
+        const room = this.io.adapter.rooms.get('system-load');
+        if (!room || room.size === 0) {
+          this.stopPoolsPerformanceMonitoring();
+          return;
+        }
+
+        await this.broadcastPoolsPerformance();
+      } catch (error) {
+        console.error('Error in pools performance monitoring:', error);
+      }
+    }, this.poolsPerformanceInterval);
+
+    this.activeSubscriptions.set('system-load-pools-performance', {
+      intervalId,
+      interval: this.poolsPerformanceInterval,
+      startTime: Date.now(),
+      type: 'pools-performance'
+    });
+  }
+
+  /**
+   * Stop pools performance monitoring
+   */
+  stopPoolsPerformanceMonitoring() {
+    const sub = this.activeSubscriptions.get('system-load-pools-performance');
+    if (sub) {
+      clearInterval(sub.intervalId);
+      this.activeSubscriptions.delete('system-load-pools-performance');
+    }
+  }
+
+  /**
+   * Start pools temperature monitoring (every 10s)
+   */
+  startPoolsTemperatureMonitoring() {
+    if (this.activeSubscriptions.has('system-load-pools-temperature')) {
+      return; // Already running
+    }
+
+    if (!this.poolsService || !this.disksService) {
+      return;
+    }
+
+    const intervalId = setInterval(async () => {
+      try {
+        const room = this.io.adapter.rooms.get('system-load');
+        if (!room || room.size === 0) {
+          this.stopPoolsTemperatureMonitoring();
+          return;
+        }
+
+        await this.broadcastPoolsTemperature();
+      } catch (error) {
+        console.error('Error in pools temperature monitoring:', error);
+      }
+    }, this.poolsTemperatureInterval);
+
+    this.activeSubscriptions.set('system-load-pools-temperature', {
+      intervalId,
+      interval: this.poolsTemperatureInterval,
+      startTime: Date.now(),
+      type: 'pools-temperature'
+    });
+  }
+
+  /**
+   * Stop pools temperature monitoring
+   */
+  stopPoolsTemperatureMonitoring() {
+    const sub = this.activeSubscriptions.get('system-load-pools-temperature');
+    if (sub) {
+      clearInterval(sub.intervalId);
+      this.activeSubscriptions.delete('system-load-pools-temperature');
+    }
+  }
+
+  /**
+   * Broadcast pools temperature updates to all clients
+   */
+  async broadcastPoolsTemperature() {
+    const room = this.io.adapter.rooms.get('system-load');
+    if (!room) return;
+
+    try {
+      // Get all pools once
+      const pools = await this.poolsService.listPools();
+
+      // Collect all unique disks from all pools
+      const poolsTemperatures = [];
+
+      for (const pool of pools) {
+        const devices = this.extractPoolDevices(pool);
+        const temperatures = [];
+
+        for (const device of devices) {
+          const baseDiskPath = this.disksService._getBaseDisk(device);
+          const baseDisk = baseDiskPath.replace('/dev/', '');
+          
+          // Skip duplicates within the same pool
+          if (temperatures.some(t => t.device === baseDisk)) continue;
+
+          const tempData = await this.disksService.getDiskTemperature(baseDisk);
+          temperatures.push({
+            device: baseDisk,
+            temperature: tempData?.temperature || null,
+            status: tempData?.status || 'unknown'
+          });
+        }
+
+        poolsTemperatures.push({
+          id: pool.id || pool.name,
+          name: pool.name,
+          temperatures
+        });
+      }
+
+      // Send to all clients
+      this.io.to('system-load').emit('pools-temperature-update', {
+        pools: poolsTemperatures,
+        timestamp: Date.now()
+      });
+    } catch (error) {
+      console.error('Error broadcasting pools temperature:', error);
+    }
+  }
+
+  /**
+   * Broadcast pools performance updates to all clients
+   * Performance is attached to each disk (data_devices/parity_devices)
+   */
+  async broadcastPoolsPerformance() {
+    const room = this.io.adapter.rooms.get('system-load');
+    if (!room) return;
+
+    try {
+      // Get all pools once
+      const pools = await this.poolsService.listPools();
+
+      // Send to each client
+      for (const socketId of room) {
+        const socket = this.io.sockets.get(socketId);
+        if (!socket) continue;
+
+        const prefs = this.clientPoolsPreferences.get(socketId);
+        const user = prefs?.user || socket.user;
+
+        // Build performance update for each pool
+        const poolsPerformance = pools.map(pool => {
+          const result = {
+            id: pool.id || pool.name,
+            name: pool.name
+          };
+
+          // Add performance per disk in data_devices
+          if (pool.data_devices) {
+            result.data_devices = pool.data_devices.map(disk => ({
+              id: disk.id,
+              device: disk.device,
+              performance: this.disksService.getDiskThroughput(disk.device, user)
+            }));
+          }
+
+          // Add performance per disk in parity_devices
+          if (pool.parity_devices) {
+            result.parity_devices = pool.parity_devices.map(disk => ({
+              id: disk.id,
+              device: disk.device,
+              performance: this.disksService.getDiskThroughput(disk.device, user)
+            }));
+          }
+
+          // Add pool-level total performance (without disks array)
+          const devices = this.extractPoolDevices(pool);
+          const poolPerf = devices.length > 0
+            ? this.disksService.getPoolThroughput(devices, user)
+            : null;
+          
+          if (poolPerf) {
+            delete poolPerf.disks;
+          }
+          result.performance = poolPerf;
+
+          return result;
+        });
+
+        socket.emit('pools-performance-update', {
+          pools: poolsPerformance,
+          timestamp: Date.now()
+        });
+      }
+    } catch (error) {
+      console.error('Error broadcasting pools performance:', error);
+    }
+  }
+
+  /**
+   * Extract disk devices from a pool structure
+   */
+  extractPoolDevices(pool) {
+    const devices = [];
+    if (!pool) return devices;
+
+    // Handle data_devices array (MergerFS/SnapRAID style)
+    if (pool.data_devices && Array.isArray(pool.data_devices)) {
+      for (const disk of pool.data_devices) {
+        if (disk.device) devices.push(disk.device);
+      }
+    }
+
+    // Handle parity_devices array (SnapRAID parity)
+    if (pool.parity_devices && Array.isArray(pool.parity_devices)) {
+      for (const disk of pool.parity_devices) {
+        if (disk.device) devices.push(disk.device);
+      }
+    }
+
+    // Handle disks array
+    if (pool.disks && Array.isArray(pool.disks)) {
+      for (const disk of pool.disks) {
+        if (disk.device) devices.push(disk.device);
+        else if (disk.path) devices.push(disk.path);
+      }
+    }
+
+    // Handle vdevs structure (ZFS-style)
+    if (pool.vdevs && Array.isArray(pool.vdevs)) {
+      for (const vdev of pool.vdevs) {
+        if (vdev.disks && Array.isArray(vdev.disks)) {
+          for (const disk of vdev.disks) {
+            if (disk.device) devices.push(disk.device);
+            else if (disk.path) devices.push(disk.path);
+          }
+        }
+      }
+    }
+
+    // Handle devices array directly
+    if (pool.devices && Array.isArray(pool.devices)) {
+      for (const device of pool.devices) {
+        if (typeof device === 'string') devices.push(device);
+        else if (device.device) devices.push(device.device);
+        else if (device.path) devices.push(device.path);
+      }
+    }
+
+    return devices;
   }
 
   /**

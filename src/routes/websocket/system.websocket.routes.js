@@ -13,15 +13,20 @@ const { authenticateToken } = require('../../middleware/auth.middleware');
  *     WebSocketSystemLoadSubscription:
  *       type: object
  *       properties:
- *         interval:
- *           type: number
- *           description: Update interval in milliseconds
- *           default: 10000
- *           example: 10000
  *         token:
  *           type: string
  *           description: JWT authentication token
  *           example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+ *         includePools:
+ *           type: boolean
+ *           description: Include pools data in initial response
+ *           default: false
+ *           example: true
+ *         includePoolsPerformance:
+ *           type: boolean
+ *           description: Include real-time pools I/O performance updates (every 2s)
+ *           default: false
+ *           example: true
  *     WebSocketSystemLoadUpdate:
  *       type: object
  *       description: System load data (identical structure to GET /system/load response)
@@ -205,7 +210,9 @@ const { authenticateToken } = require('../../middleware/auth.middleware');
  *
  *       **Events to listen for (server → client):**
  *
- *       - `load-update`: Real-time system load data updates
+ *       - `load-update`: Real-time system load data updates (CPU/Memory/Network)
+ *       - `pools-initial`: Initial pools data (if includePools=true)
+ *       - `pools-performance-update`: Real-time pools I/O throughput (if includePoolsPerformance=true, every 2s)
  *       - `load-subscription-confirmed`: Subscription confirmation
  *       - `load-unsubscription-confirmed`: Unsubscription confirmation
  *       - `error`: General error messages
@@ -222,8 +229,16 @@ const { authenticateToken } = require('../../middleware/auth.middleware');
  *       Subscribe to system load updates:
  *       ```
  *       socket.emit('subscribe-load', {
+ *         token: 'your-jwt-token'
+ *       });
+ *       ```
+ *
+ *       Subscribe with pools and performance (for Dashboard):
+ *       ```
+ *       socket.emit('subscribe-load', {
  *         token: 'your-jwt-token',
- *         interval: 10000
+ *         includePools: true,
+ *         includePoolsPerformance: true
  *       });
  *       ```
  *
@@ -276,10 +291,11 @@ router.get('/websocket/events', (req, res) => {
       client_to_server: [
         {
           event: 'subscribe-load',
-          description: 'Subscribe to real-time system load updates',
+          description: 'Subscribe to real-time system load updates with optional pools monitoring',
           payload: {
-            interval: 10000,
-            token: 'JWT token'
+            token: 'JWT token (required)',
+            includePools: 'boolean (optional) - Include pools data in initial response',
+            includePoolsPerformance: 'boolean (optional) - Include real-time pools I/O performance (every 2s)'
           }
         },
         {
@@ -298,14 +314,35 @@ router.get('/websocket/events', (req, res) => {
       server_to_client: [
         {
           event: 'load-update',
-          description: 'Real-time system load data updates (identical to GET /system/load response)',
+          description: 'Real-time system load data updates (CPU/Memory/Network)',
           payload: 'System load object (same as GET /system/load)'
+        },
+        {
+          event: 'pools-initial',
+          description: 'Initial pools data with all details (sent once if includePools=true)',
+          payload: {
+            pools: 'Array of pool objects with optional performance data',
+            timestamp: 'Unix timestamp'
+          }
+        },
+        {
+          event: 'pools-performance-update',
+          description: 'Real-time pools I/O throughput (every 2s if includePoolsPerformance=true)',
+          payload: {
+            pools: 'Array of { id, name, performance: { readSpeed, writeSpeed, ... } }',
+            timestamp: 'Unix timestamp'
+          }
         },
         {
           event: 'load-subscription-confirmed',
           description: 'Confirmation of successful subscription',
           payload: {
-            interval: 'Update interval'
+            cpuInterval: '1000ms',
+            memoryInterval: '8000ms',
+            networkInterval: '2000ms',
+            includePools: 'Whether pools data was requested',
+            includePoolsPerformance: 'Whether pools performance was requested',
+            poolsPerformanceInterval: '2000ms (if enabled)'
           }
         },
         {
@@ -322,8 +359,15 @@ router.get('/websocket/events', (req, res) => {
       subscribe_system_load: {
         event: 'subscribe-load',
         data: {
+          token: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...'
+        }
+      },
+      subscribe_with_pools_dashboard: {
+        event: 'subscribe-load',
+        data: {
           token: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...',
-          interval: 10000
+          includePools: true,
+          includePoolsPerformance: true
         }
       },
       get_immediate_load: {
@@ -332,6 +376,11 @@ router.get('/websocket/events', (req, res) => {
           token: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...'
         }
       }
+    },
+    notes: {
+      dashboard_usage: 'For dashboard, use includePools=true to get initial pool data, and includePoolsPerformance=true for real-time throughput updates',
+      byte_format: 'Human-readable values respect user byte_format preference (binary: MiB, GiB / decimal: MB, GB)',
+      intervals: 'CPU updates every 1s, Memory every 8s, Network every 2s, Pools performance every 2s'
     }
   });
 });

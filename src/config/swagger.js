@@ -22,6 +22,10 @@ const options = {
         description: 'Disk and Storage Management'
       },
       {
+        name: 'Disks WebSocket',
+        description: 'Real-time disk monitoring via WebSocket'
+      },
+      {
         name: 'Pools',
         description: 'Storage Pool Management'
       },
