@@ -423,9 +423,11 @@ class DockerComposeService {
   /**
    * Update or add a stack in compose-containers file
    * @param {string} stackName - Stack name
+   * @param {boolean|null} autostart - Autostart setting (null to preserve existing)
+   * @param {string|null} webui - WebUI URL (null to preserve existing)
    * @returns {Promise<void>}
    */
-  async _updateStackInComposeContainers(stackName) {
+  async _updateStackInComposeContainers(stackName, autostart = null, webui = null) {
     try {
       const composeContainers = await this._readComposeContainers();
       const services = await this._getStackContainerDetails(stackName);
@@ -433,18 +435,35 @@ class DockerComposeService {
       // Find existing stack entry
       const existingIndex = composeContainers.findIndex(s => s.stack === stackName);
 
-      // Preserve existing remote SHAs if available
-      if (existingIndex !== -1 && composeContainers[existingIndex].services) {
-        const existingServices = composeContainers[existingIndex].services;
-        for (const [serviceName, serviceData] of Object.entries(services)) {
-          if (existingServices[serviceName] && existingServices[serviceName].remote) {
-            serviceData.remote = existingServices[serviceName].remote;
+      // Preserve existing remote SHAs, autostart and webui if available
+      let existingAutostart = false; // Default to false
+      let existingWebui = null; // Default to null
+      if (existingIndex !== -1) {
+        if (composeContainers[existingIndex].services) {
+          const existingServices = composeContainers[existingIndex].services;
+          for (const [serviceName, serviceData] of Object.entries(services)) {
+            if (existingServices[serviceName] && existingServices[serviceName].remote) {
+              serviceData.remote = existingServices[serviceName].remote;
+            }
           }
+        }
+        // Preserve existing autostart if not explicitly set
+        if (composeContainers[existingIndex].autostart !== undefined) {
+          existingAutostart = composeContainers[existingIndex].autostart;
+        }
+        // Preserve existing webui if not explicitly set
+        if (composeContainers[existingIndex].webui !== undefined) {
+          existingWebui = composeContainers[existingIndex].webui;
         }
       }
 
+      // Normalize webui: null or empty string means clear
+      const normalizedWebui = (webui === null || webui === '') ? null : webui;
+
       const stackEntry = {
         stack: stackName,
+        autostart: autostart !== null ? autostart : existingAutostart,
+        webui: normalizedWebui !== null ? normalizedWebui : existingWebui,
         services: services
       };
 
@@ -553,9 +572,11 @@ class DockerComposeService {
    * @param {string} yamlContent - compose.yaml content
    * @param {string|null} envContent - .env content (optional)
    * @param {string|null} iconUrl - Icon URL (optional, PNG only)
+   * @param {boolean} autostart - Autostart setting (default: false)
+   * @param {string|null} webui - WebUI URL (optional)
    * @returns {Promise<Object>} Created stack info
    */
-  async createStack(name, yamlContent, envContent = null, iconUrl = null) {
+  async createStack(name, yamlContent, envContent = null, iconUrl = null, autostart = false, webui = null) {
     try {
       // Validate stack name
       this._validateStackName(name);
@@ -653,9 +674,9 @@ class DockerComposeService {
         });
       }
 
-      // Update compose-containers file with image SHAs (non-critical)
+      // Update compose-containers file with image SHAs, autostart and webui (non-critical)
       if (containerNames.length > 0) {
-        await this._updateStackInComposeContainers(name);
+        await this._updateStackInComposeContainers(name, autostart, webui);
       }
 
       // Return result (even if deployment failed, files and group were created)
@@ -665,6 +686,8 @@ class DockerComposeService {
         services: services,
         containers: containerNames,
         iconPath: iconPath,
+        autostart: autostart,
+        webui: webui,
         output: stdout || stderr || ''
       };
 
@@ -715,6 +738,9 @@ class DockerComposeService {
         throw err;
       }
 
+      // Read compose-containers for autostart info
+      const composeContainers = await this._readComposeContainers();
+
       // Read all stack directories from boot
       const entries = await fs.readdir(basePath, { withFileTypes: true });
       const stacks = [];
@@ -748,11 +774,18 @@ class DockerComposeService {
               // No mos.override.yaml, that's ok
             }
 
+            // Get autostart and webui from compose-containers
+            const stackEntry = composeContainers.find(s => s.stack === entry.name);
+            const autostart = stackEntry ? (stackEntry.autostart || false) : false;
+            const webui = stackEntry ? (stackEntry.webui || null) : null;
+
             stacks.push({
               name: entry.name,
               services: services,
               containers: containers,
               iconUrl: iconUrl,
+              autostart: autostart,
+              webui: webui,
               running: containers.length > 0
             });
           } catch (err) {
@@ -814,6 +847,12 @@ class DockerComposeService {
       // Get containers from working directory
       const containers = await this._getStackContainers(name);
 
+      // Get autostart and webui from compose-containers
+      const composeContainers = await this._readComposeContainers();
+      const stackEntry = composeContainers.find(s => s.stack === name);
+      const autostart = stackEntry ? (stackEntry.autostart || false) : false;
+      const webui = stackEntry ? (stackEntry.webui || null) : null;
+
       return {
         name: name,
         yaml: composeContent,
@@ -821,6 +860,8 @@ class DockerComposeService {
         services: services,
         containers: containers,
         iconUrl: iconUrl,
+        autostart: autostart,
+        webui: webui,
         running: containers.length > 0
       };
     } catch (error) {
@@ -834,9 +875,11 @@ class DockerComposeService {
    * @param {string} yamlContent - New compose.yaml content
    * @param {string|null} envContent - New .env content (optional)
    * @param {string|null} iconUrl - New icon URL (optional, PNG only)
+   * @param {boolean|null} autostart - Autostart setting (null to preserve existing)
+   * @param {string|null|undefined} webui - WebUI URL (null to clear, undefined to preserve existing)
    * @returns {Promise<Object>} Updated stack info
    */
-  async updateStack(name, yamlContent, envContent = null, iconUrl = null) {
+  async updateStack(name, yamlContent, envContent = null, iconUrl = null, autostart = null, webui = undefined) {
     try {
       this._validateStackName(name);
 
@@ -912,10 +955,18 @@ class DockerComposeService {
         });
       }
 
-      // Update compose-containers file with image SHAs (non-critical)
+      // Update compose-containers file with image SHAs, autostart and webui (non-critical)
+      // webui: undefined = preserve, null = clear, string = set
+      const webuiValue = webui === undefined ? null : webui;
       if (containerNames.length > 0) {
-        await this._updateStackInComposeContainers(name);
+        await this._updateStackInComposeContainers(name, autostart, webuiValue);
       }
+
+      // Get current values for response
+      const composeContainers = await this._readComposeContainers();
+      const stackEntry = composeContainers.find(s => s.stack === name);
+      const currentAutostart = stackEntry ? stackEntry.autostart : false;
+      const currentWebui = stackEntry ? stackEntry.webui : null;
 
       // Combine output from down and up operations
       let combinedOutput = '';
@@ -932,10 +983,76 @@ class DockerComposeService {
         services: services,
         containers: containerNames,
         iconPath: iconPath,
+        autostart: currentAutostart,
+        webui: currentWebui,
         output: combinedOutput || ''
       };
     } catch (error) {
       throw new Error(`Failed to update stack: ${error.message}`);
+    }
+  }
+
+  /**
+   * Update stack settings without redeploying
+   * @param {string} name - Stack name
+   * @param {Object} settings - Settings to update
+   * @param {boolean} [settings.autostart] - Autostart setting
+   * @param {string|null} [settings.webui] - WebUI URL (null to clear)
+   * @returns {Promise<Object>} Updated settings
+   */
+  async updateStackSettings(name, settings) {
+    try {
+      this._validateStackName(name);
+
+      const stackPath = this._getStackPath(name);
+      const composePath = path.join(stackPath, 'compose.yaml');
+
+      // Check if stack exists
+      try {
+        await fs.access(composePath);
+      } catch (err) {
+        throw new Error(`Stack '${name}' not found`);
+      }
+
+      // Read current compose-containers
+      const composeContainers = await this._readComposeContainers();
+      const existingIndex = composeContainers.findIndex(s => s.stack === name);
+
+      if (existingIndex === -1) {
+        // Stack exists in boot but not in compose-containers, create entry
+        // null or empty string clears the webui
+        const webuiValue = (settings.webui === '' || settings.webui === null) ? null : settings.webui;
+        const stackEntry = {
+          stack: name,
+          autostart: settings.autostart !== undefined ? settings.autostart : false,
+          webui: webuiValue !== undefined ? webuiValue : null,
+          services: {}
+        };
+        composeContainers.push(stackEntry);
+      } else {
+        // Update existing entry
+        if (settings.autostart !== undefined) {
+          composeContainers[existingIndex].autostart = settings.autostart;
+        }
+        if (settings.webui !== undefined) {
+          // null or empty string clears the webui
+          composeContainers[existingIndex].webui = (settings.webui === '' || settings.webui === null) ? null : settings.webui;
+        }
+      }
+
+      await this._writeComposeContainers(composeContainers);
+
+      // Get updated entry
+      const updatedEntry = composeContainers.find(s => s.stack === name);
+
+      return {
+        success: true,
+        stack: name,
+        autostart: updatedEntry ? updatedEntry.autostart : false,
+        webui: updatedEntry ? updatedEntry.webui : null
+      };
+    } catch (error) {
+      throw new Error(`Failed to update stack settings: ${error.message}`);
     }
   }
 

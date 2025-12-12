@@ -39,6 +39,15 @@ const dockerComposeService = require('../services/dockercompose.service');
  *           type: boolean
  *           description: Whether stack is running
  *           example: true
+ *         autostart:
+ *           type: boolean
+ *           description: Whether stack should autostart on system boot
+ *           example: false
+ *         webui:
+ *           type: string
+ *           nullable: true
+ *           description: WebUI URL for the stack
+ *           example: "http://10.0.0.1:3001"
  */
 
 // Only admin can access these routes
@@ -196,6 +205,16 @@ router.get('/stacks/:name', async (req, res) => {
  *                 nullable: true
  *                 description: Icon URL (PNG only, optional)
  *                 example: "https://example.com/wordpress.png"
+ *               autostart:
+ *                 type: boolean
+ *                 description: Whether stack should autostart on system boot (default false)
+ *                 default: false
+ *                 example: false
+ *               webui:
+ *                 type: string
+ *                 nullable: true
+ *                 description: WebUI URL for the stack
+ *                 example: "http://10.0.0.1:3001"
  *     responses:
  *       201:
  *         description: Stack created successfully
@@ -235,7 +254,7 @@ router.get('/stacks/:name', async (req, res) => {
  */
 router.post('/stacks', async (req, res) => {
   try {
-    const { name, yaml, env, icon } = req.body;
+    const { name, yaml, env, icon, autostart } = req.body;
 
     if (!name) {
       return res.status(400).json({ error: 'Stack name is required' });
@@ -245,7 +264,8 @@ router.post('/stacks', async (req, res) => {
       return res.status(400).json({ error: 'compose.yaml content is required' });
     }
 
-    const result = await dockerComposeService.createStack(name, yaml, env, icon);
+    const { webui } = req.body;
+    const result = await dockerComposeService.createStack(name, yaml, env, icon, autostart === true, webui || null);
     res.status(201).json(result);
   } catch (error) {
     if (error.message.includes('already exists')) {
@@ -295,6 +315,15 @@ router.post('/stacks', async (req, res) => {
  *                 nullable: true
  *                 description: New icon URL (PNG only, optional)
  *                 example: "https://example.com/wordpress-new.png"
+ *               autostart:
+ *                 type: boolean
+ *                 description: Whether stack should autostart on system boot
+ *                 example: true
+ *               webui:
+ *                 type: string
+ *                 nullable: true
+ *                 description: WebUI URL for the stack (null to clear)
+ *                 example: "http://10.0.0.1:3001"
  *     responses:
  *       200:
  *         description: Stack updated successfully
@@ -318,6 +347,11 @@ router.post('/stacks', async (req, res) => {
  *                 iconPath:
  *                   type: string
  *                   nullable: true
+ *                 autostart:
+ *                   type: boolean
+ *                 webui:
+ *                   type: string
+ *                   nullable: true
  *       400:
  *         description: Invalid request
  *       401:
@@ -332,13 +366,98 @@ router.post('/stacks', async (req, res) => {
 router.put('/stacks/:name', async (req, res) => {
   try {
     const { name } = req.params;
-    const { yaml, env, icon } = req.body;
+    const { yaml, env, icon, autostart, webui } = req.body;
 
     if (!yaml) {
       return res.status(400).json({ error: 'compose.yaml content is required' });
     }
 
-    const result = await dockerComposeService.updateStack(name, yaml, env, icon);
+    // Pass autostart as-is (null if not provided, to preserve existing value)
+    const autostartValue = autostart !== undefined ? autostart === true : null;
+    // webui: undefined = preserve, null = clear, string = set
+    const result = await dockerComposeService.updateStack(name, yaml, env, icon, autostartValue, webui);
+    res.json(result);
+  } catch (error) {
+    if (error.message.includes('not found')) {
+      res.status(404).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
+/**
+ * @swagger
+ * /docker/mos/compose/stacks/{name}:
+ *   patch:
+ *     summary: Update stack settings
+ *     description: Update stack settings (like autostart, webui) without redeploying (admin only)
+ *     tags: [Docker Compose]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: name
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Stack name
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               autostart:
+ *                 type: boolean
+ *                 description: Whether stack should autostart on system boot
+ *                 example: true
+ *               webui:
+ *                 type: string
+ *                 nullable: true
+ *                 description: WebUI URL for the stack (null to clear)
+ *                 example: "http://10.0.0.1:3001"
+ *     responses:
+ *       200:
+ *         description: Settings updated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 stack:
+ *                   type: string
+ *                 autostart:
+ *                   type: boolean
+ *                 webui:
+ *                   type: string
+ *                   nullable: true
+ *       401:
+ *         description: Not authenticated
+ *       403:
+ *         description: Admin permission required
+ *       404:
+ *         description: Stack not found
+ *       500:
+ *         description: Server error
+ */
+router.patch('/stacks/:name', async (req, res) => {
+  try {
+    const { name } = req.params;
+    const { autostart, webui } = req.body;
+
+    const settings = {};
+    if (autostart !== undefined) {
+      settings.autostart = autostart === true;
+    }
+    if (webui !== undefined) {
+      settings.webui = webui; // null clears, string sets
+    }
+
+    const result = await dockerComposeService.updateStackSettings(name, settings);
     res.json(result);
   } catch (error) {
     if (error.message.includes('not found')) {
