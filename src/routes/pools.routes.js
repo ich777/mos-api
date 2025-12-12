@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { checkRole, authenticateToken } = require('../middleware/auth.middleware');
 const PoolsService = require('../services/pools.service');
+const disksService = require('../services/disks.service');
 
 // Initialize pools service for all operations
 const poolsService = new PoolsService();
@@ -49,11 +50,46 @@ const poolsService = new PoolsService();
  *           description: Data devices in the pool
  *           items:
  *             type: object
+ *             properties:
+ *               device:
+ *                 type: string
+ *                 example: "/dev/sdj1"
+ *               powerStatus:
+ *                 type: string
+ *                 enum: [active, standby, unknown]
+ *               performance:
+ *                 type: object
+ *                 description: I/O performance (only with includeMetrics=true)
+ *                 properties:
+ *                   readSpeed:
+ *                     type: number
+ *                   writeSpeed:
+ *                     type: number
+ *                   readSpeed_human:
+ *                     type: string
+ *                   writeSpeed_human:
+ *                     type: string
+ *               temperature:
+ *                 type: number
+ *                 nullable: true
+ *                 description: Temperature in Celsius (only with includeMetrics=true, null if standby)
  *         parity_devices:
  *           type: array
  *           description: Parity devices in the pool
  *           items:
  *             type: object
+ *         performance:
+ *           type: object
+ *           description: Pool-level total performance (only with includeMetrics=true)
+ *           properties:
+ *             readSpeed:
+ *               type: number
+ *             writeSpeed:
+ *               type: number
+ *             readSpeed_human:
+ *               type: string
+ *             writeSpeed_human:
+ *               type: string
  *         config:
  *           type: object
  *           description: Pool configuration
@@ -138,7 +174,7 @@ const poolsService = new PoolsService();
  * /pools:
  *   get:
  *     summary: List all pools
- *     description: Get a list of all storage pools with optional filtering
+ *     description: Get a list of all storage pools with optional filtering, performance and temperature data
  *     tags: [Pools]
  *     security:
  *       - bearerAuth: []
@@ -153,6 +189,11 @@ const poolsService = new PoolsService();
  *         schema:
  *           type: string
  *         description: Exclude pools of specific type
+ *       - in: query
+ *         name: includeMetrics
+ *         schema:
+ *           type: boolean
+ *         description: Include performance and temperature data for each disk
  *     responses:
  *       200:
  *         description: List of pools
@@ -176,7 +217,72 @@ router.get('/', authenticateToken, async (req, res) => {
     // Remove undefined filters
     Object.keys(filters).forEach(key => filters[key] === undefined && delete filters[key]);
 
-    const pools = await poolsService.listPools(filters, req.user);
+    const includeMetrics = req.query.includeMetrics === 'true';
+
+    let pools = await poolsService.listPools(filters, req.user);
+
+    // Add performance and temperature if requested
+    if (includeMetrics) {
+      pools = await Promise.all(pools.map(async pool => {
+        const enrichedPool = { ...pool };
+
+        // Process data_devices
+        if (enrichedPool.data_devices) {
+          enrichedPool.data_devices = await Promise.all(
+            enrichedPool.data_devices.map(async disk => {
+              const enrichedDisk = { ...disk };
+              enrichedDisk.performance = disksService.getDiskThroughput(disk.device, req.user);
+
+              if (disk.powerStatus === 'active') {
+                const tempData = await disksService.getDiskTemperature(disk.device);
+                enrichedDisk.temperature = tempData?.temperature || null;
+              } else {
+                enrichedDisk.temperature = null;
+              }
+
+              return enrichedDisk;
+            })
+          );
+        }
+
+        // Process parity_devices
+        if (enrichedPool.parity_devices) {
+          enrichedPool.parity_devices = await Promise.all(
+            enrichedPool.parity_devices.map(async disk => {
+              const enrichedDisk = { ...disk };
+              enrichedDisk.performance = disksService.getDiskThroughput(disk.device, req.user);
+
+              if (disk.powerStatus === 'active') {
+                const tempData = await disksService.getDiskTemperature(disk.device);
+                enrichedDisk.temperature = tempData?.temperature || null;
+              } else {
+                enrichedDisk.temperature = null;
+              }
+
+              return enrichedDisk;
+            })
+          );
+        }
+
+        // Add pool-level total performance
+        const devices = [];
+        if (pool.data_devices) {
+          pool.data_devices.forEach(d => d.device && devices.push(d.device));
+        }
+        if (pool.parity_devices) {
+          pool.parity_devices.forEach(d => d.device && devices.push(d.device));
+        }
+        enrichedPool.performance = devices.length > 0
+          ? disksService.getPoolThroughput(devices, req.user)
+          : null;
+        if (enrichedPool.performance) {
+          delete enrichedPool.performance.disks;
+        }
+
+        return enrichedPool;
+      }));
+    }
+
     res.json(pools);
   } catch (error) {
     res.status(500).json({ error: error.message });
