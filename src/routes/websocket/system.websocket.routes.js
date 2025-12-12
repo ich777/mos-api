@@ -17,16 +17,6 @@ const { authenticateToken } = require('../../middleware/auth.middleware');
  *           type: string
  *           description: JWT authentication token
  *           example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
- *         includePools:
- *           type: boolean
- *           description: Include pools data in initial response
- *           default: false
- *           example: true
- *         includePoolsPerformance:
- *           type: boolean
- *           description: Include real-time pools I/O performance updates (every 2s)
- *           default: false
- *           example: true
  *     WebSocketSystemLoadUpdate:
  *       type: object
  *       description: System load data (identical structure to GET /system/load response)
@@ -142,6 +132,89 @@ const { authenticateToken } = require('../../middleware/auth.middleware');
  *                           speed_human:
  *                             type: string
  *                             example: "512.00 KiB/s"
+ *         pools:
+ *           type: array
+ *           description: Pool data with performance and temperature (initial + every 2s)
+ *           items:
+ *             type: object
+ *             properties:
+ *               id:
+ *                 type: string
+ *                 example: "1746318722394"
+ *               name:
+ *                 type: string
+ *                 example: "media"
+ *               type:
+ *                 type: string
+ *                 example: "mergerfs"
+ *               data_devices:
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     device:
+ *                       type: string
+ *                       example: "/dev/sdj1"
+ *                     powerStatus:
+ *                       type: string
+ *                       enum: [active, standby, unknown]
+ *                     performance:
+ *                       type: object
+ *                       properties:
+ *                         readSpeed:
+ *                           type: number
+ *                           example: 1048576
+ *                         writeSpeed:
+ *                           type: number
+ *                           example: 524288
+ *                         readSpeed_human:
+ *                           type: string
+ *                           example: "1.0 MB/s"
+ *                         writeSpeed_human:
+ *                           type: string
+ *                           example: "512 KB/s"
+ *                     temperature:
+ *                       type: number
+ *                       nullable: true
+ *                       description: Temperature in Celsius (null if disk is in standby)
+ *                       example: 35
+ *               performance:
+ *                 type: object
+ *                 description: Pool-level total performance (sum of all disks)
+ *                 properties:
+ *                   readSpeed:
+ *                     type: number
+ *                   writeSpeed:
+ *                     type: number
+ *                   readSpeed_human:
+ *                     type: string
+ *                   writeSpeed_human:
+ *                     type: string
+ *         poolsTemperatures:
+ *           type: array
+ *           description: Pool temperatures only (every 10s)
+ *           items:
+ *             type: object
+ *             properties:
+ *               id:
+ *                 type: string
+ *               name:
+ *                 type: string
+ *               temperatures:
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     device:
+ *                       type: string
+ *                       example: "sdj"
+ *                     temperature:
+ *                       type: number
+ *                       nullable: true
+ *                       example: 35
+ *                     status:
+ *                       type: string
+ *                       enum: [active, standby, unknown]
  *
  * /system/websocket/stats:
  *   get:
@@ -210,10 +283,13 @@ const { authenticateToken } = require('../../middleware/auth.middleware');
  *
  *       **Events to listen for (server → client):**
  *
- *       - `load-update`: Real-time system load data updates (CPU/Memory/Network)
- *       - `pools-initial`: Initial pools data (if includePools=true)
- *       - `pools-performance-update`: Real-time pools I/O throughput (if includePoolsPerformance=true, every 2s)
- *       - `load-subscription-confirmed`: Subscription confirmation
+ *       - `load-update`: Real-time system data updates with different keys at different intervals:
+ *         - `cpu`: CPU load data (every 1s)
+ *         - `memory`: Memory and uptime data (every 8s)
+ *         - `network`: Network interface statistics (every 2s)
+ *         - `pools`: Pools with performance data per disk (initial + every 2s)
+ *         - `poolsTemperatures`: Disk temperatures only (every 10s)
+ *       - `load-subscription-confirmed`: Subscription confirmation with intervals
  *       - `load-unsubscription-confirmed`: Unsubscription confirmation
  *       - `error`: General error messages
  *
@@ -226,26 +302,21 @@ const { authenticateToken } = require('../../middleware/auth.middleware');
  *       });
  *       ```
  *
- *       Subscribe to system load updates:
+ *       Subscribe to system load updates (pools always included):
  *       ```
  *       socket.emit('subscribe-load', {
  *         token: 'your-jwt-token'
  *       });
  *       ```
  *
- *       Subscribe with pools and performance (for Dashboard):
- *       ```
- *       socket.emit('subscribe-load', {
- *         token: 'your-jwt-token',
- *         includePools: true,
- *         includePoolsPerformance: true
- *       });
- *       ```
- *
- *       Listen for updates:
+ *       Listen for updates and merge by key:
  *       ```
  *       socket.on('load-update', (data) => {
- *         console.log('System load updated:', data);
+ *         if (data.cpu) updateCpu(data.cpu);
+ *         if (data.memory) updateMemory(data.memory);
+ *         if (data.network) updateNetwork(data.network);
+ *         if (data.pools) updatePools(data.pools);
+ *         if (data.poolsTemperatures) updatePoolTemperatures(data.poolsTemperatures);
  *       });
  *       ```
  *     tags: [System Load WebSocket]
@@ -291,11 +362,9 @@ router.get('/websocket/events', (req, res) => {
       client_to_server: [
         {
           event: 'subscribe-load',
-          description: 'Subscribe to real-time system load updates with optional pools monitoring',
+          description: 'Subscribe to real-time system load updates (pools always included)',
           payload: {
-            token: 'JWT token (required)',
-            includePools: 'boolean (optional) - Include pools data in initial response',
-            includePoolsPerformance: 'boolean (optional) - Include real-time pools I/O performance (every 2s)'
+            token: 'JWT token (required)'
           }
         },
         {
@@ -314,23 +383,13 @@ router.get('/websocket/events', (req, res) => {
       server_to_client: [
         {
           event: 'load-update',
-          description: 'Real-time system load data updates (CPU/Memory/Network)',
-          payload: 'System load object (same as GET /system/load)'
-        },
-        {
-          event: 'pools-initial',
-          description: 'Initial pools data with all details (sent once if includePools=true)',
-          payload: {
-            pools: 'Array of pool objects with optional performance data',
-            timestamp: 'Unix timestamp'
-          }
-        },
-        {
-          event: 'pools-performance-update',
-          description: 'Real-time pools I/O throughput (every 2s if includePoolsPerformance=true)',
-          payload: {
-            pools: 'Array of { id, name, performance: { readSpeed, writeSpeed, ... } }',
-            timestamp: 'Unix timestamp'
+          description: 'Real-time system data updates with different keys at different intervals',
+          keys: {
+            cpu: 'CPU load data (every 1s)',
+            memory: 'Memory and uptime data (every 8s)',
+            network: 'Network interface statistics (every 2s)',
+            pools: 'Pools with performance data per disk (initial + every 2s)',
+            poolsTemperatures: 'Disk temperatures only (every 10s)'
           }
         },
         {
@@ -340,9 +399,8 @@ router.get('/websocket/events', (req, res) => {
             cpuInterval: '1000ms',
             memoryInterval: '8000ms',
             networkInterval: '2000ms',
-            includePools: 'Whether pools data was requested',
-            includePoolsPerformance: 'Whether pools performance was requested',
-            poolsPerformanceInterval: '2000ms (if enabled)'
+            poolsPerformanceInterval: '2000ms',
+            poolsTemperatureInterval: '10000ms'
           }
         },
         {
@@ -356,19 +414,12 @@ router.get('/websocket/events', (req, res) => {
       ]
     },
     examples: {
-      subscribe_system_load: {
+      subscribe: {
         event: 'subscribe-load',
         data: {
           token: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...'
-        }
-      },
-      subscribe_with_pools_dashboard: {
-        event: 'subscribe-load',
-        data: {
-          token: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...',
-          includePools: true,
-          includePoolsPerformance: true
-        }
+        },
+        note: 'Pools with performance and temperature are always included'
       },
       get_immediate_load: {
         event: 'get-load',
@@ -378,9 +429,10 @@ router.get('/websocket/events', (req, res) => {
       }
     },
     notes: {
-      dashboard_usage: 'For dashboard, use includePools=true to get initial pool data, and includePoolsPerformance=true for real-time throughput updates',
+      unified_event: 'All updates come via load-update event with different keys (cpu, memory, network, pools, poolsTemperatures)',
       byte_format: 'Human-readable values respect user byte_format preference (binary: MiB, GiB / decimal: MB, GB)',
-      intervals: 'CPU updates every 1s, Memory every 8s, Network every 2s, Pools performance every 2s'
+      intervals: 'CPU: 1s, Memory: 8s, Network: 2s, Pools performance: 2s, Pools temperature: 10s',
+      standby_disks: 'Standby disks have temperature=null to avoid waking them up'
     }
   });
 });

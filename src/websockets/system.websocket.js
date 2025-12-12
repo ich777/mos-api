@@ -395,7 +395,7 @@ class SystemLoadWebSocketManager {
         return enrichedPool;
       }));
 
-      socket.emit('pools-initial', {
+      socket.emit('load-update', {
         pools: poolsWithData,
         timestamp: Date.now()
       });
@@ -536,8 +536,8 @@ class SystemLoadWebSocketManager {
       }
 
       // Send to all clients
-      this.io.to('system-load').emit('pools-temperature-update', {
-        pools: poolsTemperatures,
+      this.io.to('system-load').emit('load-update', {
+        poolsTemperatures: poolsTemperatures,
         timestamp: Date.now()
       });
     } catch (error) {
@@ -604,7 +604,7 @@ class SystemLoadWebSocketManager {
           return result;
         });
 
-        socket.emit('pools-performance-update', {
+        socket.emit('load-update', {
           pools: poolsPerformance,
           timestamp: Date.now()
         });
