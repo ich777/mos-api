@@ -572,22 +572,34 @@ class SystemLoadWebSocketManager {
             name: pool.name
           };
 
-          // Add performance per disk in data_devices
+          // Add performance per disk in data_devices (include cached temperature)
           if (pool.data_devices) {
-            result.data_devices = pool.data_devices.map(disk => ({
-              id: disk.id,
-              device: disk.device,
-              performance: this.disksService.getDiskThroughput(disk.device, user)
-            }));
+            result.data_devices = pool.data_devices.map(disk => {
+              const tempData = this.disksService.temperatureCache?.get(
+                this.disksService._getBaseDisk(disk.device).replace('/dev/', '')
+              );
+              return {
+                id: disk.id,
+                device: disk.device,
+                performance: this.disksService.getDiskThroughput(disk.device, user),
+                temperature: tempData?.data?.temperature ?? null
+              };
+            });
           }
 
-          // Add performance per disk in parity_devices
+          // Add performance per disk in parity_devices (include cached temperature)
           if (pool.parity_devices) {
-            result.parity_devices = pool.parity_devices.map(disk => ({
-              id: disk.id,
-              device: disk.device,
-              performance: this.disksService.getDiskThroughput(disk.device, user)
-            }));
+            result.parity_devices = pool.parity_devices.map(disk => {
+              const tempData = this.disksService.temperatureCache?.get(
+                this.disksService._getBaseDisk(disk.device).replace('/dev/', '')
+              );
+              return {
+                id: disk.id,
+                device: disk.device,
+                performance: this.disksService.getDiskThroughput(disk.device, user),
+                temperature: tempData?.data?.temperature ?? null
+              };
+            });
           }
 
           // Add pool-level total performance (without disks array)
