@@ -499,6 +499,9 @@ class DockerWebSocketManager extends EventEmitter {
       const templatesDir = '/boot/config/system/docker/templates';
       const filePath = path.join(templatesDir, fileName);
 
+      // Ensure templates directory exists
+      await fs.mkdir(templatesDir, { recursive: true });
+
       // Check if template already exists
       let templateExists = false;
       try {
