@@ -740,7 +740,7 @@ class DockerWebSocketManager extends EventEmitter {
    * Execute Docker Compose stack creation with streaming output
    */
   async executeComposeCreate(operationId, params) {
-    const { name, yaml, env, icon } = params || {};
+    const { name, yaml, env, icon, webui } = params || {};
 
     if (!name || !yaml) {
       this.sendUpdate(null, operationId, 'error', {
@@ -901,7 +901,7 @@ class DockerWebSocketManager extends EventEmitter {
 
       // Update compose-containers file with image SHAs
       if (containerNames.length > 0) {
-        await this.dockerComposeService._updateStackInComposeContainers(name);
+        await this.dockerComposeService._updateStackInComposeContainers(name, null, webui);
         this.sendUpdate(null, operationId, 'running', {
           output: `Updated compose-containers file\n`,
           stream: 'stdout'
@@ -938,7 +938,7 @@ class DockerWebSocketManager extends EventEmitter {
    * Execute Docker Compose stack update with streaming output
    */
   async executeComposeUpdate(operationId, params) {
-    const { name, yaml, env, icon } = params || {};
+    const { name, yaml, env, icon, webui } = params || {};
 
     if (!name || !yaml) {
       this.sendUpdate(null, operationId, 'error', {
@@ -1121,7 +1121,7 @@ class DockerWebSocketManager extends EventEmitter {
 
       // Update compose-containers file with image SHAs
       if (containerNames.length > 0) {
-        await this.dockerComposeService._updateStackInComposeContainers(name);
+        await this.dockerComposeService._updateStackInComposeContainers(name, null, webui);
         this.sendUpdate(null, operationId, 'running', {
           output: `Updated compose-containers file\n`,
           stream: 'stdout'
@@ -1428,7 +1428,7 @@ class DockerWebSocketManager extends EventEmitter {
         params
       );
 
-      // Update compose-containers file after upgrade
+      // Update compose-containers file after upgrade (preserve existing autostart/webui)
       await this.dockerComposeService._updateStackInComposeContainers(name);
 
       this.sendUpdate(null, operationId, 'running', {
