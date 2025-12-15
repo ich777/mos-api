@@ -283,15 +283,17 @@ class DisksService {
       const lines = stdout.split('\n');
       for (const line of lines) {
         // Standard SATA: "Temperature_Celsius" or "Airflow_Temperature"
-        // Format: "194 Temperature_Celsius 0x0022 100 100 000 Old_age Always - 35"
-        // The RAW_VALUE (last number) is the actual temperature
+        // SMART format columns: ID# ATTRIBUTE_NAME FLAG VALUE WORST THRESH TYPE UPDATED WHEN_FAILED RAW_VALUE
+        // Example: "194 Temperature_Celsius 0x0002 004 004 000 Old_age Always - 25 (Min/Max 18/47)"
+        // RAW_VALUE is column 10 (index 9), extract first number from it
         if (line.includes('Temperature_Celsius') || line.includes('Airflow_Temperature')) {
-          // Get the last number on the line (RAW_VALUE)
-          const match = line.match(/(\d+)\s*$/);
-          if (match) {
-            const temp = parseInt(match[1]);
+          const parts = line.trim().split(/\s+/);
+          if (parts.length >= 10) {
+            // RAW_VALUE is at index 9, extract first number (ignore Min/Max suffix)
+            const rawValue = parts[9];
+            const temp = parseInt(rawValue);
             // Sanity check: temperature should be reasonable (0-100°C)
-            if (temp >= 0 && temp <= 100) {
+            if (!isNaN(temp) && temp >= 0 && temp <= 100) {
               temperature = temp;
               break;
             }
@@ -352,8 +354,12 @@ class DisksService {
 
       for (const line of lines) {
         if (line.includes('Temperature_Celsius') || line.includes('Airflow_Temperature')) {
-          const match = line.match(/\s+(\d+)(?:\s+|$)/);
-          if (match) return parseInt(match[1]);
+          // SMART format: RAW_VALUE is column 10 (index 9)
+          const parts = line.trim().split(/\s+/);
+          if (parts.length >= 10) {
+            const temp = parseInt(parts[9]);
+            if (!isNaN(temp) && temp >= 0 && temp <= 100) return temp;
+          }
         }
         if (line.includes('Temperature:') && line.includes('Celsius')) {
           const match = line.match(/(\d+)\s*Celsius/);
