@@ -400,7 +400,7 @@ router.post('/docker/template', async (req, res) => {
  * /mos/hub/compose/template:
  *   post:
  *     summary: Get compose files content
- *     description: Returns name, yaml, env and icon from compose template
+ *     description: Returns name, yaml, env, icon and web_ui_url from compose template
  *     tags: [MOS Hub]
  *     security:
  *       - bearerAuth: []
@@ -438,6 +438,8 @@ router.post('/docker/template', async (req, res) => {
  *                 env:
  *                   type: string
  *                 icon:
+ *                   type: string
+ *                 web_ui_url:
  *                   type: string
  *       400:
  *         description: Invalid or missing path

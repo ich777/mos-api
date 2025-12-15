@@ -738,7 +738,7 @@ class HubService {
    * @param {string} templatePath - Absolute path to template.json
    * @param {string} yamlPath - Absolute path to compose.yaml
    * @param {string} envPath - Optional absolute path to .env
-   * @returns {Promise<Object>} Object with name, yaml, env, icon
+   * @returns {Promise<Object>} Object with name, yaml, env, icon, web_ui_url
    */
   async getComposeFiles(templatePath, yamlPath, envPath = null) {
     if (!templatePath) {
@@ -774,7 +774,8 @@ class HubService {
       name: template?.name || null,
       yaml: null,
       env: null,
-      icon: template?.icon || null
+      icon: template?.icon || null,
+      web_ui_url: template?.web_ui_url || null
     };
 
     // Read yaml content
