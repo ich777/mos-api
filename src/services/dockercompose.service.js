@@ -458,7 +458,11 @@ class DockerComposeService {
       }
 
       // Normalize webui: null or empty string means clear
-      const normalizedWebui = (webui === null || webui === '') ? null : webui;
+      // Also convert [IP] to [ADDRESS] for consistency
+      let normalizedWebui = (webui === null || webui === '') ? null : webui;
+      if (normalizedWebui && normalizedWebui.includes('[IP]')) {
+        normalizedWebui = normalizedWebui.replace(/\[IP\]/g, '[ADDRESS]');
+      }
 
       const stackEntry = {
         stack: stackName,
@@ -898,8 +902,8 @@ class DockerComposeService {
         throw new Error('compose.yaml content is required');
       }
 
-      // Stop current stack (from working directory)
-      const removeOutput = await this._removeStack(name);
+      // Stop current stack (from working directory), keep images
+      const removeOutput = await this._removeStack(name, false);
 
       // Step 1-2: Update files in boot directory
       await fs.writeFile(composePath, yamlContent);
@@ -1020,8 +1024,11 @@ class DockerComposeService {
 
       if (existingIndex === -1) {
         // Stack exists in boot but not in compose-containers, create entry
-        // null or empty string clears the webui
-        const webuiValue = (settings.webui === '' || settings.webui === null) ? null : settings.webui;
+        // null or empty string clears the webui, also convert [IP] to [ADDRESS]
+        let webuiValue = (settings.webui === '' || settings.webui === null) ? null : settings.webui;
+        if (webuiValue && webuiValue.includes('[IP]')) {
+          webuiValue = webuiValue.replace(/\[IP\]/g, '[ADDRESS]');
+        }
         const stackEntry = {
           stack: name,
           autostart: settings.autostart !== undefined ? settings.autostart : false,
@@ -1035,8 +1042,12 @@ class DockerComposeService {
           composeContainers[existingIndex].autostart = settings.autostart;
         }
         if (settings.webui !== undefined) {
-          // null or empty string clears the webui
-          composeContainers[existingIndex].webui = (settings.webui === '' || settings.webui === null) ? null : settings.webui;
+          // null or empty string clears the webui, also convert [IP] to [ADDRESS]
+          let webuiValue = (settings.webui === '' || settings.webui === null) ? null : settings.webui;
+          if (webuiValue && webuiValue.includes('[IP]')) {
+            webuiValue = webuiValue.replace(/\[IP\]/g, '[ADDRESS]');
+          }
+          composeContainers[existingIndex].webui = webuiValue;
         }
       }
 

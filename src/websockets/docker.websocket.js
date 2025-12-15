@@ -1000,11 +1000,11 @@ class DockerWebSocketManager extends EventEmitter {
         stream: 'stdout'
       });
 
-      // Stop current stack with streaming from working directory
+      // Stop current stack with streaming from working directory, keep images
       await this.executeCommandWithStream(
         operationId,
         'docker-compose',
-        ['-f', 'compose.yaml', '-f', 'mos.override.yaml', 'down', '--rmi', 'all', '-v'],
+        ['-f', 'compose.yaml', '-f', 'mos.override.yaml', 'down', '-v'],
         'compose-update-down',
         params,
         { cwd: workingPath }
