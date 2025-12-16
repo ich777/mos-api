@@ -108,10 +108,11 @@ class LxcService {
         const unprivileged = unprivText === 'true';
 
         // Get configuration values from config file
-        const [distribution, autostart, description] = await Promise.all([
+        const [distribution, autostart, description, webui] = await Promise.all([
           this.getContainerDistribution(name),
           this.getContainerAutostart(name),
-          this.getContainerDescription(name)
+          this.getContainerDescription(name),
+          this.getContainerWebui(name)
         ]);
 
         containers.push({
@@ -123,6 +124,7 @@ class LxcService {
           unprivileged,
           distribution,
           description,
+          webui,
           custom_icon: this.hasCustomIcon(name),
           config: `/var/lib/lxc/${name}/config`
         });
@@ -516,6 +518,38 @@ class LxcService {
       const descriptionMatch = configContent.match(/^#container_description=(.*)$/m);
 
       return descriptionMatch ? descriptionMatch[1].trim() : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  /**
+   * Get webui URL for a container
+   * @param {string} containerName - Name of the container
+   * @returns {Promise<string|null>} WebUI URL or null if not found
+   */
+  async getContainerWebui(containerName) {
+    try {
+      const configPath = `/var/lib/lxc/${containerName}/config`;
+
+      if (!fs.existsSync(configPath)) {
+        return null;
+      }
+
+      const configContent = fs.readFileSync(configPath, 'utf8');
+      // Match the webui line (always commented)
+      const webuiMatch = configContent.match(/^#container_webui=(.*)$/m);
+
+      if (webuiMatch && webuiMatch[1]) {
+        let webui = webuiMatch[1].trim();
+        // Convert [IP] to [ADDRESS] for consistency with compose containers
+        if (webui.includes('[IP]')) {
+          webui = webui.replace(/\[IP\]/g, '[ADDRESS]');
+        }
+        return webui || null;
+      }
+
+      return null;
     } catch (error) {
       return null;
     }
