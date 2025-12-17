@@ -349,7 +349,8 @@ class SystemLoadWebSocketManager {
 
                 // Add temperature only if disk is active (won't wake standby disks)
                 if (disk.powerStatus === 'active') {
-                  const tempData = await this.disksService.getDiskTemperature(disk.device);
+                  const baseDisk = this.disksService._getBaseDisk(disk.device).replace('/dev/', '');
+                  const tempData = await this.disksService.getDiskTemperature(baseDisk);
                   enrichedDisk.temperature = tempData?.temperature || null;
                 } else {
                   enrichedDisk.temperature = null;
@@ -369,7 +370,8 @@ class SystemLoadWebSocketManager {
 
                 // Add temperature only if disk is active
                 if (disk.powerStatus === 'active') {
-                  const tempData = await this.disksService.getDiskTemperature(disk.device);
+                  const baseDisk = this.disksService._getBaseDisk(disk.device).replace('/dev/', '');
+                  const tempData = await this.disksService.getDiskTemperature(baseDisk);
                   enrichedDisk.temperature = tempData?.temperature || null;
                 } else {
                   enrichedDisk.temperature = null;
@@ -470,7 +472,7 @@ class SystemLoadWebSocketManager {
           return;
         }
 
-        await this.broadcastPoolsTemperature();
+        await this.refreshPoolsTemperatureCache();
       } catch (error) {
         console.error('Error in pools temperature monitoring:', error);
       }
@@ -496,52 +498,37 @@ class SystemLoadWebSocketManager {
   }
 
   /**
-   * Broadcast pools temperature updates to all clients
+   * Refresh temperature cache for all pool disks (no emit)
+   * broadcastPoolsPerformance will send the cached values
    */
-  async broadcastPoolsTemperature() {
-    const room = this.io.adapter.rooms.get('system-load');
-    if (!room) return;
-
+  async refreshPoolsTemperatureCache() {
     try {
-      // Get all pools once
       const pools = await this.poolsService.listPools();
 
-      // Collect all unique disks from all pools
-      const poolsTemperatures = [];
-
+      // Refresh temperature cache for all disks (use base disk name for cache key consistency)
+      const processedDisks = new Set();
       for (const pool of pools) {
-        const devices = this.extractPoolDevices(pool);
-        const temperatures = [];
-
-        for (const device of devices) {
-          const baseDiskPath = this.disksService._getBaseDisk(device);
-          const baseDisk = baseDiskPath.replace('/dev/', '');
-
-          // Skip duplicates within the same pool
-          if (temperatures.some(t => t.device === baseDisk)) continue;
-
-          const tempData = await this.disksService.getDiskTemperature(baseDisk);
-          temperatures.push({
-            device: baseDisk,
-            temperature: tempData?.temperature || null,
-            status: tempData?.status || 'unknown'
-          });
+        if (pool.data_devices) {
+          for (const disk of pool.data_devices) {
+            const baseDisk = this.disksService._getBaseDisk(disk.device).replace('/dev/', '');
+            if (!processedDisks.has(baseDisk)) {
+              processedDisks.add(baseDisk);
+              await this.disksService.getDiskTemperature(baseDisk);
+            }
+          }
         }
-
-        poolsTemperatures.push({
-          id: pool.id || pool.name,
-          name: pool.name,
-          temperatures
-        });
+        if (pool.parity_devices) {
+          for (const disk of pool.parity_devices) {
+            const baseDisk = this.disksService._getBaseDisk(disk.device).replace('/dev/', '');
+            if (!processedDisks.has(baseDisk)) {
+              processedDisks.add(baseDisk);
+              await this.disksService.getDiskTemperature(baseDisk);
+            }
+          }
+        }
       }
-
-      // Send to all clients
-      this.io.to('system-load').emit('load-update', {
-        poolsTemperatures: poolsTemperatures,
-        timestamp: Date.now()
-      });
     } catch (error) {
-      console.error('Error broadcasting pools temperature:', error);
+      console.error('Error refreshing pools temperature cache:', error);
     }
   }
 
@@ -565,39 +552,38 @@ class SystemLoadWebSocketManager {
         const prefs = this.clientPoolsPreferences.get(socketId);
         const user = prefs?.user || socket.user;
 
-        // Build performance update for each pool
+        // Build performance update for each pool (include all pool fields)
         const poolsPerformance = pools.map(pool => {
-          const result = {
-            id: pool.id || pool.name,
-            name: pool.name
-          };
+          const result = { ...pool };
 
-          // Add performance per disk in data_devices (include cached temperature)
+          // Add performance per disk in data_devices (include all disk fields + cached temperature)
           if (pool.data_devices) {
             result.data_devices = pool.data_devices.map(disk => {
               const tempData = this.disksService.temperatureCache?.get(
                 this.disksService._getBaseDisk(disk.device).replace('/dev/', '')
               );
+              const isStandby = tempData?.data?.status === 'standby';
               return {
-                id: disk.id,
-                device: disk.device,
+                ...disk,
                 performance: this.disksService.getDiskThroughput(disk.device, user),
-                temperature: tempData?.data?.temperature ?? null
+                powerStatus: isStandby ? 'standby' : (disk.powerStatus || 'active'),
+                temperature: isStandby ? null : (tempData?.data?.temperature ?? null)
               };
             });
           }
 
-          // Add performance per disk in parity_devices (include cached temperature)
+          // Add performance per disk in parity_devices (include all disk fields + cached temperature)
           if (pool.parity_devices) {
             result.parity_devices = pool.parity_devices.map(disk => {
               const tempData = this.disksService.temperatureCache?.get(
                 this.disksService._getBaseDisk(disk.device).replace('/dev/', '')
               );
+              const isStandby = tempData?.data?.status === 'standby';
               return {
-                id: disk.id,
-                device: disk.device,
+                ...disk,
                 performance: this.disksService.getDiskThroughput(disk.device, user),
-                temperature: tempData?.data?.temperature ?? null
+                powerStatus: isStandby ? 'standby' : (disk.powerStatus || 'active'),
+                temperature: isStandby ? null : (tempData?.data?.temperature ?? null)
               };
             });
           }

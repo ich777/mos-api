@@ -18,7 +18,7 @@ class DisksService {
 
     // Temperature cache (separate from power status)
     this.temperatureCache = new Map(); // device -> { temperature, timestamp }
-    this.temperatureCacheTTL = 5000; // 5 seconds cache
+    this.temperatureCacheTTL = 12000;
   }
 
   // ============================================================
