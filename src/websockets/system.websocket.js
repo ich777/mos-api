@@ -344,6 +344,7 @@ class SystemLoadWebSocketManager {
           if (enrichedPool.data_devices) {
             enrichedPool.data_devices = await Promise.all(
               enrichedPool.data_devices.map(async disk => {
+                if (!disk.device) return { ...disk, performance: null, temperature: null };
                 const perf = this.disksService.getDiskThroughput(disk.device, user);
                 const enrichedDisk = { ...disk, performance: perf };
 
@@ -365,6 +366,7 @@ class SystemLoadWebSocketManager {
           if (enrichedPool.parity_devices) {
             enrichedPool.parity_devices = await Promise.all(
               enrichedPool.parity_devices.map(async disk => {
+                if (!disk.device) return { ...disk, performance: null, temperature: null };
                 const perf = this.disksService.getDiskThroughput(disk.device, user);
                 const enrichedDisk = { ...disk, performance: perf };
 
@@ -510,6 +512,7 @@ class SystemLoadWebSocketManager {
       for (const pool of pools) {
         if (pool.data_devices) {
           for (const disk of pool.data_devices) {
+            if (!disk.device) continue;
             const baseDisk = this.disksService._getBaseDisk(disk.device).replace('/dev/', '');
             if (!processedDisks.has(baseDisk)) {
               processedDisks.add(baseDisk);
@@ -519,6 +522,7 @@ class SystemLoadWebSocketManager {
         }
         if (pool.parity_devices) {
           for (const disk of pool.parity_devices) {
+            if (!disk.device) continue;
             const baseDisk = this.disksService._getBaseDisk(disk.device).replace('/dev/', '');
             if (!processedDisks.has(baseDisk)) {
               processedDisks.add(baseDisk);
@@ -559,6 +563,7 @@ class SystemLoadWebSocketManager {
           // Add performance per disk in data_devices (include all disk fields + cached temperature)
           if (pool.data_devices) {
             result.data_devices = pool.data_devices.map(disk => {
+              if (!disk.device) return { ...disk, performance: null, powerStatus: disk.powerStatus || 'unknown', temperature: null };
               const tempData = this.disksService.temperatureCache?.get(
                 this.disksService._getBaseDisk(disk.device).replace('/dev/', '')
               );
@@ -575,6 +580,7 @@ class SystemLoadWebSocketManager {
           // Add performance per disk in parity_devices (include all disk fields + cached temperature)
           if (pool.parity_devices) {
             result.parity_devices = pool.parity_devices.map(disk => {
+              if (!disk.device) return { ...disk, performance: null, powerStatus: disk.powerStatus || 'unknown', temperature: null };
               const tempData = this.disksService.temperatureCache?.get(
                 this.disksService._getBaseDisk(disk.device).replace('/dev/', '')
               );
