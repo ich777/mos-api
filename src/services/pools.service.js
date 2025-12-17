@@ -1618,7 +1618,8 @@ class PoolsService {
         config: {
           encrypted: options.config?.encrypted || false,
           raid_level: raidLevel,
-          unclean_check: true
+          unclean_check: true,
+          ...(options.config || {})
         }
       };
 
@@ -5748,7 +5749,8 @@ class PoolsService {
         config: {
           ...mergerfsConfig,
           encrypted: options.config?.encrypted || false,
-          unclean_check: true
+          unclean_check: true,
+          ...(options.config || {})
         }
       };
 
@@ -6198,7 +6200,8 @@ class PoolsService {
         ],
         encrypted: options.config?.encrypted || false,
         unclean_check: true,
-        md_writemode: options.config?.md_writemode || 'normal' // normal or turbo
+        md_writemode: options.config?.md_writemode || 'normal', // normal or turbo
+        ...(options.config || {})
       };
 
       // Add check config if parity devices exist

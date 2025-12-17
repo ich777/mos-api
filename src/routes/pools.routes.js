@@ -98,6 +98,10 @@ const poolsService = new PoolsService();
  *               type: boolean
  *               description: Whether pool is encrypted
  *               example: false
+ *             shared:
+ *               type: boolean
+ *               description: Whether pool is shared (applies to all pool types)
+ *               example: false
  *         status:
  *           type: object
  *           description: Pool status information
@@ -618,6 +622,7 @@ router.patch('/:id/comment', checkRole(['admin']), async (req, res) => {
  *               example:
  *                 unclean_check: true
  *                 encrypted: false
+ *                 shared: false
  *                 sync:
  *                   enabled: true
  *                   schedule: "0 4 * * *"
@@ -659,6 +664,9 @@ router.patch('/:id/comment', checkRole(['admin']), async (req, res) => {
  *               raid_level:
  *                 type: string
  *                 description: RAID level for BTRFS pools
+ *               shared:
+ *                 type: boolean
+ *                 description: Whether pool is shared (applies to all pool types - mergerfs, nonraid, btrfs, xfs, ext4)
  *               sync.enabled:
  *                 type: boolean
  *                 description: Enable SnapRAID sync (dot-notation example)
@@ -666,6 +674,10 @@ router.patch('/:id/comment', checkRole(['admin']), async (req, res) => {
  *                 type: string
  *                 description: SnapRAID sync cron schedule (dot-notation example)
  *           examples:
+ *             shared:
+ *               summary: Toggle shared status
+ *               value:
+ *                 shared: true
  *             direct:
  *               summary: Direct property
  *               value:
