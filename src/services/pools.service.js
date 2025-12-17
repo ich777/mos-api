@@ -1073,7 +1073,67 @@ class PoolsService {
     }
   }
 
-  async executeSnapRAIDOperation(poolId, operation) {
+  /**
+   * Map mount points to SnapRAID disk identifiers (dN) by parsing the config file
+   * @param {string} poolName - Pool name to find config file
+   * @param {string[]} mountPoints - Array of mount points to map
+   * @returns {Promise<string>} Comma-separated disk identifiers (e.g., "d2,d4")
+   * @throws {Error} If config file not found or mount points don't match
+   */
+  async _mapMountPointsToSnapraidDisks(poolName, mountPoints) {
+    const configPath = `/boot/config/snapraid/${poolName}.conf`;
+
+    // Read and parse the SnapRAID config file
+    let configContent;
+    try {
+      configContent = await fs.readFile(configPath, 'utf8');
+    } catch (error) {
+      throw new Error(`SnapRAID config file not found: ${configPath}`);
+    }
+
+    // Parse data lines: "data dN /path/to/mount"
+    const dataLineRegex = /^data\s+(d\d+)\s+(.+)$/gm;
+    const diskMap = new Map(); // mountPoint -> dN
+
+    let match;
+    while ((match = dataLineRegex.exec(configContent)) !== null) {
+      const diskId = match[1];     // e.g., "d1", "d2"
+      const diskPath = match[2].trim(); // e.g., "/var/mergerfs/media/disk1"
+      diskMap.set(diskPath, diskId);
+    }
+
+    if (diskMap.size === 0) {
+      throw new Error(`No data disk entries found in SnapRAID config: ${configPath}`);
+    }
+
+    // Map each mount point to its disk identifier
+    const diskIds = [];
+    const notFound = [];
+
+    for (const mountPoint of mountPoints) {
+      const normalizedMount = mountPoint.replace(/\/+$/, ''); // Remove trailing slashes
+      const diskId = diskMap.get(normalizedMount);
+
+      if (diskId) {
+        diskIds.push(diskId);
+      } else {
+        notFound.push(mountPoint);
+      }
+    }
+
+    if (notFound.length > 0) {
+      const availablePaths = Array.from(diskMap.keys()).join(', ');
+      throw new Error(`Mount point(s) not found in SnapRAID config: ${notFound.join(', ')}. Available paths: ${availablePaths}`);
+    }
+
+    if (diskIds.length === 0) {
+      throw new Error('No valid disk identifiers found for the provided mount points');
+    }
+
+    return diskIds.join(',');
+  }
+
+  async executeSnapRAIDOperation(poolId, operation, options = {}) {
     const pool = await this.getPoolById(poolId);
 
     // Validate pool type
@@ -1117,13 +1177,31 @@ class PoolsService {
       }
     }
 
+    // For fix operation, optionally map disk mount points to dN identifiers
+    // If fixDisks is provided, only those disks will be fixed; otherwise all disks
+    let fixDisksArg = null;
+    if (operation === 'fix') {
+      const { fixDisks } = options;
+      if (fixDisks && Array.isArray(fixDisks) && fixDisks.length > 0) {
+        // Map mount points to SnapRAID disk identifiers
+        fixDisksArg = await this._mapMountPointsToSnapraidDisks(pool.name, fixDisks);
+      }
+      // If no fixDisks provided, SnapRAID will fix all disks
+    }
+
     // Execute the SnapRAID operation in background
     try {
       const { spawn } = require('child_process');
-      console.log(`Starting SnapRAID ${operation} operation for pool '${pool.name}'`);
+      console.log(`Starting SnapRAID ${operation} operation for pool '${pool.name}'${fixDisksArg ? ` with disks: ${fixDisksArg}` : ''}`);
 
-      // Execute the script with pool name and operation in background
-      const child = spawn('/usr/local/bin/mos-snapraid', [pool.name, operation], {
+      // Build command with quoted arguments for shell safety
+      let cmd = `/usr/local/bin/mos-snapraid "${pool.name}" "${operation}"`;
+      if (fixDisksArg) {
+        cmd += ` "${fixDisksArg}"`; // e.g., "d2,d4" or "d3"
+      }
+
+      // Execute the script via shell with properly quoted arguments
+      const child = spawn('bash', ['-c', cmd], {
         detached: true,
         stdio: 'ignore'
       });
@@ -1131,7 +1209,7 @@ class PoolsService {
       // Don't wait for the process to finish
       child.unref();
 
-      return {
+      const result = {
         success: true,
         message: `SnapRAID ${operation} operation started successfully for pool '${pool.name}'`,
         operation,
@@ -1139,6 +1217,14 @@ class PoolsService {
         started: true,
         timestamp: new Date().toISOString()
       };
+
+      // Include fix disks info in response
+      if (fixDisksArg) {
+        result.fixDisks = fixDisksArg;
+        result.message += ` (fixing disks: ${fixDisksArg})`;
+      }
+
+      return result;
     } catch (error) {
       throw new Error(`SnapRAID ${operation} operation failed to start: ${error.message}`);
     }

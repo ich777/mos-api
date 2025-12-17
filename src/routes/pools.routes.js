@@ -2715,6 +2715,16 @@ router.post('/:id/devices/add', checkRole(['admin']), async (req, res) => {
  *                 description: Check option for NonRAID pools (CORRECT or NOCORRECT)
  *                 enum: [CORRECT, NOCORRECT]
  *                 example: "NOCORRECT"
+ *               fixDisks:
+ *                 type: array
+ *                 description: |
+ *                   Mount points of disks to fix (optional for SnapRAID 'fix' operation on MergerFS pools).
+ *                   If provided, only the specified disks will be fixed. If omitted, all disks will be fixed.
+ *                   These are the mount points from the pool's data_devices (e.g., "/var/mergerfs/media/disk1").
+ *                   The API will automatically map these to SnapRAID disk identifiers (d1, d2, etc.).
+ *                 items:
+ *                   type: string
+ *                 example: ["/var/mergerfs/media/disk1", "/var/mergerfs/media/disk3"]
  *     responses:
  *       200:
  *         description: SnapRAID operation executed successfully
@@ -2738,6 +2748,10 @@ router.post('/:id/devices/add', checkRole(['admin']), async (req, res) => {
  *                 poolName:
  *                   type: string
  *                   example: "media"
+ *                 fixDisks:
+ *                   type: string
+ *                   description: SnapRAID disk identifiers for fix operation (e.g., "d2,d4")
+ *                   example: "d2,d4"
  *                 timestamp:
  *                   type: string
  *                   example: "2025-11-20T12:34:56.789Z"
@@ -2765,6 +2779,8 @@ router.post('/:id/devices/add', checkRole(['admin']), async (req, res) => {
  *                       value: "NonRAID pool is not mounted. Please mount the pool first."
  *                     no_operation_running:
  *                       value: "No parity operation is currently running"
+ *                     mount_points_not_found:
+ *                       value: "Mount point(s) not found in SnapRAID config: /var/mergerfs/media/disk99"
  *       404:
  *         description: Pool not found
  *         content:
@@ -2782,7 +2798,7 @@ router.post('/:id/devices/add', checkRole(['admin']), async (req, res) => {
 // Execute parity operation on a MergerFS or NonRAID pool (admin only)
 router.post('/:id/parity', checkRole(['admin']), async (req, res) => {
   try {
-    const { operation, option } = req.body;
+    const { operation, option, fixDisks } = req.body;
 
     if (!operation) {
       return res.status(400).json({ error: 'Operation is required' });
@@ -2801,7 +2817,7 @@ router.post('/:id/parity', checkRole(['admin']), async (req, res) => {
     // Route to appropriate handler based on pool type
     if (pool.type === 'mergerfs') {
       // SnapRAID operations for MergerFS pools
-      result = await poolsService.executeSnapRAIDOperation(req.params.id, operation);
+      result = await poolsService.executeSnapRAIDOperation(req.params.id, operation, { fixDisks });
     } else if (pool.type === 'nonraid') {
       // NonRAID operations
       result = await poolsService.executeNonRaidParityOperation(req.params.id, operation, { option });
@@ -2824,7 +2840,10 @@ router.post('/:id/parity', checkRole(['admin']), async (req, res) => {
         error.message.includes('does not have any') ||
         error.message.includes('No') ||
         error.message.includes('not mounted') ||
-        error.message.includes('not available')) {
+        error.message.includes('not available') ||
+        error.message.includes('Mount point') ||
+        error.message.includes('No valid disk identifiers') ||
+        error.message.includes('No data disk entries')) {
       return res.status(400).json({ error: error.message });
     }
     res.status(500).json({ error: error.message });
