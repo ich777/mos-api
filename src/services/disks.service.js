@@ -123,6 +123,7 @@ class DisksService {
    * @returns {Object|null} Throughput data or null if not available
    */
   getDiskThroughput(device, user = null) {
+    if (!device) return null;
     // Map partition to base disk (e.g., sdj1 -> sdj, nvme0n1p1 -> nvme0n1)
     const baseDiskPath = this._getBaseDisk(device);
     const baseDisk = baseDiskPath.replace('/dev/', '');
@@ -237,6 +238,7 @@ class DisksService {
    * @returns {Object} Temperature data or null/standby status
    */
   async getDiskTemperature(device) {
+    if (!device) return { device: null, temperature: null, status: 'unknown' };
     const devicePath = device.startsWith('/dev/') ? device : `/dev/${device}`;
     const deviceName = device.replace('/dev/', '');
 

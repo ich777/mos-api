@@ -230,6 +230,7 @@ router.get('/', authenticateToken, async (req, res) => {
         if (enrichedPool.data_devices) {
           enrichedPool.data_devices = await Promise.all(
             enrichedPool.data_devices.map(async disk => {
+              if (!disk.device) return { ...disk, performance: null, temperature: null };
               const enrichedDisk = { ...disk };
               enrichedDisk.performance = disksService.getDiskThroughput(disk.device, req.user);
 
@@ -249,6 +250,7 @@ router.get('/', authenticateToken, async (req, res) => {
         if (enrichedPool.parity_devices) {
           enrichedPool.parity_devices = await Promise.all(
             enrichedPool.parity_devices.map(async disk => {
+              if (!disk.device) return { ...disk, performance: null, temperature: null };
               const enrichedDisk = { ...disk };
               enrichedDisk.performance = disksService.getDiskThroughput(disk.device, req.user);
 
