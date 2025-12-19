@@ -1871,6 +1871,9 @@ class PoolsService {
     const mergerfsBasePath = path.join(this.mergerfsBasePath, pool.name);
     let luksDevices = null;
 
+    // Check if pool was mounted before we start (to decide whether to remount at the end)
+    const wasMounted = await this._isMounted(mountPoint);
+
     try {
       // Determine filesystem from existing devices
       const existingFilesystem = pool.data_devices.length > 0 ? pool.data_devices[0].filesystem : 'xfs';
@@ -2155,12 +2158,22 @@ class PoolsService {
       // Pool might not be mounted, continue
     }
 
-    // Remount with all devices
-    const createPolicy = pool.config.policies?.create || 'epmfs';
-    const searchPolicy = pool.config.policies?.search || 'ff';
-    const mergerfsOptions = pool.config.global_options?.join(',') ||
-      `defaults,allow_other,use_ino,cache.files=partial,dropcacheonclose=true,category.create=${createPolicy},category.search=${searchPolicy}`;
-    await execPromise(`mergerfs -o ${mergerfsOptions} ${allMountPoints} ${mountPoint}`);
+    // Only remount if pool was mounted before adding devices
+    if (wasMounted) {
+      // Ensure mount point exists before remounting
+      const ownershipOptions = {
+        uid: this.defaultOwnership.uid,
+        gid: this.defaultOwnership.gid
+      };
+      await this._createDirectoryWithOwnership(mountPoint, ownershipOptions);
+
+      // Remount with all devices
+      const createPolicy = pool.config.policies?.create || 'epmfs';
+      const searchPolicy = pool.config.policies?.search || 'ff';
+      const mergerfsOptions = pool.config.global_options?.join(',') ||
+        `defaults,allow_other,use_ino,cache.files=partial,dropcacheonclose=true,category.create=${createPolicy},category.search=${searchPolicy}`;
+      await execPromise(`mergerfs -o ${mergerfsOptions} ${allMountPoints} ${mountPoint}`);
+    }
 
     // Update SnapRAID config if applicable
     if (pool.parity_devices.length > 0) {
