@@ -2658,7 +2658,7 @@ router.post('/:id/devices/replace', checkRole(['admin']), async (req, res) => {
 // Add devices to an existing pool (admin only)
 router.post('/:id/devices/add', checkRole(['admin']), async (req, res) => {
   try {
-    const { devices, format = false } = req.body;
+    const { devices, format = false, passphrase } = req.body;
 
     if (!Array.isArray(devices) || devices.length === 0) {
       return res.status(400).json({ error: 'At least one device is required' });
@@ -2673,7 +2673,7 @@ router.post('/:id/devices/add', checkRole(['admin']), async (req, res) => {
     }
 
     // Get the appropriate service and add devices
-    const result = await poolsService.addDevicesToPool(req.params.id, devices, { format });
+    const result = await poolsService.addDevicesToPool(req.params.id, devices, { format, passphrase });
 
     res.json(result);
   } catch (error) {
