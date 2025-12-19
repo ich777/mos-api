@@ -1436,10 +1436,12 @@ class PoolsService {
 
     snapraidConfig += '\n';
 
-    // Add data disks with IDs
-    pool.data_devices.forEach((device, index) => {
+    // Add data disks with IDs - use slot number to preserve parity mapping
+    // IMPORTANT: SnapRAID disk IDs must stay consistent with original slot assignments
+    // to maintain parity integrity across add/remove operations
+    pool.data_devices.forEach((device) => {
       const deviceMountPoint = path.join(mergerfsBaseDir, `disk${device.slot}`);
-      const diskId = `d${index + 1}`;
+      const diskId = `d${device.slot}`;  // Use slot number, not array index!
       snapraidConfig += `data ${diskId} ${deviceMountPoint}\n`;
     });
 
