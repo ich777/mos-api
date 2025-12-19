@@ -2175,6 +2175,29 @@ class PoolsService {
       const mergerfsOptions = pool.config.global_options?.join(',') ||
         `defaults,allow_other,use_ino,cache.files=partial,dropcacheonclose=true,category.create=${createPolicy},category.search=${searchPolicy}`;
       await execPromise(`mergerfs -o ${mergerfsOptions} ${allMountPoints} ${mountPoint}`);
+    } else {
+      // Pool should stay unmounted - cleanup the new disk mounts we just created
+      console.log(`Pool was not mounted, cleaning up new disk mounts...`);
+      for (const newDevice of newDataDevices) {
+        const diskMountPoint = path.join(mergerfsBasePath, `disk${newDevice.slot}`);
+        try {
+          await execPromise(`umount ${diskMountPoint}`);
+          console.log(`Unmounted ${diskMountPoint}`);
+        } catch (error) {
+          console.warn(`Warning: Could not unmount ${diskMountPoint}: ${error.message}`);
+        }
+      }
+
+      // Close LUKS devices if pool is encrypted
+      if (pool.config?.encrypted && luksDevices && luksDevices.length > 0) {
+        console.log(`Closing LUKS devices for unmounted pool...`);
+        try {
+          const strategy = this._getDeviceStrategy(pool);
+          await strategy.cleanup(luksDevices, pool);
+        } catch (cleanupError) {
+          console.warn(`Warning: Could not cleanup LUKS devices: ${cleanupError.message}`);
+        }
+      }
     }
 
     // Update SnapRAID config if applicable
