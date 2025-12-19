@@ -1872,7 +1872,9 @@ class PoolsService {
     let luksDevices = null;
 
     // Check if pool was mounted before we start (to decide whether to remount at the end)
-    const wasMounted = await this._isMounted(mountPoint);
+    // Also respect explicit remount option (used by replace operations)
+    const currentlyMounted = await this._isMounted(mountPoint);
+    const shouldRemount = options.remount !== undefined ? options.remount : currentlyMounted;
 
     try {
       // Determine filesystem from existing devices
@@ -2158,8 +2160,8 @@ class PoolsService {
       // Pool might not be mounted, continue
     }
 
-    // Only remount if pool was mounted before adding devices
-    if (wasMounted) {
+    // Only remount if pool was mounted before adding devices (or explicit remount requested)
+    if (shouldRemount) {
       // Ensure mount point exists before remounting
       const ownershipOptions = {
         uid: this.defaultOwnership.uid,
@@ -5272,6 +5274,10 @@ class PoolsService {
         const oldDeviceInfo = pool.data_devices.find(d => d.device === oldDevice);
         const preservedSlot = oldDeviceInfo ? oldDeviceInfo.slot : null;
 
+        // Check mount status BEFORE removing device (to restore after add)
+        const poolMountPoint = path.join(this.mountBasePath, pool.name);
+        const wasMounted = await this._isMounted(poolMountPoint);
+
         try {
           // Step 1: Remove old device first
           console.log(`Removing old device ${oldDevice}...`);
@@ -5281,7 +5287,8 @@ class PoolsService {
           console.log(`Adding new device ${newDevice} to slot ${preservedSlot}...`);
           const addResult = await this.addDevicesToPool(poolId, [newDevice], {
             ...options,
-            preserveSlot: preservedSlot
+            preserveSlot: preservedSlot,
+            remount: wasMounted
           });
 
           return {
