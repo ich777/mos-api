@@ -283,8 +283,8 @@ class DockerWebSocketManager extends EventEmitter {
               params
             );
 
-            // Update compose-containers file after upgrade
-            await this.dockerComposeService._updateStackInComposeContainers(stack.stack);
+            // Sync local SHAs to remote SHAs after successful upgrade
+            await this.dockerComposeService._syncLocalShasAfterUpgrade(stack.stack);
           } catch (error) {
             // Continue with next stack even if one fails
           }
@@ -363,8 +363,8 @@ class DockerWebSocketManager extends EventEmitter {
             params
           );
 
-          // Update compose-containers file after upgrade
-          await this.dockerComposeService._updateStackInComposeContainers(group.name);
+          // Sync local SHAs to remote SHAs after successful upgrade
+          await this.dockerComposeService._syncLocalShasAfterUpgrade(group.name);
         } catch (error) {
           // Error already handled by executeCommandWithStream
         }
@@ -1428,8 +1428,8 @@ class DockerWebSocketManager extends EventEmitter {
         params
       );
 
-      // Update compose-containers file after upgrade (preserve existing autostart/webui)
-      await this.dockerComposeService._updateStackInComposeContainers(name);
+      // Sync local SHAs to remote SHAs after successful upgrade
+      await this.dockerComposeService._syncLocalShasAfterUpgrade(name);
 
       this.sendUpdate(null, operationId, 'running', {
         output: `\nUpdated compose-containers file\n`,

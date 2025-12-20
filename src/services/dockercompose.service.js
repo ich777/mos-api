@@ -485,6 +485,37 @@ class DockerComposeService {
   }
 
   /**
+   * Sync local SHAs to remote SHAs after successful upgrade
+   * This simply copies the remote SHA value to local for each service
+   * @param {string} stackName - Stack name
+   * @returns {Promise<void>}
+   */
+  async _syncLocalShasAfterUpgrade(stackName) {
+    try {
+      const composeContainers = await this._readComposeContainers();
+      const existingIndex = composeContainers.findIndex(s => s.stack === stackName);
+
+      if (existingIndex === -1) {
+        console.warn(`Stack ${stackName} not found in compose-containers`);
+        return;
+      }
+
+      const services = composeContainers[existingIndex].services;
+      if (services) {
+        for (const serviceName of Object.keys(services)) {
+          if (services[serviceName].remote) {
+            services[serviceName].local = services[serviceName].remote;
+          }
+        }
+      }
+
+      await this._writeComposeContainers(composeContainers);
+    } catch (error) {
+      console.warn(`Failed to sync local SHAs for stack ${stackName}: ${error.message}`);
+    }
+  }
+
+  /**
    * Remove a stack from compose-containers file
    * @param {string} stackName - Stack name
    * @returns {Promise<void>}
@@ -1359,8 +1390,8 @@ class DockerComposeService {
       // Execute upgrade script
       const { stdout, stderr } = await execPromise(command);
 
-      // Update compose-containers file after upgrade
-      await this._updateStackInComposeContainers(name);
+      // Sync local SHAs to remote SHAs after successful upgrade
+      await this._syncLocalShasAfterUpgrade(name);
 
       // Try to parse the output as JSON
       try {
