@@ -730,6 +730,11 @@ class HubService {
       throw new Error('Failed to read template');
     }
 
+    // Normalize container name: replace spaces with underscores
+    if (template.name && template.name.includes(' ')) {
+      template.name = template.name.replace(/ /g, '_');
+    }
+
     return template;
   }
 

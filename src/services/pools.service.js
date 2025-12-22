@@ -9038,7 +9038,7 @@ class PoolsService {
       const hasNonRaidPool = pools.some(pool => pool.type === 'nonraid');
 
       // Only add nonraid if module is available AND no nonraid pool exists
-      if (!hasNonRaidPool) {
+      if (moduleAvailable && !hasNonRaidPool) {
         poolTypes.push('nonraid');
       }
     } catch (error) {
