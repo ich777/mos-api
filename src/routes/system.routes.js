@@ -2070,4 +2070,52 @@ router.get('/gpus', checkRole(['admin']), async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /system/sensors:
+ *   get:
+ *     summary: Get hardware sensor data
+ *     description: Retrieve hardware sensor data from lm-sensors (temperatures, voltages, fan speeds, etc.)
+ *     tags: [System]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Sensor data retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               description: Raw JSON output from sensors command, structure depends on installed sensors
+ *             example:
+ *               coretemp-isa-0000:
+ *                 Adapter: "ISA adapter"
+ *                 Core 0:
+ *                   temp2_input: 45.000
+ *                   temp2_max: 100.000
+ *                   temp2_crit: 100.000
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *             example:
+ *               error: "Error getting sensors: sensors command not found"
+ */
+router.get('/sensors', authenticateToken, async (req, res) => {
+  try {
+    const sensors = await systemService.getSensors();
+    res.json(sensors);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 module.exports = router; 

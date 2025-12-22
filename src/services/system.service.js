@@ -1854,6 +1854,19 @@ class SystemService {
       throw new Error(`Error getting GPUs: ${error.message}`);
     }
   }
+
+  /**
+   * Get hardware sensor data using lm-sensors (sensors -j)
+   * @returns {Promise<Object>} Sensor data in JSON format
+   */
+  async getSensors() {
+    try {
+      const { stdout } = await execAsync('sensors -j');
+      return JSON.parse(stdout);
+    } catch (error) {
+      throw new Error(`Error getting sensors: ${error.message}`);
+    }
+  }
 }
 
 module.exports = new SystemService();
