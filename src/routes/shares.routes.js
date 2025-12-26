@@ -238,7 +238,7 @@ const sharesService = require('../services/shares.service');
  *           description: Create share directory if it doesn't exist
  *           default: true
  *           example: true
- *         target_devices:
+ *         targetDevices:
  *           type: array
  *           items:
  *             type: integer
@@ -328,7 +328,7 @@ const sharesService = require('../services/shares.service');
  *           description: Create share directory if it doesn't exist
  *           default: true
  *           example: true
- *         target_devices:
+ *         targetDevices:
  *           type: array
  *           items:
  *             type: integer
@@ -380,7 +380,7 @@ const sharesService = require('../services/shares.service');
  *           nullable: true
  *           description: Share description
  *           example: "Updated media files storage"
- *         target_devices:
+ *         targetDevices:
  *           type: array
  *           items:
  *             type: integer
@@ -426,7 +426,7 @@ const sharesService = require('../services/shares.service');
  *           description: Use secure ports (1024 and below)
  *           enum: ["true", "false"]
  *           example: "true"
- *         target_devices:
+ *         targetDevices:
  *           type: array
  *           items:
  *             type: integer
@@ -853,7 +853,7 @@ router.get('/pools', checkRole(['admin']), async (req, res) => {
  *
  *       **Absolute path shares**: Set poolName to null and provide an absolute path in subPath. The directory must already exist, and ownership/permissions will NOT be modified.
  *
- *       **For MergerFS pools**: You can specify target_devices to control which disk slots store the data.
+ *       **For MergerFS pools**: You can specify targetDevices to control which disk slots store the data.
  *       Use GET /pools to get available disk slots from pool.data_devices[].slot.
  *     tags: [Shares]
  *     security:
@@ -897,7 +897,7 @@ router.get('/pools', checkRole(['admin']), async (req, res) => {
  *                 shareName: "filme"
  *                 poolName: "media"
  *                 subPath: "Filme"
- *                 target_devices: [1, 2]
+ *                 targetDevices: [1, 2]
  *                 enabled: true
  *                 read_only: false
  *                 guest_ok: false
@@ -938,12 +938,12 @@ router.get('/pools', checkRole(['admin']), async (req, res) => {
  *                       description: SMB share configuration
  *                     mergerfsDetails:
  *                       type: object
- *                       description: Additional details for MergerFS pools (only present when target_devices specified)
+ *                       description: Additional details for MergerFS pools (only present when targetDevices specified)
  *                       properties:
  *                         poolType:
  *                           type: string
  *                           example: "mergerfs"
- *                         target_devices:
+ *                         targetDevices:
  *                           type: array
  *                           items:
  *                             type: integer
@@ -1026,7 +1026,7 @@ router.post('/smb', checkRole(['admin']), async (req, res) => {
       comment = null,
       policies = [],
       createDirectory = true,
-      target_devices = null,
+      targetDevices = null,
       createDirectories = true,
       managePathRules = true
     } = req.body;
@@ -1057,28 +1057,28 @@ router.post('/smb', checkRole(['admin']), async (req, res) => {
       }
     }
 
-    // Validation of target_devices (if given)
-    if (target_devices !== null) {
-      if (!Array.isArray(target_devices)) {
+    // Validation of targetDevices (if given)
+    if (targetDevices !== null) {
+      if (!Array.isArray(targetDevices)) {
         return res.status(400).json({
           success: false,
-          error: 'target_devices must be an array of disk slot numbers'
+          error: 'targetDevices must be an array of disk slot numbers'
         });
       }
 
-      if (target_devices.length === 0) {
+      if (targetDevices.length === 0) {
         return res.status(400).json({
           success: false,
-          error: 'target_devices array cannot be empty'
+          error: 'targetDevices array cannot be empty'
         });
       }
 
       // Check if all values are numbers
-      const invalidDevices = target_devices.filter(device => !Number.isInteger(device) || device < 1);
+      const invalidDevices = targetDevices.filter(device => !Number.isInteger(device) || device < 1);
       if (invalidDevices.length > 0) {
         return res.status(400).json({
           success: false,
-          error: 'All target_devices must be positive integers (disk slot numbers)'
+          error: 'All targetDevices must be positive integers (disk slot numbers)'
         });
       }
     }
@@ -1101,7 +1101,7 @@ router.post('/smb', checkRole(['admin']), async (req, res) => {
       comment,
       policies,
       createDirectory,
-      target_devices,
+      target_devices: targetDevices,
       createDirectories,
       managePathRules
     };
@@ -1128,7 +1128,7 @@ router.post('/smb', checkRole(['admin']), async (req, res) => {
  *
  *       **Absolute path shares**: Set poolName to null and provide an absolute path in subPath. The directory must already exist, and ownership/permissions will NOT be modified.
  *
- *       **For MergerFS pools**: You can specify target_devices to control which disk slots store the data.
+ *       **For MergerFS pools**: You can specify targetDevices to control which disk slots store the data.
  *       Use GET /pools to get available disk slots from pool.data_devices[].slot.
  *     tags: [Shares]
  *     security:
@@ -1175,7 +1175,7 @@ router.post('/smb', checkRole(['admin']), async (req, res) => {
  *                 poolName: "media"
  *                 subPath: "Filme"
  *                 source: "192.168.1.0/24"
- *                 target_devices: [1, 2]
+ *                 targetDevices: [1, 2]
  *                 enabled: true
  *                 read_only: false
  *                 anonuid: 65534
@@ -1226,7 +1226,7 @@ router.post('/nfs', checkRole(['admin']), async (req, res) => {
       mapping = "root_squash",
       secure = "true",
       createDirectory = true,
-      target_devices = null,
+      targetDevices = null,
       createDirectories = true,
       managePathRules = true
     } = req.body;
@@ -1257,28 +1257,28 @@ router.post('/nfs', checkRole(['admin']), async (req, res) => {
       }
     }
 
-    // Validation of target_devices (if given)
-    if (target_devices !== null) {
-      if (!Array.isArray(target_devices)) {
+    // Validation of targetDevices (if given)
+    if (targetDevices !== null) {
+      if (!Array.isArray(targetDevices)) {
         return res.status(400).json({
           success: false,
-          error: 'target_devices must be an array of disk slot numbers'
+          error: 'targetDevices must be an array of disk slot numbers'
         });
       }
 
-      if (target_devices.length === 0) {
+      if (targetDevices.length === 0) {
         return res.status(400).json({
           success: false,
-          error: 'target_devices array cannot be empty'
+          error: 'targetDevices array cannot be empty'
         });
       }
 
-      // Prüfe ob alle Werte Zahlen sind
-      const invalidDevices = target_devices.filter(device => !Number.isInteger(device) || device < 1);
+      // Check if all values are numbers
+      const invalidDevices = targetDevices.filter(device => !Number.isInteger(device) || device < 1);
       if (invalidDevices.length > 0) {
         return res.status(400).json({
           success: false,
-          error: 'All target_devices must be positive integers (disk slot numbers)'
+          error: 'All targetDevices must be positive integers (disk slot numbers)'
         });
       }
     }
@@ -1323,7 +1323,7 @@ router.post('/nfs', checkRole(['admin']), async (req, res) => {
       mapping,
       secure,
       createDirectory,
-      target_devices,
+      target_devices: targetDevices,
       createDirectories,
       managePathRules
     };
@@ -1442,7 +1442,7 @@ router.get('/smb/:shareId', checkRole(['admin']), async (req, res) => {
  *     description: |
  *       Update configuration of an existing SMB share (admin only).
  *
- *       **Note**: When updating target_devices, the corresponding path rules in the pool configuration are automatically updated.
+ *       **Note**: When updating targetDevices, the corresponding path rules in the pool configuration are automatically updated.
  *     tags: [Shares]
  *     security:
  *       - bearerAuth: []
@@ -1721,23 +1721,14 @@ router.delete('/smb/:shareId', checkRole(['admin']), async (req, res) => {
  *                     isValidForPathRules:
  *                       type: boolean
  *                       example: true
- *                     target_devices:
- *                       type: array
- *                       items:
- *                         type: integer
- *                       example: [1, 2]
- *                       nullable: true
  *                     pathRule:
  *                       type: object
  *                       nullable: true
  *                       properties:
- *                         pool:
- *                           type: string
- *                           example: "media"
  *                         path:
  *                           type: string
  *                           example: "/Filme"
- *                         target_devices:
+ *                         targetDevices:
  *                           type: array
  *                           items:
  *                             type: integer
@@ -1811,16 +1802,16 @@ router.get('/smb/:shareId/target-devices', checkRole(['admin']), async (req, res
  *           schema:
  *             type: object
  *             required:
- *               - target_devices
+ *               - targetDevices
  *             properties:
- *               target_devices:
+ *               targetDevices:
  *                 type: array
  *                 items:
  *                   type: integer
  *                 description: Array of disk slot numbers. Use GET /pools to get available slots.
  *                 example: [3, 4]
  *           example:
- *             target_devices: [3, 4]
+ *             targetDevices: [3, 4]
  *     responses:
  *       200:
  *         description: Target devices updated successfully
@@ -1865,7 +1856,7 @@ router.get('/smb/:shareId/target-devices', checkRole(['admin']), async (req, res
 router.put('/smb/:shareId/target-devices', checkRole(['admin']), async (req, res) => {
   try {
     const { shareId } = req.params;
-    const { target_devices } = req.body;
+    const { targetDevices } = req.body;
 
     if (!shareId) {
       return res.status(400).json({
@@ -1874,30 +1865,30 @@ router.put('/smb/:shareId/target-devices', checkRole(['admin']), async (req, res
       });
     }
 
-    if (!Array.isArray(target_devices)) {
+    if (!Array.isArray(targetDevices)) {
       return res.status(400).json({
         success: false,
-        error: 'target_devices must be an array of disk slot numbers'
+        error: 'targetDevices must be an array of disk slot numbers'
       });
     }
 
-    if (target_devices.length === 0) {
+    if (targetDevices.length === 0) {
       return res.status(400).json({
         success: false,
-        error: 'target_devices array cannot be empty'
+        error: 'targetDevices array cannot be empty'
       });
     }
 
-    // Validation of target_devices
-    const invalidDevices = target_devices.filter(device => !Number.isInteger(device) || device < 1);
+    // Validation of targetDevices
+    const invalidDevices = targetDevices.filter(device => !Number.isInteger(device) || device < 1);
     if (invalidDevices.length > 0) {
       return res.status(400).json({
         success: false,
-        error: 'All target_devices must be positive integers (disk slot numbers)'
+        error: 'All targetDevices must be positive integers (disk slot numbers)'
       });
     }
 
-    const result = await sharesService.updateShareTargetDevices(shareId, target_devices);
+    const result = await sharesService.updateShareTargetDevices(shareId, targetDevices);
     res.json(result);
   } catch (error) {
     if (error.message.includes('not found')) {
@@ -2067,7 +2058,7 @@ router.get('/nfs/:shareId', checkRole(['admin']), async (req, res) => {
  *     description: |
  *       Update configuration of an existing NFS share (admin only).
  *
- *       **Note**: When updating target_devices, the corresponding path rules in the pool configuration are automatically updated.
+ *       **Note**: When updating targetDevices, the corresponding path rules in the pool configuration are automatically updated.
  *     tags: [Shares]
  *     security:
  *       - bearerAuth: []
@@ -2326,16 +2317,16 @@ router.get('/nfs/:shareId/target-devices', checkRole(['admin']), async (req, res
  *           schema:
  *             type: object
  *             required:
- *               - target_devices
+ *               - targetDevices
  *             properties:
- *               target_devices:
+ *               targetDevices:
  *                 type: array
  *                 items:
  *                   type: integer
  *                 description: Array of disk slot numbers. Use GET /pools to get available slots.
  *                 example: [3, 4]
  *           example:
- *             target_devices: [3, 4]
+ *             targetDevices: [3, 4]
  *     responses:
  *       200:
  *         description: Target devices updated successfully
@@ -2351,7 +2342,7 @@ router.get('/nfs/:shareId/target-devices', checkRole(['admin']), async (req, res
 router.put('/nfs/:shareId/target-devices', checkRole(['admin']), async (req, res) => {
   try {
     const { shareId } = req.params;
-    const { target_devices } = req.body;
+    const { targetDevices } = req.body;
 
     if (!shareId) {
       return res.status(400).json({
@@ -2360,30 +2351,30 @@ router.put('/nfs/:shareId/target-devices', checkRole(['admin']), async (req, res
       });
     }
 
-    if (!Array.isArray(target_devices)) {
+    if (!Array.isArray(targetDevices)) {
       return res.status(400).json({
         success: false,
-        error: 'target_devices must be an array of disk slot numbers'
+        error: 'targetDevices must be an array of disk slot numbers'
       });
     }
 
-    if (target_devices.length === 0) {
+    if (targetDevices.length === 0) {
       return res.status(400).json({
         success: false,
-        error: 'target_devices array cannot be empty'
+        error: 'targetDevices array cannot be empty'
       });
     }
 
-    // Validation of target_devices
-    const invalidDevices = target_devices.filter(device => !Number.isInteger(device) || device < 1);
+    // Validation of targetDevices
+    const invalidDevices = targetDevices.filter(device => !Number.isInteger(device) || device < 1);
     if (invalidDevices.length > 0) {
       return res.status(400).json({
         success: false,
-        error: 'All target_devices must be positive integers (disk slot numbers)'
+        error: 'All targetDevices must be positive integers (disk slot numbers)'
       });
     }
 
-    const result = await sharesService.updateShareTargetDevices(shareId, target_devices);
+    const result = await sharesService.updateShareTargetDevices(shareId, targetDevices);
     res.json(result);
   } catch (error) {
     if (error.message.includes('not found')) {

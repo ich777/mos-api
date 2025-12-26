@@ -1168,7 +1168,6 @@ class SharesService {
       const poolName = this._extractPoolNameFromPath(share.path);
       let poolType = null;
       let isValidForPathRules = false;
-      let target_devices = null;
       let pathRule = null;
 
       if (poolName) {
@@ -1186,8 +1185,11 @@ class SharesService {
             const matchingRule = pool.config.path_rules.find(rule => rule.path === relativePath);
 
             if (matchingRule) {
-              target_devices = matchingRule.target_devices;
-              pathRule = matchingRule;
+              // Convert to camelCase for API response (pools.json still uses snake_case)
+              pathRule = {
+                path: matchingRule.path,
+                targetDevices: matchingRule.target_devices
+              };
             }
           }
         } catch (poolError) {
@@ -1205,7 +1207,6 @@ class SharesService {
           poolType,
           isValidForPathRules,
           relativePath: poolName ? this._extractRelativePathFromShare(share.path, poolName) : null,
-          target_devices,
           pathRule
         },
         timestamp: new Date().toISOString()
