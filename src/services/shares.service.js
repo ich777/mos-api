@@ -347,7 +347,7 @@ class SharesService {
       case_sensitive = true,
       comment = null,
       policies = [],
-      targetDevices = null
+      target_devices = null
     } = options;
 
     // Process write_list and valid_users arrays
@@ -376,19 +376,6 @@ class SharesService {
       policies: Array.isArray(policies) ? policies : []
     };
 
-    // Add path_rule if targetDevices are specified
-    if (targetDevices && Array.isArray(targetDevices) && targetDevices.length > 0) {
-      const poolName = this._extractPoolNameFromPath(sharePath);
-      if (poolName) {
-        const relativePath = this._extractRelativePathFromShare(sharePath, poolName);
-        shareConfig.path_rule = {
-          pool: poolName,
-          path: relativePath,
-          target_devices: targetDevices
-        };
-      }
-    }
-
     return shareConfig;
   }
 
@@ -409,7 +396,7 @@ class SharesService {
       write_operations = "sync",
       mapping = "root_squash",
       secure = "true",
-      targetDevices = null
+      target_devices = null
     } = options;
 
     const shareConfig = {
@@ -425,19 +412,6 @@ class SharesService {
       mapping,
       secure
     };
-
-    // Add path_rule if targetDevices are specified
-    if (targetDevices && Array.isArray(targetDevices) && targetDevices.length > 0) {
-      const poolName = this._extractPoolNameFromPath(sharePath);
-      if (poolName) {
-        const relativePath = this._extractRelativePathFromShare(sharePath, poolName);
-        shareConfig.path_rule = {
-          pool: poolName,
-          path: relativePath,
-          target_devices: targetDevices
-        };
-      }
-    }
 
     return shareConfig;
   }
@@ -501,13 +475,13 @@ class SharesService {
         }
 
         // Extended functionality for MergerFS pools
-        if (poolConfig && poolConfig.type === 'mergerfs' && options.targetDevices && Array.isArray(options.targetDevices)) {
+        if (poolConfig && poolConfig.type === 'mergerfs' && options.target_devices && Array.isArray(options.target_devices)) {
           // Validate that the specified disk slots exist
-          await this._validateDiskSlots(poolName, options.targetDevices);
+          await this._validateDiskSlots(poolName, options.target_devices);
 
           // Create directories on the specified disk slots
           if (options.createDirectories !== false) {
-            diskResults = await this._createDiskDirectories(poolName, subPath, options.targetDevices, {
+            diskResults = await this._createDiskDirectories(poolName, subPath, options.target_devices, {
               createDirectories: true,
               setOwnership: true
             });
@@ -526,7 +500,7 @@ class SharesService {
           if (options.managePathRules !== false) {
             const rulePath = subPath.startsWith('/') ? subPath : `/${subPath}`;
             try {
-              const pathRuleResult = await this.addOrUpdatePathRule(poolName, rulePath, options.targetDevices);
+              const pathRuleResult = await this.addOrUpdatePathRule(poolName, rulePath, options.target_devices);
               pathRuleCreated = true;
             } catch (pathRuleError) {
               console.warn(`Could not create path rule: ${pathRuleError.message}`);
@@ -538,7 +512,7 @@ class SharesService {
         sharePath = path.join(pool.mountPath, subPath).replace(/\/+/g, '/');
 
         // Check if the share path already exists or should be created (default behavior)
-        if (options.createDirectory !== false && (!poolConfig || poolConfig.type !== 'mergerfs' || !options.targetDevices)) {
+        if (options.createDirectory !== false && (!poolConfig || poolConfig.type !== 'mergerfs' || !options.target_devices)) {
           try {
             await fs.mkdir(sharePath, { recursive: true });
 
@@ -618,10 +592,10 @@ class SharesService {
       };
 
       // Add extended information for MergerFS pools
-      if (poolConfig && poolConfig.type === 'mergerfs' && options.targetDevices) {
+      if (poolConfig && poolConfig.type === 'mergerfs' && options.target_devices) {
         result.data.mergerfsDetails = {
           poolType: poolConfig.type,
-          targetDevices: options.targetDevices,
+          target_devices: options.target_devices,
           diskDirectories: diskResults,
           pathRuleCreated
         };
@@ -699,13 +673,13 @@ class SharesService {
         }
 
         // Extended functionality for MergerFS pools
-        if (poolConfig && poolConfig.type === 'mergerfs' && options.targetDevices && Array.isArray(options.targetDevices)) {
+        if (poolConfig && poolConfig.type === 'mergerfs' && options.target_devices && Array.isArray(options.target_devices)) {
           // Validate that the specified disk slots exist
-          await this._validateDiskSlots(poolName, options.targetDevices);
+          await this._validateDiskSlots(poolName, options.target_devices);
 
           // Create directories on the specified disk slots
           if (options.createDirectories !== false) {
-            diskResults = await this._createDiskDirectories(poolName, subPath, options.targetDevices, {
+            diskResults = await this._createDiskDirectories(poolName, subPath, options.target_devices, {
               createDirectories: true,
               setOwnership: true
             });
@@ -724,7 +698,7 @@ class SharesService {
           if (options.managePathRules !== false) {
             const rulePath = subPath.startsWith('/') ? subPath : `/${subPath}`;
             try {
-              const pathRuleResult = await this.addOrUpdatePathRule(poolName, rulePath, options.targetDevices);
+              const pathRuleResult = await this.addOrUpdatePathRule(poolName, rulePath, options.target_devices);
               pathRuleCreated = true;
             } catch (pathRuleError) {
               console.warn(`Could not create path rule: ${pathRuleError.message}`);
@@ -736,7 +710,7 @@ class SharesService {
         sharePath = path.join(pool.mountPath, subPath).replace(/\/+/g, '/');
 
         // Check if the share path already exists or should be created (default behavior)
-        if (options.createDirectory !== false && (!poolConfig || poolConfig.type !== 'mergerfs' || !options.targetDevices)) {
+        if (options.createDirectory !== false && (!poolConfig || poolConfig.type !== 'mergerfs' || !options.target_devices)) {
           try {
             await fs.mkdir(sharePath, { recursive: true });
 
@@ -816,10 +790,10 @@ class SharesService {
       };
 
       // Add extended information for MergerFS pools
-      if (poolConfig && poolConfig.type === 'mergerfs' && options.targetDevices) {
+      if (poolConfig && poolConfig.type === 'mergerfs' && options.target_devices) {
         result.data.mergerfsDetails = {
           poolType: poolConfig.type,
-          targetDevices: options.targetDevices,
+          target_devices: options.target_devices,
           diskDirectories: diskResults,
           pathRuleCreated
         };
@@ -1051,8 +1025,8 @@ class SharesService {
         name: originalShare.name // Name cannot be changed in ID-based updates
       };
 
-      // Check if targetDevices was updated and update path_rule accordingly
-      if (updates.hasOwnProperty('targetDevices')) {
+      // Check if target_devices was updated and update path_rule accordingly
+      if (updates.hasOwnProperty('target_devices')) {
         const poolName = this._extractPoolNameFromPath(updatedShareConfig.path);
         if (poolName) {
           // Check if it's a MergerFS pool
@@ -1061,29 +1035,19 @@ class SharesService {
             if (pool.type === 'mergerfs') {
               const relativePath = this._extractRelativePathFromShare(updatedShareConfig.path, poolName);
 
-              if (updates.targetDevices && Array.isArray(updates.targetDevices) && updates.targetDevices.length > 0) {
-                // Update/create path_rule
-                updatedShareConfig.path_rule = {
-                  pool: poolName,
-                  path: relativePath,
-                  target_devices: updates.targetDevices
-                };
-
-                // Update or create path rule
+              if (updates.target_devices && Array.isArray(updates.target_devices) && updates.target_devices.length > 0) {
+                // Update or create path rule in pools.json
                 try {
-                  await this.addOrUpdatePathRule(poolName, relativePath, updates.targetDevices);
+                  await this.addOrUpdatePathRule(poolName, relativePath, updates.target_devices);
                 } catch (pathRuleError) {
                   console.warn(`Could not update path rule: ${pathRuleError.message}`);
                 }
-              } else if (updates.targetDevices === null || (Array.isArray(updates.targetDevices) && updates.targetDevices.length === 0)) {
-                // Remove path_rule if targetDevices is empty or null
-                if (updatedShareConfig.path_rule) {
-                  try {
-                    await this.removePathRule(updatedShareConfig.path_rule.pool, updatedShareConfig.path_rule.path);
-                  } catch (pathRuleError) {
-                    console.warn(`Could not remove path rule: ${pathRuleError.message}`);
-                  }
-                  delete updatedShareConfig.path_rule;
+              } else if (updates.target_devices === null || (Array.isArray(updates.target_devices) && updates.target_devices.length === 0)) {
+                // Remove path_rule from pools.json if target_devices is empty or null
+                try {
+                  await this.removePathRule(poolName, relativePath);
+                } catch (pathRuleError) {
+                  console.warn(`Could not remove path rule: ${pathRuleError.message}`);
                 }
               }
             } else {
@@ -1098,6 +1062,9 @@ class SharesService {
           }
         }
       }
+
+      // Always remove target_devices from share config
+      delete updatedShareConfig.target_devices;
 
       section[shareType][shareIndex] = updatedShareConfig;
 
@@ -1172,17 +1139,17 @@ class SharesService {
   /**
    * Update target devices for a share (path rule management)
    * @param {string} shareId - ID of the share
-   * @param {Array<number>} targetDevices - Array of disk slot numbers
+   * @param {Array<number>} target_devices - Array of disk slot numbers
    * @returns {Promise<Object>} Update result
    */
-  async updateShareTargetDevices(shareId, targetDevices) {
+  async updateShareTargetDevices(shareId, target_devices) {
     try {
-      // Validate targetDevices
-      if (targetDevices && (!Array.isArray(targetDevices) || !targetDevices.every(device => Number.isInteger(device) && device > 0))) {
-        throw new Error('targetDevices must be an array of positive integers (disk slot numbers)');
+      // Validate target_devices
+      if (target_devices && (!Array.isArray(target_devices) || !target_devices.every(device => Number.isInteger(device) && device > 0))) {
+        throw new Error('target_devices must be an array of positive integers (disk slot numbers)');
       }
 
-      return await this.updateShare(shareId, { targetDevices });
+      return await this.updateShare(shareId, { target_devices });
     } catch (error) {
       throw new Error(`Error updating share target devices: ${error.message}`);
     }
@@ -1201,7 +1168,7 @@ class SharesService {
       const poolName = this._extractPoolNameFromPath(share.path);
       let poolType = null;
       let isValidForPathRules = false;
-      let currentTargetDevices = null;
+      let target_devices = null;
       let pathRule = null;
 
       if (poolName) {
@@ -1219,7 +1186,7 @@ class SharesService {
             const matchingRule = pool.config.path_rules.find(rule => rule.path === relativePath);
 
             if (matchingRule) {
-              currentTargetDevices = matchingRule.target_devices;
+              target_devices = matchingRule.target_devices;
               pathRule = matchingRule;
             }
           }
@@ -1238,7 +1205,7 @@ class SharesService {
           poolType,
           isValidForPathRules,
           relativePath: poolName ? this._extractRelativePathFromShare(share.path, poolName) : null,
-          currentTargetDevices,
+          target_devices,
           pathRule
         },
         timestamp: new Date().toISOString()
@@ -1255,7 +1222,7 @@ class SharesService {
    */
   async removeShareTargetDevices(shareId) {
     try {
-      return await this.updateShare(shareId, { targetDevices: null });
+      return await this.updateShare(shareId, { target_devices: null });
     } catch (error) {
       throw new Error(`Error removing share target devices: ${error.message}`);
     }
@@ -1460,15 +1427,15 @@ class SharesService {
    * Create directories on target devices for a specific path
    * @param {string} poolName - Name of the pool
    * @param {string} rulePath - Path for the rule (e.g., "/Filme")
-   * @param {Array<number>} targetDevices - Array of target device slots
+   * @param {Array<number>} target_devices - Array of target device slots
    * @returns {Promise<Object>} Creation results
    */
-  async _createDirectoriesOnTargetDevices(poolName, rulePath, targetDevices) {
+  async _createDirectoriesOnTargetDevices(poolName, rulePath, target_devices) {
     // Remove leading slash for directory creation
     const subPath = rulePath.startsWith('/') ? rulePath.substring(1) : rulePath;
 
     // Use existing _createDiskDirectories method
-    return await this._createDiskDirectories(poolName, subPath, targetDevices, {
+    return await this._createDiskDirectories(poolName, subPath, target_devices, {
       createDirectories: true,
       setOwnership: true
     });
@@ -1478,10 +1445,10 @@ class SharesService {
    * Add or update path rule in pool configuration
    * @param {string} poolName - Name of the pool
    * @param {string} rulePath - Path for the rule (e.g., "/Filme")
-   * @param {Array<number>} targetDevices - Array of target device slots
+   * @param {Array<number>} target_devices - Array of target device slots
    * @returns {Promise<Object>} Update result
    */
-  async addOrUpdatePathRule(poolName, rulePath, targetDevices) {
+  async addOrUpdatePathRule(poolName, rulePath, target_devices) {
     try {
       const pools = await this._getPools();
       const poolIndex = pools.findIndex(p => p.name === poolName);
@@ -1514,15 +1481,9 @@ class SharesService {
       }
 
       // Validate target devices against available disks
-      if (targetDevices && targetDevices.length > 0) {
-        const diskValidation = await this._validateDiskSlots(poolName, targetDevices);
-        const invalidDisks = Object.entries(diskValidation.results)
-          .filter(([slot, result]) => !result.exists)
-          .map(([slot]) => slot);
-
-        if (invalidDisks.length > 0) {
-          throw new Error(`Invalid disk slots for pool '${poolName}': ${invalidDisks.join(', ')}. Available disks: ${diskValidation.availableSlots.join(', ')}`);
-        }
+      // _validateDiskSlots already throws if slots are invalid
+      if (target_devices && target_devices.length > 0) {
+        await this._validateDiskSlots(poolName, target_devices);
       }
 
       // Make sure config.path_rules exists
@@ -1538,9 +1499,9 @@ class SharesService {
 
       // Create directories on the specified target devices if given
       let directoryCreationResults = {};
-      if (targetDevices && targetDevices.length > 0 && normalizedPath !== '/') {
+      if (target_devices && target_devices.length > 0 && normalizedPath !== '/') {
         try {
-          directoryCreationResults = await this._createDirectoriesOnTargetDevices(poolName, normalizedPath, targetDevices);
+          directoryCreationResults = await this._createDirectoriesOnTargetDevices(poolName, normalizedPath, target_devices);
 
           // Check if all directories were successfully created
           const failedCreations = Object.entries(directoryCreationResults)
@@ -1562,12 +1523,12 @@ class SharesService {
 
       if (existingRuleIndex !== -1) {
         // Update existing rule
-        pool.config.path_rules[existingRuleIndex].target_devices = targetDevices;
+        pool.config.path_rules[existingRuleIndex].target_devices = target_devices;
       } else {
         // Add new rule
         pool.config.path_rules.push({
           path: normalizedPath,
-          target_devices: targetDevices
+          target_devices: target_devices
         });
       }
 
@@ -1582,7 +1543,7 @@ class SharesService {
         data: {
           poolName,
           path: normalizedPath,
-          target_devices: targetDevices,
+          target_devices: target_devices,
           action: existingRuleIndex !== -1 ? 'updated' : 'created',
           directoryCreation: directoryCreationResults
         },

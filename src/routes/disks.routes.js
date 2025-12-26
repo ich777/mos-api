@@ -812,10 +812,24 @@ router.get('/:device/smart', async (req, res) => {
   * /disks/availablefilesystems:
   *   get:
   *     summary: Get available filesystems
-  *     description: Retrieve a simple array of available filesystem names for formatting.
+  *     description: |
+  *       Retrieve a simple array of available filesystem names for formatting.
+  *       Use the pooltype parameter to filter filesystems based on pool type:
+  *       - **multi**: Returns only btrfs and zfs (if available) - these support multiple disks
+  *       - **nonraid**, **single**, **mergerfs** or no parameter: Returns all available filesystems
   *     tags: [Disks]
   *     security:
   *       - bearerAuth: []
+  *     parameters:
+  *       - in: query
+  *         name: pooltype
+  *         schema:
+  *           type: string
+  *           enum: [multi, nonraid, single, mergerfs]
+  *         description: |
+  *           Filter filesystems by pool type.
+  *           'multi' returns only btrfs/zfs (multi-disk capable).
+  *           Other values or omitting returns all filesystems.
   *     responses:
   *       200:
   *         description: Available filesystems retrieved successfully
@@ -825,7 +839,13 @@ router.get('/:device/smart', async (req, res) => {
   *               type: array
   *               items:
   *                 type: string
-  *               example: ["ext4", "xfs", "btrfs", "vfat"]
+  *             examples:
+  *               all:
+  *                 summary: All filesystems (no filter or nonraid/single/mergerfs)
+  *                 value: ["ext4", "xfs", "btrfs", "vfat", "zfs"]
+  *               multi:
+  *                 summary: Multi-disk filesystems only (pooltype=multi)
+  *                 value: ["btrfs", "zfs"]
   *       401:
   *         description: Not authenticated
   *         content:
@@ -843,7 +863,8 @@ router.get('/:device/smart', async (req, res) => {
 // Get available filesystems
 router.get('/availablefilesystems', async (req, res) => {
   try {
-    const availableFilesystems = await disksService.getAvailableFilesystems();
+    const { pooltype } = req.query;
+    const availableFilesystems = await disksService.getAvailableFilesystems(pooltype);
     res.json(availableFilesystems);
   } catch (error) {
     res.status(500).json({ error: error.message });

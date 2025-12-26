@@ -2689,8 +2689,11 @@ class DisksService {
 
   /**
    * Prüft verfügbare Dateisysteme für die Formatierung
+   * @param {string} pooltype - Optional: Filter für Pool-Typ ('multi', 'nonraid', 'single', 'mergerfs')
+   *                            Bei 'multi' werden nur btrfs und zfs zurückgegeben
+   *                            Bei 'nonraid', 'single', 'mergerfs' oder ohne Parameter werden alle zurückgegeben
    */
-  async getAvailableFilesystems() {
+  async getAvailableFilesystems(pooltype = null) {
     const supportedFilesystems = [
       { name: 'ext4', command: 'mkfs.ext4' },
       { name: 'xfs', command: 'mkfs.xfs' },
@@ -2699,9 +2702,15 @@ class DisksService {
       { name: 'zfs', command: 'zfs' }
     ];
 
+    // Bei pooltype=multi nur btrfs und zfs prüfen
+    const multiPoolFilesystems = ['btrfs', 'zfs'];
+    const filesystemsToCheck = pooltype === 'multi'
+      ? supportedFilesystems.filter(fs => multiPoolFilesystems.includes(fs.name))
+      : supportedFilesystems;
+
     const availableFilesystems = [];
 
-    for (const fs of supportedFilesystems) {
+    for (const fs of filesystemsToCheck) {
       try {
         // Spezielle Behandlung für ZFS
         if (fs.name === 'zfs') {

@@ -1601,7 +1601,7 @@ class PoolsService {
         const deviceInfo = preparedDeviceInfos[i];
         const uuid = await strategy.getDeviceUuid(deviceInfo, poolConfig);
         dataDevices.push({
-          slot: (i + 1).toString(),
+          slot: i + 1,
           id: uuid,
           filesystem: 'btrfs',
           spindown: null
@@ -1801,7 +1801,7 @@ class PoolsService {
       }
 
       newDataDevices.push({
-        slot: (pool.data_devices.length + i + 1).toString(),
+        slot: pool.data_devices.length + i + 1,
         id: deviceUuid,
         filesystem: 'btrfs',
         spindown: null
@@ -2131,7 +2131,7 @@ class PoolsService {
       }
 
       const newDevice = {
-        slot: diskIndex.toString(),
+        slot: diskIndex,
         id: finalUuid, // UUID of the actual partition/device being used
         filesystem,
         spindown: null
@@ -2821,7 +2821,7 @@ class PoolsService {
         index: this._getNextPoolIndex(pools),
         data_devices: [
           {
-            slot: "1",
+            slot: 1,
             id: deviceUuid,
             filesystem: finalFilesystem,
             spindown: options.spindown || null
@@ -4378,7 +4378,7 @@ class PoolsService {
           const deviceInfo = await this.checkDeviceFilesystem(missingDevice);
 
           const injectedDevice = {
-            slot: (pool.data_devices.length + missingDevices.indexOf(missingDevice) + 1).toString(),
+            slot: pool.data_devices.length + missingDevices.indexOf(missingDevice) + 1,
             id: deviceUuid,
             device: missingDevice,
             filesystem: deviceInfo.filesystem || 'btrfs',
@@ -5687,7 +5687,7 @@ class PoolsService {
         const deviceUuid = await strategy.getDeviceUuid(deviceInfo, poolConfig);
 
         dataDevices.push({
-          slot: diskIndex.toString(),
+          slot: diskIndex,
           id: deviceUuid,
           filesystem,
           spindown: null
@@ -5719,7 +5719,7 @@ class PoolsService {
           }
 
           parityDevices.push({
-            slot: parityIndex.toString(),
+            slot: parityIndex,
             id: parityUuid,
             filesystem,
             spindown: null
@@ -6148,7 +6148,7 @@ class PoolsService {
         await execPromise(importCmd);
 
         dataDevices.push({
-          slot: slot.toString(),
+          slot: slot,
           id: deviceUuid,
           filesystem,
           spindown: null
@@ -6166,7 +6166,7 @@ class PoolsService {
         await execPromise(importCmd);
 
         // In JSON, parity slot 1 = array slot 0, parity slot 2 = array slot 29
-        const jsonSlot = parityInfo.slot === 0 ? "1" : "2";
+        const jsonSlot = parityInfo.slot === 0 ? 1 : 2;
         parityDevicesList.push({
           slot: jsonSlot,
           id: parityInfo.byIdPath,
@@ -7006,7 +7006,7 @@ class PoolsService {
 
       // Add new device to pool config
       pool.data_devices.push({
-        slot: nextSlot.toString(),
+        slot: nextSlot,
         id: deviceUuid,
         filesystem,
         spindown: null
@@ -7198,7 +7198,7 @@ class PoolsService {
       // Add new parity device to pool config
       if (!pool.parity_devices) pool.parity_devices = [];
       pool.parity_devices.push({
-        slot: nextJsonSlot.toString(),
+        slot: nextJsonSlot,
         id: byIdPath,
         filesystem: pool.data_devices[0]?.filesystem || 'xfs',
         spindown: null
@@ -7450,7 +7450,7 @@ class PoolsService {
         const expectedFilesystem = pool.data_devices.length > 0 ? pool.data_devices[0].filesystem : 'xfs';
 
         newParityDevices.push({
-          slot: paritySlot.toString(),
+          slot: paritySlot,
           id: deviceUuid,
           filesystem: expectedFilesystem,
           spindown: null
@@ -7656,7 +7656,7 @@ class PoolsService {
 
       // Update the parity device in the pool configuration
       pool.parity_devices[oldParityIndex] = {
-        slot: paritySlot.toString(),
+        slot: paritySlot,
         id: newDeviceUuid,
         filesystem: expectedFilesystem,
         spindown: oldParityDevice.spindown || null
