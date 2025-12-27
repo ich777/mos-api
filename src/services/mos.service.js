@@ -3392,7 +3392,7 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
 
   /**
    * Gets the dashboard layout configuration
-   * @returns {Promise<Array>} The dashboard layout as an array of cards
+   * @returns {Promise<Object>} The dashboard layout with left, right columns and visibility
    */
   async getDashboardLayout() {
     try {
@@ -3400,15 +3400,15 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
       const layout = JSON.parse(data);
 
       // Validate the structure
-      if (!Array.isArray(layout)) {
-        throw new Error('Dashboard layout must be an array');
+      if (typeof layout !== 'object' || layout === null || Array.isArray(layout)) {
+        throw new Error('Dashboard layout must be an object with left, right, and visibility properties');
       }
 
       return layout;
     } catch (error) {
       if (error.code === 'ENOENT') {
         // Return default empty layout if file doesn't exist
-        return [];
+        return { left: [], right: [], visibility: {} };
       }
       throw error;
     }
@@ -3416,43 +3416,66 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
 
   /**
    * Updates the dashboard layout configuration
-   * @param {Array} layout - Array of dashboard cards with card name, index and hidden status
-   * @returns {Promise<Array>} The updated dashboard layout
+   * @param {Object} layout - Object with left, right arrays and visibility object
+   * @returns {Promise<Object>} The updated dashboard layout
    */
   async updateDashboardLayout(layout) {
     try {
-      // Validate input
-      if (!Array.isArray(layout)) {
-        throw new Error('Dashboard layout must be an array');
+      // Validate input structure
+      if (typeof layout !== 'object' || layout === null || Array.isArray(layout)) {
+        throw new Error('Dashboard layout must be an object');
       }
 
-      // Validate each card in the layout
-      for (const item of layout) {
-        if (!item.card || typeof item.card !== 'string') {
-          throw new Error('Each dashboard item must have a "card" property of type string');
+      // Validate left array
+      if (!Array.isArray(layout.left)) {
+        throw new Error('Dashboard layout must have a "left" array');
+      }
+
+      // Validate right array
+      if (!Array.isArray(layout.right)) {
+        throw new Error('Dashboard layout must have a "right" array');
+      }
+
+      // Validate visibility object
+      if (typeof layout.visibility !== 'object' || layout.visibility === null || Array.isArray(layout.visibility)) {
+        throw new Error('Dashboard layout must have a "visibility" object');
+      }
+
+      // Validate cards in left and right arrays
+      const validateCard = (card, position) => {
+        if (!card.id || typeof card.id !== 'string') {
+          throw new Error(`Each card in "${position}" must have an "id" property of type string`);
         }
-        if (item.index === undefined || typeof item.index !== 'number') {
-          throw new Error('Each dashboard item must have an "index" property of type number');
+        if (!card.name || typeof card.name !== 'string') {
+          throw new Error(`Each card in "${position}" must have a "name" property of type string`);
         }
-        if (item.hidden !== undefined && typeof item.hidden !== 'boolean') {
-          throw new Error('The "hidden" property must be a boolean value');
+      };
+
+      for (const card of layout.left) {
+        validateCard(card, 'left');
+      }
+      for (const card of layout.right) {
+        validateCard(card, 'right');
+      }
+
+      // Validate visibility values are booleans
+      for (const [key, value] of Object.entries(layout.visibility)) {
+        if (typeof value !== 'boolean') {
+          throw new Error(`Visibility value for "${key}" must be a boolean`);
         }
       }
 
-      // Normalize items - ensure hidden defaults to false if not provided
-      const normalizedLayout = layout.map(item => ({
-        card: item.card,
-        index: item.index,
-        hidden: item.hidden !== undefined ? item.hidden : false
-      }));
-
-      // Sort by index
-      const sortedLayout = [...normalizedLayout].sort((a, b) => a.index - b.index);
+      // Normalize layout
+      const normalizedLayout = {
+        left: layout.left.map(card => ({ id: card.id, name: card.name })),
+        right: layout.right.map(card => ({ id: card.id, name: card.name })),
+        visibility: { ...layout.visibility }
+      };
 
       // Write to file
-      await fs.writeFile(this.dashboardPath, JSON.stringify(sortedLayout, null, 2), 'utf8');
+      await fs.writeFile(this.dashboardPath, JSON.stringify(normalizedLayout, null, 2), 'utf8');
 
-      return sortedLayout;
+      return normalizedLayout;
     } catch (error) {
       console.error('Error updating dashboard layout:', error.message);
       throw error;

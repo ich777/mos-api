@@ -2947,29 +2947,54 @@ router.post('/installtodisk', async (req, res) => {
  *         content:
  *           application/json:
  *             schema:
- *               type: array
- *               items:
- *                 type: object
- *                 properties:
- *                   card:
- *                     type: string
- *                     description: Dashboard card name
- *                     example: "mos"
- *                   index:
- *                     type: number
- *                     description: Card position/order index
- *                     example: 1
- *                   hidden:
+ *               type: object
+ *               properties:
+ *                 left:
+ *                   type: array
+ *                   description: Cards in the left column
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       id:
+ *                         type: string
+ *                         description: Unique card identifier
+ *                         example: "C1"
+ *                       name:
+ *                         type: string
+ *                         description: Card display name
+ *                         example: "Card1"
+ *                 right:
+ *                   type: array
+ *                   description: Cards in the right column
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       id:
+ *                         type: string
+ *                         description: Unique card identifier
+ *                         example: "C2"
+ *                       name:
+ *                         type: string
+ *                         description: Card display name
+ *                         example: "Card2"
+ *                 visibility:
+ *                   type: object
+ *                   description: Visibility state for each card (key is card name, value is boolean)
+ *                   additionalProperties:
  *                     type: boolean
- *                     description: Whether the card is hidden (defaults to false)
- *                     example: false
+ *                   example:
+ *                     Card1: true
+ *                     Card2: false
  *             example:
- *               - card: "mos"
- *                 index: 1
- *                 hidden: false
- *               - card: "network"
- *                 index: 2
- *                 hidden: false
+ *               left:
+ *                 - id: "C1"
+ *                   name: "Card1"
+ *               right:
+ *                 - id: "C2"
+ *                   name: "Card2"
+ *               visibility:
+ *                 Card1: true
+ *                 Card2: false
  *       401:
  *         description: Not authenticated
  *         content:
@@ -2999,57 +3024,91 @@ router.post('/installtodisk', async (req, res) => {
  *       content:
  *         application/json:
  *           schema:
- *             type: array
- *             items:
- *               type: object
- *               required:
- *                 - card
- *                 - index
- *               properties:
- *                 card:
- *                   type: string
- *                   description: Dashboard card name
- *                   example: "mos"
- *                 index:
- *                   type: number
- *                   description: Card position/order index
- *                   example: 1
- *                 hidden:
+ *             type: object
+ *             required:
+ *               - left
+ *               - right
+ *               - visibility
+ *             properties:
+ *               left:
+ *                 type: array
+ *                 description: Cards in the left column
+ *                 items:
+ *                   type: object
+ *                   required:
+ *                     - id
+ *                     - name
+ *                   properties:
+ *                     id:
+ *                       type: string
+ *                       description: Unique card identifier
+ *                       example: "C1"
+ *                     name:
+ *                       type: string
+ *                       description: Card display name
+ *                       example: "Card1"
+ *               right:
+ *                 type: array
+ *                 description: Cards in the right column
+ *                 items:
+ *                   type: object
+ *                   required:
+ *                     - id
+ *                     - name
+ *                   properties:
+ *                     id:
+ *                       type: string
+ *                       description: Unique card identifier
+ *                       example: "C2"
+ *                     name:
+ *                       type: string
+ *                       description: Card display name
+ *                       example: "Card2"
+ *               visibility:
+ *                 type: object
+ *                 description: Visibility state for each card (key is card name, value is boolean)
+ *                 additionalProperties:
  *                   type: boolean
- *                   description: Whether the card is hidden (optional, defaults to false)
- *                   example: false
  *           example:
- *             - card: "mos"
- *               index: 1
- *               hidden: false
- *             - card: "network"
- *               index: 2
- *               hidden: false
- *             - card: "pools"
- *               index: 3
- *               hidden: true
+ *             left:
+ *               - id: "C1"
+ *                 name: "Card1"
+ *             right:
+ *               - id: "C2"
+ *                 name: "Card2"
+ *             visibility:
+ *               Card1: true
+ *               Card2: false
  *     responses:
  *       200:
  *         description: Dashboard layout updated successfully
  *         content:
  *           application/json:
  *             schema:
- *               type: array
- *               items:
- *                 type: object
- *                 properties:
- *                   card:
- *                     type: string
- *                     description: Dashboard card name
- *                     example: "mos"
- *                   index:
- *                     type: number
- *                     description: Card position/order index
- *                     example: 1
- *                   hidden:
+ *               type: object
+ *               properties:
+ *                 left:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       id:
+ *                         type: string
+ *                       name:
+ *                         type: string
+ *                 right:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       id:
+ *                         type: string
+ *                       name:
+ *                         type: string
+ *                 visibility:
+ *                   type: object
+ *                   additionalProperties:
  *                     type: boolean
- *                     description: Whether the card is hidden
- *                     example: false
  *       400:
  *         description: Invalid request body
  *         content:
@@ -3285,8 +3344,8 @@ router.get('/dashboard', async (req, res) => {
 // POST: Update dashboard layout
 router.post('/dashboard', async (req, res) => {
   try {
-    if (!Array.isArray(req.body)) {
-      return res.status(400).json({ error: 'Request body must be an array of dashboard cards.' });
+    if (typeof req.body !== 'object' || req.body === null || Array.isArray(req.body)) {
+      return res.status(400).json({ error: 'Request body must be an object with left, right, and visibility properties.' });
     }
 
     const updatedLayout = await mosService.updateDashboardLayout(req.body);
