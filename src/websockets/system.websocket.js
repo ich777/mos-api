@@ -24,7 +24,7 @@ class SystemLoadWebSocketManager {
     this.networkInterval = 2000;
     this.poolsPerformanceInterval = 2000; // 2 seconds for pools performance
     this.poolsTemperatureInterval = 10000; // 10 seconds for pools temperature
-    this.sensorsInterval = 5000; // 5 seconds for mapped sensors
+    this.sensorsInterval = 2000; // 2 seconds for mapped sensors
 
     // Client preferences for pools
     this.clientPoolsPreferences = new Map(); // socketId -> { includePools, includePerformance }
@@ -559,12 +559,17 @@ class SystemLoadWebSocketManager {
     if (!room) return;
 
     try {
-      const sensors = await mosService.getMappedSensors();
+      // First check if any sensors are configured (avoids sensors -j call)
+      const config = await mosService.loadSensorsConfig();
+      const hasAnySensors = Object.values(config).some(arr => arr.length > 0);
 
-      // Only emit if there are configured sensors
-      if (sensors.length > 0) {
-        this.io.to('system-load').emit('load-update', { sensors });
+      if (!hasAnySensors) {
+        return; // No sensors configured, skip entirely
       }
+
+      // Get mapped sensor values (will call sensors -j)
+      const sensors = await mosService.getMappedSensors();
+      this.io.to('system-load').emit('load-update', { sensors });
     } catch (error) {
       console.error('Error broadcasting sensors update:', error);
     }

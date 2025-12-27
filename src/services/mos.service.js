@@ -44,43 +44,126 @@ class MosService {
   }
 
   /**
+   * Valid sensor types
+   * @private
+   */
+  _getValidSensorTypes() {
+    return ['fan', 'temperature', 'power', 'voltage', 'psu', 'other'];
+  }
+
+  /**
+   * Get empty grouped sensors structure
+   * @private
+   */
+  _getEmptyGroupedSensors() {
+    return {
+      fan: [],
+      temperature: [],
+      power: [],
+      voltage: [],
+      psu: [],
+      other: []
+    };
+  }
+
+  /**
    * Load sensors configuration from file
-   * @returns {Promise<Array>} Array of sensor configurations
+   * @returns {Promise<Object>} Grouped sensor configurations
    */
   async loadSensorsConfig() {
     try {
       const data = await fs.readFile(this.sensorsConfigPath, 'utf8');
       const config = JSON.parse(data);
-      // Config is directly an array
-      return Array.isArray(config) ? config : [];
+
+      // Validate it's a grouped object
+      if (typeof config !== 'object' || config === null || Array.isArray(config)) {
+        return this._getEmptyGroupedSensors();
+      }
+
+      // Ensure all groups exist
+      const validTypes = this._getValidSensorTypes();
+      const result = this._getEmptyGroupedSensors();
+      for (const type of validTypes) {
+        if (Array.isArray(config[type])) {
+          result[type] = config[type];
+        }
+      }
+      return result;
     } catch (error) {
       if (error.code === 'ENOENT') {
-        return [];
+        return this._getEmptyGroupedSensors();
       }
       throw new Error(`Failed to load sensors config: ${error.message}`);
     }
   }
 
   /**
-   * Save sensors configuration to file
-   * @param {Array} sensors - Array of sensor configurations
+   * Save sensors configuration to file (grouped by type)
+   * @param {Object} groupedSensors - Grouped sensor configurations
    * @private
    */
-  async _saveSensorsConfig(sensors) {
+  async _saveSensorsConfig(groupedSensors) {
     await this._ensureSensorsConfigDir();
 
-    // Re-index sensors to ensure sequential indices
-    const reindexedSensors = sensors.map((sensor, idx) => ({
-      ...sensor,
-      index: idx
-    }));
+    // Re-index sensors within each group
+    const validTypes = this._getValidSensorTypes();
+    const reindexed = {};
+    for (const type of validTypes) {
+      if (Array.isArray(groupedSensors[type])) {
+        reindexed[type] = groupedSensors[type].map((sensor, idx) => ({
+          ...sensor,
+          index: idx
+        }));
+      } else {
+        reindexed[type] = [];
+      }
+    }
 
     await fs.writeFile(
       this.sensorsConfigPath,
-      JSON.stringify(reindexedSensors, null, 2),
+      JSON.stringify(reindexed, null, 2),
       'utf8'
     );
-    return reindexedSensors;
+    return reindexed;
+  }
+
+  /**
+   * Find sensor by source across all groups
+   * @param {Object} groupedSensors - Grouped sensor configurations
+   * @param {string} source - Source path to find
+   * @param {string} excludeId - Optional sensor ID to exclude from search
+   * @returns {Object|null} Found sensor with its type, or null
+   * @private
+   */
+  _findSensorBySource(groupedSensors, source, excludeId = null) {
+    const validTypes = this._getValidSensorTypes();
+    for (const type of validTypes) {
+      const sensors = groupedSensors[type] || [];
+      const found = sensors.find(s => s.source === source && s.id !== excludeId);
+      if (found) {
+        return { sensor: found, type };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Find sensor by ID across all groups
+   * @param {Object} groupedSensors - Grouped sensor configurations
+   * @param {string} id - Sensor ID to find
+   * @returns {Object|null} Found sensor with its type and index, or null
+   * @private
+   */
+  _findSensorById(groupedSensors, id) {
+    const validTypes = this._getValidSensorTypes();
+    for (const type of validTypes) {
+      const sensors = groupedSensors[type] || [];
+      const index = sensors.findIndex(s => s.id === id);
+      if (index !== -1) {
+        return { sensor: sensors[index], type, index };
+      }
+    }
+    return null;
   }
 
   /**
@@ -148,25 +231,27 @@ class MosService {
   }
 
   /**
-   * Get sensors configuration (full config for each sensor)
+   * Get sensors configuration (full config, grouped by type)
    * GET /mos/sensors/config
-   * @returns {Promise<Object>} Sensors configuration object
+   * @returns {Promise<Object>} Grouped sensors configuration
    */
   async getSensorsConfig() {
-    const sensors = await this.loadSensorsConfig();
-    return { sensors };
+    return await this.loadSensorsConfig();
   }
 
   /**
-   * Get mapped sensor values (values only)
+   * Get mapped sensor values (values only, grouped by type)
    * GET /mos/sensors
-   * @returns {Promise<Array>} Array of sensor values
+   * @returns {Promise<Object>} Grouped sensor values
    */
   async getMappedSensors() {
-    const sensorsConfig = await this.loadSensorsConfig();
+    const groupedConfig = await this.loadSensorsConfig();
+    const validTypes = this._getValidSensorTypes();
 
-    if (sensorsConfig.length === 0) {
-      return [];
+    // Check if any sensors exist
+    const hasAnySensors = validTypes.some(type => groupedConfig[type]?.length > 0);
+    if (!hasAnySensors) {
+      return this._getEmptyGroupedSensors();
     }
 
     // Get raw sensor data
@@ -175,37 +260,32 @@ class MosService {
       rawSensors = await systemService.getSensors();
     } catch (error) {
       console.error('Failed to get raw sensors:', error.message);
-      // Return sensors with null values if we can't read sensors
-      return sensorsConfig
-        .filter(s => s.enabled)
-        .sort((a, b) => a.index - b.index)
-        .map(sensor => ({
-          id: sensor.id,
-          index: sensor.index,
-          name: sensor.name,
-          type: sensor.type,
-          value: null,
-          unit: sensor.unit
-        }));
+      rawSensors = null;
     }
 
-    // Map configured sensors to their values
-    return sensorsConfig
-      .filter(s => s.enabled)
-      .sort((a, b) => a.index - b.index)
-      .map(sensor => {
-        const rawValue = this._getValueByPath(rawSensors, sensor.source);
-        const value = this._transformValue(rawValue, sensor);
-
-        return {
-          id: sensor.id,
-          index: sensor.index,
-          name: sensor.name,
-          type: sensor.type,
-          value: value,
-          unit: sensor.unit
-        };
-      });
+    // Build grouped response with values
+    const result = {};
+    for (const type of validTypes) {
+      const sensors = groupedConfig[type] || [];
+      result[type] = sensors
+        .filter(s => s.enabled)
+        .sort((a, b) => a.index - b.index)
+        .map(sensor => {
+          let value = null;
+          if (rawSensors) {
+            const rawValue = this._getValueByPath(rawSensors, sensor.source);
+            value = this._transformValue(rawValue, sensor);
+          }
+          return {
+            id: sensor.id,
+            index: sensor.index,
+            name: sensor.name,
+            value: value,
+            unit: sensor.unit
+          };
+        });
+    }
+    return result;
   }
 
   /**
@@ -215,7 +295,7 @@ class MosService {
    * @returns {Promise<Object>} Created sensor configuration
    */
   async createSensorMapping(sensorData) {
-    const sensors = await this.loadSensorsConfig();
+    const groupedSensors = await this.loadSensorsConfig();
 
     // Validate required fields
     const requiredFields = ['name', 'type', 'source', 'unit'];
@@ -226,20 +306,26 @@ class MosService {
     }
 
     // Validate type
-    const validTypes = ['fan', 'temperature', 'voltage', 'power', 'other'];
+    const validTypes = this._getValidSensorTypes();
     if (!validTypes.includes(sensorData.type)) {
       throw new Error(`Invalid type. Must be one of: ${validTypes.join(', ')}`);
+    }
+
+    // Check for duplicate source
+    const existing = this._findSensorBySource(groupedSensors, sensorData.source);
+    if (existing) {
+      throw new Error(`Source already defined by sensor "${existing.sensor.name}"`);
     }
 
     // Validate source exists in sensor data
     await this._validateSensorSource(sensorData.source);
 
     // Create new sensor config
+    const targetGroup = groupedSensors[sensorData.type] || [];
     const newSensor = {
       id: this._generateSensorId(),
-      index: sensors.length, // Will be at the end
+      index: targetGroup.length,
       name: sensorData.name,
-      type: sensorData.type,
       source: sensorData.source,
       unit: sensorData.unit,
       value_range: sensorData.value_range || null,
@@ -247,10 +333,11 @@ class MosService {
       enabled: sensorData.enabled !== undefined ? sensorData.enabled : true
     };
 
-    sensors.push(newSensor);
-    await this._saveSensorsConfig(sensors);
+    // Add to correct group
+    groupedSensors[sensorData.type].push(newSensor);
+    await this._saveSensorsConfig(groupedSensors);
 
-    return newSensor;
+    return { ...newSensor, type: sensorData.type };
   }
 
   /**
@@ -261,43 +348,59 @@ class MosService {
    * @returns {Promise<Object>} Updated sensor configuration
    */
   async updateSensorMapping(id, updateData) {
-    const sensors = await this.loadSensorsConfig();
+    const groupedSensors = await this.loadSensorsConfig();
 
-    const sensorIndex = sensors.findIndex(s => s.id === id);
-    if (sensorIndex === -1) {
+    // Find sensor
+    const found = this._findSensorById(groupedSensors, id);
+    if (!found) {
       throw new Error(`Sensor with id ${id} not found`);
     }
 
+    const { sensor, type: currentType, index: currentIndex } = found;
+
     // Validate type if provided
-    if (updateData.type) {
-      const validTypes = ['fan', 'temperature', 'voltage', 'power', 'other'];
-      if (!validTypes.includes(updateData.type)) {
-        throw new Error(`Invalid type. Must be one of: ${validTypes.join(', ')}`);
-      }
+    const validTypes = this._getValidSensorTypes();
+    if (updateData.type && !validTypes.includes(updateData.type)) {
+      throw new Error(`Invalid type. Must be one of: ${validTypes.join(', ')}`);
     }
 
-    // Validate source if provided
+    // Check for duplicate source (excluding this sensor)
     if (updateData.source) {
+      const existing = this._findSensorBySource(groupedSensors, updateData.source, id);
+      if (existing) {
+        throw new Error(`Source already defined by sensor "${existing.sensor.name}"`);
+      }
       await this._validateSensorSource(updateData.source);
     }
 
-    // Update allowed fields
-    const allowedFields = ['name', 'type', 'source', 'unit', 'value_range', 'transform', 'enabled', 'index'];
+    // Update allowed fields (not type - handled separately)
+    const allowedFields = ['name', 'source', 'unit', 'value_range', 'transform', 'enabled', 'index'];
     for (const field of allowedFields) {
       if (updateData[field] !== undefined) {
-        sensors[sensorIndex][field] = updateData[field];
+        sensor[field] = updateData[field];
       }
     }
 
-    // If index was changed, reorder array
-    if (updateData.index !== undefined && updateData.index !== sensorIndex) {
-      const sensor = sensors.splice(sensorIndex, 1)[0];
-      const newIndex = Math.max(0, Math.min(updateData.index, sensors.length));
-      sensors.splice(newIndex, 0, sensor);
+    // Handle type change - move to different group
+    const newType = updateData.type || currentType;
+    if (newType !== currentType) {
+      // Remove from current group
+      groupedSensors[currentType].splice(currentIndex, 1);
+      // Add to new group
+      sensor.index = groupedSensors[newType].length;
+      groupedSensors[newType].push(sensor);
+    } else if (updateData.index !== undefined && updateData.index !== currentIndex) {
+      // Reorder within same group
+      groupedSensors[currentType].splice(currentIndex, 1);
+      const newIndex = Math.max(0, Math.min(updateData.index, groupedSensors[currentType].length));
+      groupedSensors[currentType].splice(newIndex, 0, sensor);
     }
 
-    const savedSensors = await this._saveSensorsConfig(sensors);
-    return savedSensors.find(s => s.id === id);
+    const savedConfig = await this._saveSensorsConfig(groupedSensors);
+
+    // Find updated sensor in saved config
+    const updatedFound = this._findSensorById(savedConfig, id);
+    return { ...updatedFound.sensor, type: updatedFound.type };
   }
 
   /**
@@ -307,19 +410,23 @@ class MosService {
    * @returns {Promise<Object>} Deleted sensor configuration
    */
   async deleteSensorMapping(id) {
-    const sensors = await this.loadSensorsConfig();
+    const groupedSensors = await this.loadSensorsConfig();
 
-    const sensorIndex = sensors.findIndex(s => s.id === id);
-    if (sensorIndex === -1) {
+    // Find sensor
+    const found = this._findSensorById(groupedSensors, id);
+    if (!found) {
       throw new Error(`Sensor with id ${id} not found`);
     }
 
-    const deletedSensor = sensors.splice(sensorIndex, 1)[0];
+    const { sensor, type, index } = found;
+
+    // Remove from group
+    groupedSensors[type].splice(index, 1);
 
     // _saveSensorsConfig automatically re-indexes
-    await this._saveSensorsConfig(sensors);
+    await this._saveSensorsConfig(groupedSensors);
 
-    return deletedSensor;
+    return { ...sensor, type };
   }
 
   /**

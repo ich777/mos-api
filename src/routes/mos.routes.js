@@ -17,6 +17,64 @@ const { checkRole } = require('../middleware/auth.middleware');
  *         error:
  *           type: string
  *           description: Error message
+ *     SensorValue:
+ *       type: object
+ *       properties:
+ *         id:
+ *           type: string
+ *           description: Sensor ID
+ *           example: "1735303800123"
+ *         index:
+ *           type: integer
+ *           description: Sort index within group
+ *           example: 0
+ *         name:
+ *           type: string
+ *           description: Display name
+ *           example: "Front Fan"
+ *         value:
+ *           type: number
+ *           nullable: true
+ *           description: Current sensor value
+ *           example: 30.5
+ *         unit:
+ *           type: string
+ *           description: Value unit
+ *           example: "%"
+ *     SensorConfig:
+ *       type: object
+ *       properties:
+ *         id:
+ *           type: string
+ *           example: "1735303800123"
+ *         index:
+ *           type: integer
+ *           example: 0
+ *         name:
+ *           type: string
+ *           example: "Front Fan"
+ *         source:
+ *           type: string
+ *           description: Dot notation path to sensor value
+ *           example: "nct6798-isa-0290.pwm1.pwm1"
+ *         unit:
+ *           type: string
+ *           example: "%"
+ *         value_range:
+ *           type: object
+ *           nullable: true
+ *           properties:
+ *             min:
+ *               type: number
+ *             max:
+ *               type: number
+ *         transform:
+ *           type: string
+ *           nullable: true
+ *           enum: [percentage, null]
+ *         enabled:
+ *           type: boolean
+ *           example: true
  *     DockerSettings:
  *       type: object
  *       properties:
@@ -3594,45 +3652,59 @@ router.get('/fsnavigator', async (req, res) => {
  * /mos/sensors:
  *   get:
  *     summary: Get mapped sensor values
- *     description: Returns an array of configured sensors with their current values
+ *     description: Returns sensor values grouped by type (fan, temperature, power, voltage, psu, other)
  *     tags: [MOS]
  *     security:
  *       - bearerAuth: []
  *     responses:
  *       200:
- *         description: Array of sensor values
+ *         description: Grouped sensor values
  *         content:
  *           application/json:
  *             schema:
- *               type: array
- *               items:
- *                 type: object
- *                 properties:
- *                   id:
- *                     type: string
- *                     description: Sensor ID
- *                     example: "1735303800123"
- *                   index:
- *                     type: integer
- *                     description: Sort index
- *                     example: 0
- *                   name:
- *                     type: string
- *                     description: Display name
- *                     example: "Front Fan"
- *                   type:
- *                     type: string
- *                     enum: [fan, temperature, voltage, power, other]
- *                     example: "fan"
- *                   value:
- *                     type: number
- *                     nullable: true
- *                     description: Current sensor value
- *                     example: 30.5
- *                   unit:
- *                     type: string
- *                     description: Value unit
- *                     example: "%"
+ *               type: object
+ *               properties:
+ *                 fan:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/SensorValue'
+ *                 temperature:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/SensorValue'
+ *                 power:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/SensorValue'
+ *                 voltage:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/SensorValue'
+ *                 psu:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/SensorValue'
+ *                 other:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/SensorValue'
+ *             example:
+ *               fan:
+ *                 - id: "1735303800123"
+ *                   index: 0
+ *                   name: "Front Fan"
+ *                   value: 30.5
+ *                   unit: "%"
+ *               temperature:
+ *                 - id: "1735303801456"
+ *                   index: 0
+ *                   name: "CPU Temperature"
+ *                   value: 45.2
+ *                   unit: "°C"
+ *               power: []
+ *               voltage: []
+ *               psu: []
+ *               other: []
  *       401:
  *         description: Not authenticated
  *       500:
@@ -3652,57 +3724,47 @@ router.get('/sensors', async (req, res) => {
  * /mos/sensors/config:
  *   get:
  *     summary: Get sensor mapping configuration
- *     description: Returns full configuration for all sensor mappings
+ *     description: Returns full configuration for all sensor mappings grouped by type
  *     tags: [MOS]
  *     security:
  *       - bearerAuth: []
  *     responses:
  *       200:
- *         description: Sensor configuration object
+ *         description: Grouped sensor configuration
  *         content:
  *           application/json:
  *             schema:
  *               type: object
  *               properties:
- *                 sensors:
+ *                 fan:
  *                   type: array
  *                   items:
- *                     type: object
- *                     properties:
- *                       id:
- *                         type: string
- *                       index:
- *                         type: integer
- *                       name:
- *                         type: string
- *                       type:
- *                         type: string
- *                         enum: [fan, temperature, voltage, power, other]
- *                       source:
- *                         type: string
- *                         description: Dot notation path to sensor value
- *                       unit:
- *                         type: string
- *                       value_range:
- *                         type: object
- *                         nullable: true
- *                         properties:
- *                           min:
- *                             type: number
- *                           max:
- *                             type: number
- *                       transform:
- *                         type: string
- *                         nullable: true
- *                         enum: [percentage, null]
- *                       enabled:
- *                         type: boolean
+ *                     $ref: '#/components/schemas/SensorConfig'
+ *                 temperature:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/SensorConfig'
+ *                 power:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/SensorConfig'
+ *                 voltage:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/SensorConfig'
+ *                 psu:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/SensorConfig'
+ *                 other:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/SensorConfig'
  *             example:
- *               sensors:
+ *               fan:
  *                 - id: "1735303800123"
  *                   index: 0
  *                   name: "Front Fan"
- *                   type: "fan"
  *                   source: "nct6798-isa-0290.pwm1.pwm1"
  *                   unit: "%"
  *                   value_range:
@@ -3710,15 +3772,19 @@ router.get('/sensors', async (req, res) => {
  *                     max: 255
  *                   transform: "percentage"
  *                   enabled: true
+ *               temperature:
  *                 - id: "1735303801456"
- *                   index: 1
+ *                   index: 0
  *                   name: "CPU Temperature"
- *                   type: "temperature"
  *                   source: "nct6798-isa-0290.CPUTIN.temp2_input"
  *                   unit: "°C"
  *                   value_range: null
  *                   transform: null
  *                   enabled: true
+ *               power: []
+ *               voltage: []
+ *               psu: []
+ *               other: []
  *       401:
  *         description: Not authenticated
  *       500:
@@ -3759,7 +3825,7 @@ router.get('/sensors/config', async (req, res) => {
  *                 description: Display name for the sensor
  *               type:
  *                 type: string
- *                 enum: [fan, temperature, voltage, power, other]
+ *                 enum: [fan, temperature, power, voltage, psu, other]
  *               source:
  *                 type: string
  *                 description: Dot notation path to sensor value from /system/sensors
@@ -3828,7 +3894,8 @@ router.post('/sensors', checkRole(['admin']), async (req, res) => {
     if (error.message.includes('Missing required field') ||
         error.message.includes('Invalid type') ||
         error.message.includes('Invalid source') ||
-        error.message.includes('Cannot validate source')) {
+        error.message.includes('Cannot validate source') ||
+        error.message.includes('Source already defined')) {
       res.status(400).json({ error: error.message });
     } else {
       res.status(500).json({ error: error.message });
@@ -3841,7 +3908,7 @@ router.post('/sensors', checkRole(['admin']), async (req, res) => {
  * /mos/sensors/{id}:
  *   post:
  *     summary: Update an existing sensor mapping
- *     description: Update fields of an existing sensor mapping
+ *     description: Update fields of an existing sensor mapping. Changing type will move sensor to new group.
  *     tags: [MOS]
  *     security:
  *       - bearerAuth: []
@@ -3863,7 +3930,8 @@ router.post('/sensors', checkRole(['admin']), async (req, res) => {
  *                 type: string
  *               type:
  *                 type: string
- *                 enum: [fan, temperature, voltage, power, other]
+ *                 enum: [fan, temperature, power, voltage, psu, other]
+ *                 description: Changing type moves sensor to new group
  *               source:
  *                 type: string
  *               unit:
@@ -3878,12 +3946,12 @@ router.post('/sensors', checkRole(['admin']), async (req, res) => {
  *                 type: boolean
  *               index:
  *                 type: integer
- *                 description: New position index for reordering
+ *                 description: New position index within group
  *     responses:
  *       200:
  *         description: Sensor mapping updated successfully
  *       400:
- *         description: Invalid input
+ *         description: Invalid input or source already defined
  *       404:
  *         description: Sensor not found
  *       401:
@@ -3900,7 +3968,8 @@ router.post('/sensors/:id', checkRole(['admin']), async (req, res) => {
       res.status(404).json({ error: error.message });
     } else if (error.message.includes('Invalid type') ||
                error.message.includes('Invalid source') ||
-               error.message.includes('Cannot validate source')) {
+               error.message.includes('Cannot validate source') ||
+               error.message.includes('Source already defined')) {
       res.status(400).json({ error: error.message });
     } else {
       res.status(500).json({ error: error.message });
