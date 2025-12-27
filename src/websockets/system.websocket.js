@@ -1,3 +1,5 @@
+const mosService = require('../services/mos.service');
+
 class SystemLoadWebSocketManager {
   constructor(io, systemService, poolsService = null, disksService = null) {
     this.io = io;
@@ -22,6 +24,7 @@ class SystemLoadWebSocketManager {
     this.networkInterval = 2000;
     this.poolsPerformanceInterval = 2000; // 2 seconds for pools performance
     this.poolsTemperatureInterval = 10000; // 10 seconds for pools temperature
+    this.sensorsInterval = 5000; // 5 seconds for mapped sensors
 
     // Client preferences for pools
     this.clientPoolsPreferences = new Map(); // socketId -> { includePools, includePerformance }
@@ -72,17 +75,19 @@ class SystemLoadWebSocketManager {
           await this.sendInitialPoolsData(socket);
         }
 
-        // Start monitoring (CPU/Memory/Network + Pools Performance + Pools Temperature)
+        // Start monitoring (CPU/Memory/Network + Pools Performance + Pools Temperature + Sensors)
         this.startSystemLoadMonitoring();
         this.startPoolsPerformanceMonitoring();
         this.startPoolsTemperatureMonitoring();
+        this.startSensorsMonitoring();
 
         socket.emit('load-subscription-confirmed', {
           cpuInterval: this.cpuInterval,
           memoryInterval: this.memoryInterval,
           networkInterval: this.networkInterval,
           poolsPerformanceInterval: this.poolsPerformanceInterval,
-          poolsTemperatureInterval: this.poolsTemperatureInterval
+          poolsTemperatureInterval: this.poolsTemperatureInterval,
+          sensorsInterval: this.sensorsInterval
         });
       } catch (error) {
         console.error('Error in subscribe-load:', error);
@@ -294,12 +299,14 @@ class SystemLoadWebSocketManager {
     // Stop Pools Performance monitoring
     this.stopPoolsPerformanceMonitoring();
     this.stopPoolsTemperatureMonitoring();
+    this.stopSensorsMonitoring();
 
     // Clear caches
     this.dataCache.delete('cpu-data');
     this.dataCache.delete('memory-data');
     this.dataCache.delete('network-data');
     this.dataCache.delete('pools-data');
+    this.dataCache.delete('sensors-data');
     this.staticDataCache.clear();
     this.clientStaticDataSent.clear();
     this.clientPoolsPreferences.clear();
@@ -496,6 +503,70 @@ class SystemLoadWebSocketManager {
     if (sub) {
       clearInterval(sub.intervalId);
       this.activeSubscriptions.delete('system-load-pools-temperature');
+    }
+  }
+
+  // ============================================================
+  // MAPPED SENSORS MONITORING
+  // ============================================================
+
+  /**
+   * Start mapped sensors monitoring (every 5s)
+   */
+  startSensorsMonitoring() {
+    if (this.activeSubscriptions.has('system-load-sensors')) {
+      return; // Already running
+    }
+
+    const intervalId = setInterval(async () => {
+      try {
+        const room = this.io.adapter.rooms.get('system-load');
+        if (!room || room.size === 0) {
+          this.stopSensorsMonitoring();
+          return;
+        }
+
+        await this.broadcastSensorsUpdate();
+      } catch (error) {
+        console.error('Error in sensors monitoring:', error);
+      }
+    }, this.sensorsInterval);
+
+    this.activeSubscriptions.set('system-load-sensors', {
+      intervalId,
+      interval: this.sensorsInterval,
+      startTime: Date.now(),
+      type: 'sensors'
+    });
+  }
+
+  /**
+   * Stop sensors monitoring
+   */
+  stopSensorsMonitoring() {
+    const sub = this.activeSubscriptions.get('system-load-sensors');
+    if (sub) {
+      clearInterval(sub.intervalId);
+      this.activeSubscriptions.delete('system-load-sensors');
+    }
+  }
+
+  /**
+   * Broadcast mapped sensor values to all clients
+   */
+  async broadcastSensorsUpdate() {
+    const room = this.io.adapter.rooms.get('system-load');
+    if (!room) return;
+
+    try {
+      const sensors = await mosService.getMappedSensors();
+
+      // Only emit if there are configured sensors
+      if (sensors.length > 0) {
+        this.io.to('system-load').emit('load-update', { sensors });
+      }
+    } catch (error) {
+      console.error('Error broadcasting sensors update:', error);
     }
   }
 
@@ -1223,6 +1294,7 @@ class SystemLoadWebSocketManager {
     const cpuSubscription = this.activeSubscriptions.get('system-load-cpu');
     const memorySubscription = this.activeSubscriptions.get('system-load-memory');
     const networkSubscription = this.activeSubscriptions.get('system-load-network');
+    const sensorsSubscription = this.activeSubscriptions.get('system-load-sensors');
 
     return {
       activeSubscriptions: this.activeSubscriptions.size,
@@ -1242,6 +1314,11 @@ class SystemLoadWebSocketManager {
         network: networkSubscription ? {
           interval: networkSubscription.interval,
           uptime: Date.now() - networkSubscription.startTime,
+          isActive: true
+        } : null,
+        sensors: sensorsSubscription ? {
+          interval: sensorsSubscription.interval,
+          uptime: Date.now() - sensorsSubscription.startTime,
           isActive: true
         } : null
       }

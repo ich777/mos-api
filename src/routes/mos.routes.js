@@ -3526,4 +3526,366 @@ router.get('/fsnavigator', async (req, res) => {
   }
 });
 
+// ============================================================
+// SENSOR MAPPING ENDPOINTS
+// ============================================================
+
+/**
+ * @swagger
+ * /mos/sensors:
+ *   get:
+ *     summary: Get mapped sensor values
+ *     description: Returns an array of configured sensors with their current values
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Array of sensor values
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: object
+ *                 properties:
+ *                   id:
+ *                     type: string
+ *                     description: Sensor ID
+ *                     example: "1735303800123"
+ *                   index:
+ *                     type: integer
+ *                     description: Sort index
+ *                     example: 0
+ *                   name:
+ *                     type: string
+ *                     description: Display name
+ *                     example: "Front Fan"
+ *                   type:
+ *                     type: string
+ *                     enum: [fan, temperature, voltage, power, other]
+ *                     example: "fan"
+ *                   value:
+ *                     type: number
+ *                     nullable: true
+ *                     description: Current sensor value
+ *                     example: 30.5
+ *                   unit:
+ *                     type: string
+ *                     description: Value unit
+ *                     example: "%"
+ *       401:
+ *         description: Not authenticated
+ *       500:
+ *         description: Server error
+ */
+router.get('/sensors', async (req, res) => {
+  try {
+    const sensors = await mosService.getMappedSensors();
+    res.json(sensors);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /mos/sensors/config:
+ *   get:
+ *     summary: Get sensor mapping configuration
+ *     description: Returns full configuration for all sensor mappings
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Sensor configuration object
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 sensors:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       id:
+ *                         type: string
+ *                       index:
+ *                         type: integer
+ *                       name:
+ *                         type: string
+ *                       type:
+ *                         type: string
+ *                         enum: [fan, temperature, voltage, power, other]
+ *                       source:
+ *                         type: string
+ *                         description: Dot notation path to sensor value
+ *                       unit:
+ *                         type: string
+ *                       value_range:
+ *                         type: object
+ *                         nullable: true
+ *                         properties:
+ *                           min:
+ *                             type: number
+ *                           max:
+ *                             type: number
+ *                       transform:
+ *                         type: string
+ *                         nullable: true
+ *                         enum: [percentage, null]
+ *                       enabled:
+ *                         type: boolean
+ *             example:
+ *               sensors:
+ *                 - id: "1735303800123"
+ *                   index: 0
+ *                   name: "Front Fan"
+ *                   type: "fan"
+ *                   source: "nct6798-isa-0290.pwm1.pwm1"
+ *                   unit: "%"
+ *                   value_range:
+ *                     min: 0
+ *                     max: 255
+ *                   transform: "percentage"
+ *                   enabled: true
+ *                 - id: "1735303801456"
+ *                   index: 1
+ *                   name: "CPU Temperature"
+ *                   type: "temperature"
+ *                   source: "nct6798-isa-0290.CPUTIN.temp2_input"
+ *                   unit: "°C"
+ *                   value_range: null
+ *                   transform: null
+ *                   enabled: true
+ *       401:
+ *         description: Not authenticated
+ *       500:
+ *         description: Server error
+ */
+router.get('/sensors/config', async (req, res) => {
+  try {
+    const config = await mosService.getSensorsConfig();
+    res.json(config);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /mos/sensors:
+ *   post:
+ *     summary: Create a new sensor mapping
+ *     description: Create a new sensor mapping configuration
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - name
+ *               - type
+ *               - source
+ *               - unit
+ *             properties:
+ *               name:
+ *                 type: string
+ *                 description: Display name for the sensor
+ *               type:
+ *                 type: string
+ *                 enum: [fan, temperature, voltage, power, other]
+ *               source:
+ *                 type: string
+ *                 description: Dot notation path to sensor value from /system/sensors
+ *               unit:
+ *                 type: string
+ *                 description: Display unit
+ *               value_range:
+ *                 type: object
+ *                 nullable: true
+ *                 description: Value range for percentage transformation
+ *                 properties:
+ *                   min:
+ *                     type: number
+ *                   max:
+ *                     type: number
+ *               transform:
+ *                 type: string
+ *                 nullable: true
+ *                 enum: [percentage]
+ *                 description: Value transformation type
+ *               enabled:
+ *                 type: boolean
+ *                 default: true
+ *           examples:
+ *             fan:
+ *               summary: Fan sensor with percentage transform
+ *               value:
+ *                 name: "Front Fan"
+ *                 type: "fan"
+ *                 source: "nct6798-isa-0290.pwm1.pwm1"
+ *                 unit: "%"
+ *                 value_range:
+ *                   min: 0
+ *                   max: 255
+ *                 transform: "percentage"
+ *                 enabled: true
+ *             temperature:
+ *               summary: Temperature sensor (no transform)
+ *               value:
+ *                 name: "CPU Temperature"
+ *                 type: "temperature"
+ *                 source: "nct6798-isa-0290.CPUTIN.temp2_input"
+ *                 unit: "°C"
+ *                 value_range: null
+ *                 transform: null
+ *                 enabled: true
+ *     responses:
+ *       201:
+ *         description: Sensor mapping created successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *       400:
+ *         description: Invalid input
+ *       401:
+ *         description: Not authenticated
+ *       500:
+ *         description: Server error
+ */
+router.post('/sensors', checkRole(['admin']), async (req, res) => {
+  try {
+    const sensor = await mosService.createSensorMapping(req.body);
+    res.status(201).json(sensor);
+  } catch (error) {
+    if (error.message.includes('Missing required field') ||
+        error.message.includes('Invalid type') ||
+        error.message.includes('Invalid source') ||
+        error.message.includes('Cannot validate source')) {
+      res.status(400).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
+/**
+ * @swagger
+ * /mos/sensors/{id}:
+ *   post:
+ *     summary: Update an existing sensor mapping
+ *     description: Update fields of an existing sensor mapping
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Sensor ID
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               name:
+ *                 type: string
+ *               type:
+ *                 type: string
+ *                 enum: [fan, temperature, voltage, power, other]
+ *               source:
+ *                 type: string
+ *               unit:
+ *                 type: string
+ *               value_range:
+ *                 type: object
+ *                 nullable: true
+ *               transform:
+ *                 type: string
+ *                 nullable: true
+ *               enabled:
+ *                 type: boolean
+ *               index:
+ *                 type: integer
+ *                 description: New position index for reordering
+ *     responses:
+ *       200:
+ *         description: Sensor mapping updated successfully
+ *       400:
+ *         description: Invalid input
+ *       404:
+ *         description: Sensor not found
+ *       401:
+ *         description: Not authenticated
+ *       500:
+ *         description: Server error
+ */
+router.post('/sensors/:id', checkRole(['admin']), async (req, res) => {
+  try {
+    const sensor = await mosService.updateSensorMapping(req.params.id, req.body);
+    res.json(sensor);
+  } catch (error) {
+    if (error.message.includes('not found')) {
+      res.status(404).json({ error: error.message });
+    } else if (error.message.includes('Invalid type') ||
+               error.message.includes('Invalid source') ||
+               error.message.includes('Cannot validate source')) {
+      res.status(400).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
+/**
+ * @swagger
+ * /mos/sensors/{id}:
+ *   delete:
+ *     summary: Delete a sensor mapping
+ *     description: Delete a sensor mapping and reindex remaining sensors
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Sensor ID
+ *     responses:
+ *       200:
+ *         description: Sensor mapping deleted successfully
+ *       404:
+ *         description: Sensor not found
+ *       401:
+ *         description: Not authenticated
+ *       500:
+ *         description: Server error
+ */
+router.delete('/sensors/:id', checkRole(['admin']), async (req, res) => {
+  try {
+    const sensor = await mosService.deleteSensorMapping(req.params.id);
+    res.json(sensor);
+  } catch (error) {
+    if (error.message.includes('not found')) {
+      res.status(404).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
 module.exports = router;

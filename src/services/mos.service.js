@@ -5,11 +5,321 @@ const util = require('util');
 const execPromise = util.promisify(exec);
 const PoolsService = require('./pools.service');
 const hubService = require('./hub.service');
+const systemService = require('./system.service');
 
 class MosService {
   constructor() {
     this.settingsPath = '/boot/config/docker.json';
     this.dashboardPath = '/boot/config/dashboard.json';
+    this.sensorsConfigPath = '/boot/config/system/sensors.json';
+  }
+
+  // ============================================================
+  // SENSOR MAPPING METHODS
+  // ============================================================
+
+  /**
+   * Generate timestamp-based ID
+   * @returns {string} Timestamp ID
+   * @private
+   */
+  _generateSensorId() {
+    return Date.now().toString();
+  }
+
+  /**
+   * Ensure the sensors config directory exists
+   * @private
+   */
+  async _ensureSensorsConfigDir() {
+    const dir = path.dirname(this.sensorsConfigPath);
+    try {
+      await fs.mkdir(dir, { recursive: true });
+    } catch (error) {
+      // Directory already exists or cannot be created
+      if (error.code !== 'EEXIST') {
+        throw error;
+      }
+    }
+  }
+
+  /**
+   * Load sensors configuration from file
+   * @returns {Promise<Array>} Array of sensor configurations
+   */
+  async loadSensorsConfig() {
+    try {
+      const data = await fs.readFile(this.sensorsConfigPath, 'utf8');
+      const config = JSON.parse(data);
+      // Config is directly an array
+      return Array.isArray(config) ? config : [];
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        return [];
+      }
+      throw new Error(`Failed to load sensors config: ${error.message}`);
+    }
+  }
+
+  /**
+   * Save sensors configuration to file
+   * @param {Array} sensors - Array of sensor configurations
+   * @private
+   */
+  async _saveSensorsConfig(sensors) {
+    await this._ensureSensorsConfigDir();
+
+    // Re-index sensors to ensure sequential indices
+    const reindexedSensors = sensors.map((sensor, idx) => ({
+      ...sensor,
+      index: idx
+    }));
+
+    await fs.writeFile(
+      this.sensorsConfigPath,
+      JSON.stringify(reindexedSensors, null, 2),
+      'utf8'
+    );
+    return reindexedSensors;
+  }
+
+  /**
+   * Get value from nested object using dot notation path
+   * @param {Object} obj - Source object
+   * @param {string} path - Dot notation path (e.g., "nct6798-isa-0290.pwm1.pwm1")
+   * @returns {*} Value at path or undefined
+   * @private
+   */
+  _getValueByPath(obj, pathStr) {
+    const parts = pathStr.split('.');
+    let current = obj;
+
+    for (const part of parts) {
+      if (current === undefined || current === null) {
+        return undefined;
+      }
+      current = current[part];
+    }
+
+    return current;
+  }
+
+  /**
+   * Transform sensor value based on configuration
+   * @param {number} value - Raw sensor value
+   * @param {Object} sensorConfig - Sensor configuration
+   * @returns {number} Transformed value
+   * @private
+   */
+  _transformValue(value, sensorConfig) {
+    if (value === undefined || value === null) {
+      return null;
+    }
+
+    if (sensorConfig.transform === 'percentage' && sensorConfig.value_range) {
+      const { min = 0, max } = sensorConfig.value_range;
+      if (max && max !== min) {
+        return Math.round(((value - min) / (max - min)) * 100 * 10) / 10;
+      }
+    }
+
+    // No transformation, return raw value (rounded to 1 decimal)
+    return Math.round(value * 10) / 10;
+  }
+
+  /**
+   * Validate that a sensor source path exists in the raw sensor data
+   * @param {string} source - Dot notation path to validate
+   * @throws {Error} If source path doesn't exist
+   * @private
+   */
+  async _validateSensorSource(source) {
+    let rawSensors;
+    try {
+      rawSensors = await systemService.getSensors();
+    } catch (error) {
+      throw new Error(`Cannot validate source: sensors command failed - ${error.message}`);
+    }
+
+    const value = this._getValueByPath(rawSensors, source);
+    if (value === undefined) {
+      throw new Error(`Invalid source: "${source}" not found in sensor data`);
+    }
+  }
+
+  /**
+   * Get sensors configuration (full config for each sensor)
+   * GET /mos/sensors/config
+   * @returns {Promise<Object>} Sensors configuration object
+   */
+  async getSensorsConfig() {
+    const sensors = await this.loadSensorsConfig();
+    return { sensors };
+  }
+
+  /**
+   * Get mapped sensor values (values only)
+   * GET /mos/sensors
+   * @returns {Promise<Array>} Array of sensor values
+   */
+  async getMappedSensors() {
+    const sensorsConfig = await this.loadSensorsConfig();
+
+    if (sensorsConfig.length === 0) {
+      return [];
+    }
+
+    // Get raw sensor data
+    let rawSensors;
+    try {
+      rawSensors = await systemService.getSensors();
+    } catch (error) {
+      console.error('Failed to get raw sensors:', error.message);
+      // Return sensors with null values if we can't read sensors
+      return sensorsConfig
+        .filter(s => s.enabled)
+        .sort((a, b) => a.index - b.index)
+        .map(sensor => ({
+          id: sensor.id,
+          index: sensor.index,
+          name: sensor.name,
+          type: sensor.type,
+          value: null,
+          unit: sensor.unit
+        }));
+    }
+
+    // Map configured sensors to their values
+    return sensorsConfig
+      .filter(s => s.enabled)
+      .sort((a, b) => a.index - b.index)
+      .map(sensor => {
+        const rawValue = this._getValueByPath(rawSensors, sensor.source);
+        const value = this._transformValue(rawValue, sensor);
+
+        return {
+          id: sensor.id,
+          index: sensor.index,
+          name: sensor.name,
+          type: sensor.type,
+          value: value,
+          unit: sensor.unit
+        };
+      });
+  }
+
+  /**
+   * Create a new sensor mapping
+   * POST /mos/sensors
+   * @param {Object} sensorData - Sensor configuration data
+   * @returns {Promise<Object>} Created sensor configuration
+   */
+  async createSensorMapping(sensorData) {
+    const sensors = await this.loadSensorsConfig();
+
+    // Validate required fields
+    const requiredFields = ['name', 'type', 'source', 'unit'];
+    for (const field of requiredFields) {
+      if (!sensorData[field]) {
+        throw new Error(`Missing required field: ${field}`);
+      }
+    }
+
+    // Validate type
+    const validTypes = ['fan', 'temperature', 'voltage', 'power', 'other'];
+    if (!validTypes.includes(sensorData.type)) {
+      throw new Error(`Invalid type. Must be one of: ${validTypes.join(', ')}`);
+    }
+
+    // Validate source exists in sensor data
+    await this._validateSensorSource(sensorData.source);
+
+    // Create new sensor config
+    const newSensor = {
+      id: this._generateSensorId(),
+      index: sensors.length, // Will be at the end
+      name: sensorData.name,
+      type: sensorData.type,
+      source: sensorData.source,
+      unit: sensorData.unit,
+      value_range: sensorData.value_range || null,
+      transform: sensorData.transform || null,
+      enabled: sensorData.enabled !== undefined ? sensorData.enabled : true
+    };
+
+    sensors.push(newSensor);
+    await this._saveSensorsConfig(sensors);
+
+    return newSensor;
+  }
+
+  /**
+   * Update an existing sensor mapping
+   * POST /mos/sensors/:id
+   * @param {string} id - Sensor ID
+   * @param {Object} updateData - Fields to update
+   * @returns {Promise<Object>} Updated sensor configuration
+   */
+  async updateSensorMapping(id, updateData) {
+    const sensors = await this.loadSensorsConfig();
+
+    const sensorIndex = sensors.findIndex(s => s.id === id);
+    if (sensorIndex === -1) {
+      throw new Error(`Sensor with id ${id} not found`);
+    }
+
+    // Validate type if provided
+    if (updateData.type) {
+      const validTypes = ['fan', 'temperature', 'voltage', 'power', 'other'];
+      if (!validTypes.includes(updateData.type)) {
+        throw new Error(`Invalid type. Must be one of: ${validTypes.join(', ')}`);
+      }
+    }
+
+    // Validate source if provided
+    if (updateData.source) {
+      await this._validateSensorSource(updateData.source);
+    }
+
+    // Update allowed fields
+    const allowedFields = ['name', 'type', 'source', 'unit', 'value_range', 'transform', 'enabled', 'index'];
+    for (const field of allowedFields) {
+      if (updateData[field] !== undefined) {
+        sensors[sensorIndex][field] = updateData[field];
+      }
+    }
+
+    // If index was changed, reorder array
+    if (updateData.index !== undefined && updateData.index !== sensorIndex) {
+      const sensor = sensors.splice(sensorIndex, 1)[0];
+      const newIndex = Math.max(0, Math.min(updateData.index, sensors.length));
+      sensors.splice(newIndex, 0, sensor);
+    }
+
+    const savedSensors = await this._saveSensorsConfig(sensors);
+    return savedSensors.find(s => s.id === id);
+  }
+
+  /**
+   * Delete a sensor mapping
+   * DELETE /mos/sensors/:id
+   * @param {string} id - Sensor ID
+   * @returns {Promise<Object>} Deleted sensor configuration
+   */
+  async deleteSensorMapping(id) {
+    const sensors = await this.loadSensorsConfig();
+
+    const sensorIndex = sensors.findIndex(s => s.id === id);
+    if (sensorIndex === -1) {
+      throw new Error(`Sensor with id ${id} not found`);
+    }
+
+    const deletedSensor = sensors.splice(sensorIndex, 1)[0];
+
+    // _saveSensorsConfig automatically re-indexes
+    await this._saveSensorsConfig(sensors);
+
+    return deletedSensor;
   }
 
   /**
