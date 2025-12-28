@@ -3828,7 +3828,7 @@ router.get('/sensors/config', async (req, res) => {
  *                 enum: [fan, temperature, power, voltage, psu, other]
  *               source:
  *                 type: string
- *                 description: Dot notation path to sensor value from /system/sensors
+ *                 description: Dot notation path to sensor value from /system/sensors. Use \\. to escape literal dots in key names (e.g., "adapter.v_out +3\\.3v.in3_input")
  *               unit:
  *                 type: string
  *                 description: Display unit

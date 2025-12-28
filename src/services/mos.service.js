@@ -168,15 +168,19 @@ class MosService {
 
   /**
    * Get value from nested object using dot notation path
+   * Supports escaped dots with \. for keys containing literal dots
    * @param {Object} obj - Source object
-   * @param {string} path - Dot notation path (e.g., "nct6798-isa-0290.pwm1.pwm1")
+   * @param {string} pathStr - Dot notation path (e.g., "adapter.v_out +3\.3v.in3_input")
    * @returns {*} Value at path or undefined
    * @private
    */
   _getValueByPath(obj, pathStr) {
-    const parts = pathStr.split('.');
-    let current = obj;
+    // Use placeholder for escaped dots, split by unescaped dots, then restore
+    const placeholder = '\x00';
+    const escaped = pathStr.replace(/\\\./g, placeholder);
+    const parts = escaped.split('.').map(p => p.replace(/\x00/g, '.'));
 
+    let current = obj;
     for (const part of parts) {
       if (current === undefined || current === null) {
         return undefined;
@@ -274,6 +278,8 @@ class MosService {
           let value = null;
           if (rawSensors) {
             const rawValue = this._getValueByPath(rawSensors, sensor.source);
+            // DEBUG: Remove this after testing
+            console.log(`[SENSOR DEBUG] source: "${sensor.source}" -> rawValue:`, rawValue);
             value = this._transformValue(rawValue, sensor);
           }
           return {
