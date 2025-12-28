@@ -12,6 +12,9 @@ class MosService {
     this.settingsPath = '/boot/config/docker.json';
     this.dashboardPath = '/boot/config/dashboard.json';
     this.sensorsConfigPath = '/boot/config/system/sensors.json';
+
+    // Sensors config cache
+    this._sensorsConfigCache = null;
   }
 
   // ============================================================
@@ -67,17 +70,24 @@ class MosService {
   }
 
   /**
-   * Load sensors configuration from file
+   * Load sensors configuration from file (uses cache if available)
+   * @param {boolean} forceReload - Force reload from file, bypassing cache
    * @returns {Promise<Object>} Grouped sensor configurations
    */
-  async loadSensorsConfig() {
+  async loadSensorsConfig(forceReload = false) {
+    // Return cached config if available
+    if (!forceReload && this._sensorsConfigCache) {
+      return this._sensorsConfigCache;
+    }
+
     try {
       const data = await fs.readFile(this.sensorsConfigPath, 'utf8');
       const config = JSON.parse(data);
 
       // Validate it's a grouped object
       if (typeof config !== 'object' || config === null || Array.isArray(config)) {
-        return this._getEmptyGroupedSensors();
+        this._sensorsConfigCache = this._getEmptyGroupedSensors();
+        return this._sensorsConfigCache;
       }
 
       // Ensure all groups exist
@@ -88,10 +98,12 @@ class MosService {
           result[type] = config[type];
         }
       }
+      this._sensorsConfigCache = result;
       return result;
     } catch (error) {
       if (error.code === 'ENOENT') {
-        return this._getEmptyGroupedSensors();
+        this._sensorsConfigCache = this._getEmptyGroupedSensors();
+        return this._sensorsConfigCache;
       }
       throw new Error(`Failed to load sensors config: ${error.message}`);
     }
@@ -99,6 +111,7 @@ class MosService {
 
   /**
    * Save sensors configuration to file (grouped by type)
+   * Also updates the in-memory cache
    * @param {Object} groupedSensors - Grouped sensor configurations
    * @private
    */
@@ -124,7 +137,18 @@ class MosService {
       JSON.stringify(reindexed, null, 2),
       'utf8'
     );
+
+    // Update cache
+    this._sensorsConfigCache = reindexed;
     return reindexed;
+  }
+
+  /**
+   * Invalidate the sensors config cache
+   * Call this if the config file was modified externally
+   */
+  invalidateSensorsCache() {
+    this._sensorsConfigCache = null;
   }
 
   /**
@@ -278,14 +302,15 @@ class MosService {
           let value = null;
           if (rawSensors) {
             const rawValue = this._getValueByPath(rawSensors, sensor.source);
-            // DEBUG: Remove this after testing
-            console.log(`[SENSOR DEBUG] source: "${sensor.source}" -> rawValue:`, rawValue);
             value = this._transformValue(rawValue, sensor);
           }
           return {
             id: sensor.id,
             index: sensor.index,
             name: sensor.name,
+            manufacturer: sensor.manufacturer || null,
+            model: sensor.model || null,
+            subtype: sensor.subtype || null,
             value: value,
             unit: sensor.unit
           };
@@ -332,6 +357,9 @@ class MosService {
       id: this._generateSensorId(),
       index: targetGroup.length,
       name: sensorData.name,
+      manufacturer: sensorData.manufacturer || null,
+      model: sensorData.model || null,
+      subtype: sensorData.subtype || null,
       source: sensorData.source,
       unit: sensorData.unit,
       value_range: sensorData.value_range || null,
@@ -380,7 +408,7 @@ class MosService {
     }
 
     // Update allowed fields (not type - handled separately)
-    const allowedFields = ['name', 'source', 'unit', 'value_range', 'transform', 'enabled', 'index'];
+    const allowedFields = ['name', 'manufacturer', 'model', 'subtype', 'source', 'unit', 'value_range', 'transform', 'enabled', 'index'];
     for (const field of allowedFields) {
       if (updateData[field] !== undefined) {
         sensor[field] = updateData[field];

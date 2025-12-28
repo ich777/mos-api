@@ -32,6 +32,22 @@ const { checkRole } = require('../middleware/auth.middleware');
  *           type: string
  *           description: Display name
  *           example: "Front Fan"
+ *         manufacturer:
+ *           type: string
+ *           nullable: true
+ *           description: Hardware manufacturer
+ *           example: "Corsair"
+ *         model:
+ *           type: string
+ *           nullable: true
+ *           description: Hardware model
+ *           example: "HX750i"
+ *         subtype:
+ *           type: string
+ *           nullable: true
+ *           description: Sensor subtype for more specific categorization
+ *           enum: [voltage, wattage, amperage, speed, flow, temperature, rpm, percentage, null]
+ *           example: "voltage"
  *         value:
  *           type: number
  *           nullable: true
@@ -53,6 +69,21 @@ const { checkRole } = require('../middleware/auth.middleware');
  *         name:
  *           type: string
  *           example: "Front Fan"
+ *         manufacturer:
+ *           type: string
+ *           nullable: true
+ *           description: Hardware manufacturer
+ *           example: "Corsair"
+ *         model:
+ *           type: string
+ *           nullable: true
+ *           description: Hardware model
+ *           example: "HX750i"
+ *         subtype:
+ *           type: string
+ *           nullable: true
+ *           description: Sensor subtype
+ *           enum: [voltage, wattage, amperage, speed, flow, temperature, rpm, percentage, null]
  *         source:
  *           type: string
  *           description: Dot notation path to sensor value
@@ -3823,6 +3854,19 @@ router.get('/sensors/config', async (req, res) => {
  *               name:
  *                 type: string
  *                 description: Display name for the sensor
+ *               manufacturer:
+ *                 type: string
+ *                 nullable: true
+ *                 description: Hardware manufacturer (optional)
+ *               model:
+ *                 type: string
+ *                 nullable: true
+ *                 description: Hardware model (optional)
+ *               subtype:
+ *                 type: string
+ *                 nullable: true
+ *                 description: Sensor subtype (optional)
+ *                 enum: [voltage, wattage, amperage, speed, flow, temperature, rpm, percentage]
  *               type:
  *                 type: string
  *                 enum: [fan, temperature, power, voltage, psu, other]
@@ -3872,6 +3916,19 @@ router.get('/sensors/config', async (req, res) => {
  *                 value_range: null
  *                 transform: null
  *                 enabled: true
+ *             psu:
+ *               summary: PSU sensor with manufacturer/model/subtype
+ *               value:
+ *                 name: "PSU Input Voltage"
+ *                 manufacturer: "Corsair"
+ *                 model: "HX750i"
+ *                 subtype: "voltage"
+ *                 type: "psu"
+ *                 source: "corsairpsu-hid-3-2.v_in.in0_input"
+ *                 unit: "V"
+ *                 value_range: null
+ *                 transform: null
+ *                 enabled: true
  *     responses:
  *       201:
  *         description: Sensor mapping created successfully
@@ -3888,18 +3945,36 @@ router.get('/sensors/config', async (req, res) => {
  */
 router.post('/sensors', checkRole(['admin']), async (req, res) => {
   try {
-    const sensor = await mosService.createSensorMapping(req.body);
-    res.status(201).json(sensor);
-  } catch (error) {
-    if (error.message.includes('Missing required field') ||
-        error.message.includes('Invalid type') ||
-        error.message.includes('Invalid source') ||
-        error.message.includes('Cannot validate source') ||
-        error.message.includes('Source already defined')) {
-      res.status(400).json({ error: error.message });
-    } else {
-      res.status(500).json({ error: error.message });
+    // Support both single sensor and array of sensors
+    const isArray = Array.isArray(req.body);
+    const sensorsToCreate = isArray ? req.body : [req.body];
+
+    const created = [];
+    const errors = [];
+
+    for (let i = 0; i < sensorsToCreate.length; i++) {
+      try {
+        const sensor = await mosService.createSensorMapping(sensorsToCreate[i]);
+        created.push(sensor);
+      } catch (err) {
+        errors.push({ index: i, name: sensorsToCreate[i].name || `Sensor ${i}`, error: err.message });
+      }
     }
+
+    if (isArray) {
+      // Bulk response
+      const status = errors.length === 0 ? 201 : (created.length > 0 ? 207 : 400);
+      res.status(status).json({ created, errors });
+    } else {
+      // Single sensor response
+      if (created.length > 0) {
+        res.status(201).json(created[0]);
+      } else {
+        res.status(400).json({ error: errors[0].error });
+      }
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -3928,6 +4003,16 @@ router.post('/sensors', checkRole(['admin']), async (req, res) => {
  *             properties:
  *               name:
  *                 type: string
+ *               manufacturer:
+ *                 type: string
+ *                 nullable: true
+ *               model:
+ *                 type: string
+ *                 nullable: true
+ *               subtype:
+ *                 type: string
+ *                 nullable: true
+ *                 enum: [voltage, wattage, amperage, speed, flow, temperature, rpm, percentage]
  *               type:
  *                 type: string
  *                 enum: [fan, temperature, power, voltage, psu, other]
