@@ -3834,8 +3834,8 @@ router.get('/sensors/config', async (req, res) => {
  * @swagger
  * /mos/sensors:
  *   post:
- *     summary: Create a new sensor mapping
- *     description: Create a new sensor mapping configuration
+ *     summary: Create sensor mapping(s)
+ *     description: Create one or multiple sensor mappings. Request body must be an array of sensor objects.
  *     tags: [MOS]
  *     security:
  *       - bearerAuth: []
@@ -3844,100 +3844,137 @@ router.get('/sensors/config', async (req, res) => {
  *       content:
  *         application/json:
  *           schema:
- *             type: object
- *             required:
- *               - name
- *               - type
- *               - source
- *               - unit
- *             properties:
- *               name:
- *                 type: string
- *                 description: Display name for the sensor
- *               manufacturer:
- *                 type: string
- *                 nullable: true
- *                 description: Hardware manufacturer (optional)
- *               model:
- *                 type: string
- *                 nullable: true
- *                 description: Hardware model (optional)
- *               subtype:
- *                 type: string
- *                 nullable: true
- *                 description: Sensor subtype (optional)
- *                 enum: [voltage, wattage, amperage, speed, flow, temperature, rpm, percentage]
- *               type:
- *                 type: string
- *                 enum: [fan, temperature, power, voltage, psu, other]
- *               source:
- *                 type: string
- *                 description: Dot notation path to sensor value from /system/sensors. Use \\. to escape literal dots in key names (e.g., "adapter.v_out +3\\.3v.in3_input")
- *               unit:
- *                 type: string
- *                 description: Display unit
- *               value_range:
- *                 type: object
- *                 nullable: true
- *                 description: Value range for percentage transformation
- *                 properties:
- *                   min:
- *                     type: number
- *                   max:
- *                     type: number
- *               transform:
- *                 type: string
- *                 nullable: true
- *                 enum: [percentage]
- *                 description: Value transformation type
- *               enabled:
- *                 type: boolean
- *                 default: true
- *           examples:
- *             fan:
- *               summary: Fan sensor with percentage transform
- *               value:
- *                 name: "Front Fan"
- *                 type: "fan"
- *                 source: "nct6798-isa-0290.pwm1.pwm1"
- *                 unit: "%"
+ *             type: array
+ *             items:
+ *               type: object
+ *               required:
+ *                 - name
+ *                 - type
+ *                 - source
+ *                 - unit
+ *               properties:
+ *                 name:
+ *                   type: string
+ *                   description: Display name for the sensor
+ *                 manufacturer:
+ *                   type: string
+ *                   nullable: true
+ *                   description: Hardware manufacturer (optional)
+ *                 model:
+ *                   type: string
+ *                   nullable: true
+ *                   description: Hardware model (optional)
+ *                 subtype:
+ *                   type: string
+ *                   nullable: true
+ *                   description: Sensor subtype (optional)
+ *                   enum: [voltage, wattage, amperage, speed, flow, temperature, rpm, percentage]
+ *                 type:
+ *                   type: string
+ *                   enum: [fan, temperature, power, voltage, psu, other]
+ *                 source:
+ *                   type: string
+ *                   description: Dot notation path to sensor value. Use \\. to escape literal dots in key names
+ *                 unit:
+ *                   type: string
+ *                   description: Display unit
  *                 value_range:
- *                   min: 0
- *                   max: 255
- *                 transform: "percentage"
- *                 enabled: true
- *             temperature:
- *               summary: Temperature sensor (no transform)
+ *                   type: object
+ *                   nullable: true
+ *                   description: Value range for percentage transformation
+ *                   properties:
+ *                     min:
+ *                       type: number
+ *                     max:
+ *                       type: number
+ *                 transform:
+ *                   type: string
+ *                   nullable: true
+ *                   enum: [percentage]
+ *                   description: Value transformation type
+ *                 enabled:
+ *                   type: boolean
+ *                   default: true
+ *           examples:
+ *             singleSensor:
+ *               summary: Single sensor in array
  *               value:
- *                 name: "CPU Temperature"
- *                 type: "temperature"
- *                 source: "nct6798-isa-0290.CPUTIN.temp2_input"
- *                 unit: "°C"
- *                 value_range: null
- *                 transform: null
- *                 enabled: true
- *             psu:
- *               summary: PSU sensor with manufacturer/model/subtype
+ *                 - name: "Front Fan"
+ *                   type: "fan"
+ *                   source: "nct6798-isa-0290.pwm1.pwm1"
+ *                   unit: "%"
+ *                   value_range:
+ *                     min: 0
+ *                     max: 255
+ *                   transform: "percentage"
+ *             multipleSensors:
+ *               summary: Multiple sensors
  *               value:
- *                 name: "PSU Input Voltage"
- *                 manufacturer: "Corsair"
- *                 model: "HX750i"
- *                 subtype: "voltage"
- *                 type: "psu"
- *                 source: "corsairpsu-hid-3-2.v_in.in0_input"
- *                 unit: "V"
- *                 value_range: null
- *                 transform: null
- *                 enabled: true
+ *                 - name: "PSU Input Voltage"
+ *                   manufacturer: "Corsair"
+ *                   model: "HX750i"
+ *                   subtype: "voltage"
+ *                   type: "psu"
+ *                   source: "corsairpsu-hid-3-2.v_in.in0_input"
+ *                   unit: "V"
+ *                 - name: "CPU Temperature"
+ *                   type: "temperature"
+ *                   source: "nct6798-isa-0290.CPUTIN.temp2_input"
+ *                   unit: "°C"
  *     responses:
  *       201:
- *         description: Sensor mapping created successfully
+ *         description: All sensors created successfully
  *         content:
  *           application/json:
  *             schema:
  *               type: object
+ *               properties:
+ *                 created:
+ *                   type: array
+ *                   description: Successfully created sensors
+ *                   items:
+ *                     $ref: '#/components/schemas/SensorConfig'
+ *                 errors:
+ *                   type: array
+ *                   description: Empty array when all succeeded
+ *                   items:
+ *                     type: object
+ *             example:
+ *               created:
+ *                 - id: "1735403800123"
+ *                   index: 0
+ *                   name: "PSU Input Voltage"
+ *                   manufacturer: "Corsair"
+ *                   model: "HX750i"
+ *                   subtype: "voltage"
+ *                   type: "psu"
+ *                   source: "corsairpsu-hid-3-2.v_in.in0_input"
+ *                   unit: "V"
+ *               errors: []
+ *       207:
+ *         description: Partial success - some sensors created, some failed
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 created:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/SensorConfig'
+ *                 errors:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       index:
+ *                         type: integer
+ *                       name:
+ *                         type: string
+ *                       error:
+ *                         type: string
  *       400:
- *         description: Invalid input
+ *         description: All sensors failed to create
  *       401:
  *         description: Not authenticated
  *       500:
@@ -3945,9 +3982,10 @@ router.get('/sensors/config', async (req, res) => {
  */
 router.post('/sensors', checkRole(['admin']), async (req, res) => {
   try {
-    // Support both single sensor and array of sensors
-    const isArray = Array.isArray(req.body);
-    const sensorsToCreate = isArray ? req.body : [req.body];
+    if (!Array.isArray(req.body)) {
+      return res.status(400).json({ error: 'Request body must be an array of sensors' });
+    }
+    const sensorsToCreate = req.body;
 
     const created = [];
     const errors = [];
@@ -3961,18 +3999,8 @@ router.post('/sensors', checkRole(['admin']), async (req, res) => {
       }
     }
 
-    if (isArray) {
-      // Bulk response
-      const status = errors.length === 0 ? 201 : (created.length > 0 ? 207 : 400);
-      res.status(status).json({ created, errors });
-    } else {
-      // Single sensor response
-      if (created.length > 0) {
-        res.status(201).json(created[0]);
-      } else {
-        res.status(400).json({ error: errors[0].error });
-      }
-    }
+    const status = errors.length === 0 ? 201 : (created.length > 0 ? 207 : 400);
+    res.status(status).json({ created, errors });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -3981,9 +4009,9 @@ router.post('/sensors', checkRole(['admin']), async (req, res) => {
 /**
  * @swagger
  * /mos/sensors/{id}:
- *   post:
+ *   patch:
  *     summary: Update an existing sensor mapping
- *     description: Update fields of an existing sensor mapping. Changing type will move sensor to new group.
+ *     description: Partially update fields of an existing sensor mapping. Changing type will move sensor to new group.
  *     tags: [MOS]
  *     security:
  *       - bearerAuth: []
@@ -4044,7 +4072,7 @@ router.post('/sensors', checkRole(['admin']), async (req, res) => {
  *       500:
  *         description: Server error
  */
-router.post('/sensors/:id', checkRole(['admin']), async (req, res) => {
+router.patch('/sensors/:id', checkRole(['admin']), async (req, res) => {
   try {
     const sensor = await mosService.updateSensorMapping(req.params.id, req.body);
     res.json(sensor);
@@ -4055,6 +4083,75 @@ router.post('/sensors/:id', checkRole(['admin']), async (req, res) => {
                error.message.includes('Invalid source') ||
                error.message.includes('Cannot validate source') ||
                error.message.includes('Source already defined')) {
+      res.status(400).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
+/**
+ * @swagger
+ * /mos/sensors:
+ *   put:
+ *     summary: Replace all sensor mappings
+ *     description: Replace the entire sensor configuration. Useful for bulk reordering or replacing all sensors at once. Existing sensors not in the new config will be deleted.
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             description: Grouped sensor configuration
+ *             properties:
+ *               fan:
+ *                 type: array
+ *                 items:
+ *                   $ref: '#/components/schemas/SensorConfig'
+ *               temperature:
+ *                 type: array
+ *                 items:
+ *                   $ref: '#/components/schemas/SensorConfig'
+ *               power:
+ *                 type: array
+ *                 items:
+ *                   $ref: '#/components/schemas/SensorConfig'
+ *               voltage:
+ *                 type: array
+ *                 items:
+ *                   $ref: '#/components/schemas/SensorConfig'
+ *               psu:
+ *                 type: array
+ *                 items:
+ *                   $ref: '#/components/schemas/SensorConfig'
+ *               other:
+ *                 type: array
+ *                 items:
+ *                   $ref: '#/components/schemas/SensorConfig'
+ *     responses:
+ *       200:
+ *         description: Sensor configuration replaced successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               description: Updated grouped sensor configuration
+ *       400:
+ *         description: Invalid input
+ *       401:
+ *         description: Not authenticated
+ *       500:
+ *         description: Server error
+ */
+router.put('/sensors', checkRole(['admin']), async (req, res) => {
+  try {
+    const config = await mosService.replaceSensorsConfig(req.body);
+    res.json(config);
+  } catch (error) {
+    if (error.message.includes('Invalid') || error.message.includes('must be')) {
       res.status(400).json({ error: error.message });
     } else {
       res.status(500).json({ error: error.message });

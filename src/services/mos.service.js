@@ -464,6 +464,41 @@ class MosService {
   }
 
   /**
+   * Replace entire sensors configuration
+   * PUT /mos/sensors
+   * @param {Object} newConfig - New grouped sensor configuration
+   * @returns {Promise<Object>} Saved sensor configuration
+   */
+  async replaceSensorsConfig(newConfig) {
+    // Validate input is an object
+    if (typeof newConfig !== 'object' || newConfig === null || Array.isArray(newConfig)) {
+      throw new Error('Config must be an object with sensor type groups');
+    }
+
+    const validTypes = this._getValidSensorTypes();
+    const result = this._getEmptyGroupedSensors();
+
+    // Validate and copy each group
+    for (const type of validTypes) {
+      if (newConfig[type] !== undefined) {
+        if (!Array.isArray(newConfig[type])) {
+          throw new Error(`Invalid config: ${type} must be an array`);
+        }
+        // Validate each sensor has required fields
+        for (const sensor of newConfig[type]) {
+          if (!sensor.id || !sensor.name || !sensor.source || !sensor.unit) {
+            throw new Error(`Invalid sensor in ${type}: missing required fields (id, name, source, unit)`);
+          }
+        }
+        result[type] = newConfig[type];
+      }
+    }
+
+    // Save and return (will re-index)
+    return await this._saveSensorsConfig(result);
+  }
+
+  /**
    * Finds the first available non-MergerFS pool for default path suggestions
    * Falls back to MergerFS pool if no other pool is available
    * @returns {Promise<string|null>} The pool name or null if no suitable pool found
