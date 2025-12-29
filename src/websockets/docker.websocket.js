@@ -15,6 +15,7 @@ class DockerWebSocketManager extends EventEmitter {
     this.dockerService = dockerService;
     this.dockerComposeService = dockerComposeService;
     this.activeOperations = new Map(); // operationId -> { process, type, startTime, operation, params }
+    this.statsStreams = new Map(); // socketId -> Map(operationId -> { process, containerName })
   }
 
   /**
@@ -163,9 +164,80 @@ class DockerWebSocketManager extends EventEmitter {
       }
     });
 
-    // Handle disconnect - DON'T kill processes, they run in background
+    // Subscribe to container stats stream
+    socket.on('docker-stats-subscribe', async (data) => {
+      try {
+        const { token, containerName } = data;
+
+        // Authenticate user
+        const authResult = await this.authenticateUser(token);
+        if (!authResult.success) {
+          this.sendUpdate(socket, null, 'error', { message: authResult.message });
+          return;
+        }
+
+        // Check if user is admin
+        if (authResult.user.role !== 'admin') {
+          this.sendUpdate(socket, null, 'error', { message: 'Admin role required for Docker operations' });
+          return;
+        }
+
+        if (!containerName) {
+          this.sendUpdate(socket, null, 'error', { message: 'Container name is required for stats subscription' });
+          return;
+        }
+
+        console.log(`Client ${socket.id} subscribing to stats for container: ${containerName}`);
+
+        // Generate unique operation ID
+        const operationId = `stats-${containerName}-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
+
+        // Join operation room
+        socket.join(`operation-${operationId}`);
+
+        // Execute stats stream
+        await this.executeContainerStats(socket.id, operationId, containerName);
+
+      } catch (error) {
+        console.error('Error in docker-stats-subscribe:', error);
+        this.sendUpdate(socket, null, 'error', { message: error.message });
+      }
+    });
+
+    // Unsubscribe from container stats stream
+    socket.on('docker-stats-unsubscribe', async (data) => {
+      try {
+        const { token, operationId } = data;
+
+        // Authenticate user
+        const authResult = await this.authenticateUser(token);
+        if (!authResult.success) {
+          this.sendUpdate(socket, operationId, 'error', { message: authResult.message });
+          return;
+        }
+
+        if (!operationId) {
+          this.sendUpdate(socket, null, 'error', { message: 'Operation ID is required for stats unsubscribe' });
+          return;
+        }
+
+        console.log(`Client ${socket.id} unsubscribing from stats: ${operationId}`);
+
+        await this.stopContainerStats(socket.id, operationId);
+
+      } catch (error) {
+        console.error('Error in docker-stats-unsubscribe:', error);
+        this.sendUpdate(socket, null, 'error', { message: 'Failed to unsubscribe from stats' });
+      }
+    });
+
+    // Handle disconnect - cleanup stats streams but DON'T kill operations
     socket.on('disconnect', () => {
       console.log(`Docker WebSocket client disconnected: ${socket.id}`);
+
+      // Stop all stats streams for this socket
+      this.cleanupSocketStatsStreams(socket.id);
+
       // Don't cleanup operations - they continue running!
     });
   }
@@ -1450,6 +1522,184 @@ class DockerWebSocketManager extends EventEmitter {
         message: `Compose upgrade failed: ${error.message}`
       });
     }
+  }
+
+  /**
+   * Execute container stats stream with continuous JSON output
+   */
+  async executeContainerStats(socketId, operationId, containerName) {
+    this.sendUpdate(null, operationId, 'started', {
+      operation: 'container-stats',
+      containerName
+    });
+
+    try {
+      const dockerPath = '/usr/bin/docker';
+      const args = ['stats', '--format', 'json', '--no-trunc', containerName];
+
+      const process = spawn(dockerPath, args, {
+        shell: false
+      });
+
+      const startTime = Date.now();
+
+      // Initialize socket stats streams map if not exists
+      if (!this.statsStreams.has(socketId)) {
+        this.statsStreams.set(socketId, new Map());
+      }
+
+      // Store stats stream for this socket
+      this.statsStreams.get(socketId).set(operationId, {
+        process,
+        containerName,
+        startTime
+      });
+
+      let buffer = '';
+
+      // Stream stdout - docker stats outputs JSON lines continuously
+      process.stdout.on('data', (data) => {
+        buffer += data.toString();
+        const lines = buffer.split('\n');
+
+        // Keep the last incomplete line in buffer
+        buffer = lines.pop();
+
+        // Process complete lines
+        for (const line of lines) {
+          if (line.trim()) {
+            // Send each stats update to all clients in operation room
+            this.sendUpdate(null, operationId, 'running', {
+              output: line.trim(),
+              stream: 'stdout'
+            });
+          }
+        }
+      });
+
+      // Stream stderr for errors
+      process.stderr.on('data', (data) => {
+        const output = data.toString();
+        this.sendUpdate(null, operationId, 'running', {
+          output,
+          stream: 'stderr'
+        });
+      });
+
+      // Handle process exit
+      process.on('close', (code) => {
+        // Remove from stats streams
+        if (this.statsStreams.has(socketId)) {
+          this.statsStreams.get(socketId).delete(operationId);
+          if (this.statsStreams.get(socketId).size === 0) {
+            this.statsStreams.delete(socketId);
+          }
+        }
+
+        const duration = Date.now() - startTime;
+
+        if (code === 0) {
+          this.sendUpdate(null, operationId, 'completed', {
+            success: true,
+            message: `Stats stream stopped for container '${containerName}'`,
+            duration
+          });
+        } else {
+          this.sendUpdate(null, operationId, 'error', {
+            message: `Stats stream ended with code ${code}`,
+            exitCode: code
+          });
+        }
+      });
+
+      // Handle process errors
+      process.on('error', (error) => {
+        // Remove from stats streams
+        if (this.statsStreams.has(socketId)) {
+          this.statsStreams.get(socketId).delete(operationId);
+          if (this.statsStreams.get(socketId).size === 0) {
+            this.statsStreams.delete(socketId);
+          }
+        }
+
+        this.sendUpdate(null, operationId, 'error', {
+          message: `Stats stream error: ${error.message}`
+        });
+      });
+
+    } catch (error) {
+      this.sendUpdate(null, operationId, 'error', {
+        message: `Failed to start stats stream: ${error.message}`
+      });
+    }
+  }
+
+  /**
+   * Stop a container stats stream
+   */
+  async stopContainerStats(socketId, operationId) {
+    if (!this.statsStreams.has(socketId)) {
+      this.sendUpdate(null, operationId, 'error', {
+        message: 'Stats stream not found or already stopped'
+      });
+      return;
+    }
+
+    const socketStreams = this.statsStreams.get(socketId);
+    const stream = socketStreams.get(operationId);
+
+    if (!stream) {
+      this.sendUpdate(null, operationId, 'error', {
+        message: 'Stats stream not found or already stopped'
+      });
+      return;
+    }
+
+    try {
+      // Kill the stats process
+      stream.process.kill('SIGTERM');
+
+      // Remove from tracking
+      socketStreams.delete(operationId);
+      if (socketStreams.size === 0) {
+        this.statsStreams.delete(socketId);
+      }
+
+      this.sendUpdate(null, operationId, 'completed', {
+        success: true,
+        message: `Stats stream stopped for container '${stream.containerName}'`
+      });
+
+      console.log(`Stats stream ${operationId} stopped for container ${stream.containerName}`);
+    } catch (error) {
+      console.error('Error stopping stats stream:', error);
+      this.sendUpdate(null, operationId, 'error', {
+        message: `Failed to stop stats stream: ${error.message}`
+      });
+    }
+  }
+
+  /**
+   * Cleanup all stats streams for a socket (on disconnect)
+   */
+  cleanupSocketStatsStreams(socketId) {
+    if (!this.statsStreams.has(socketId)) {
+      return;
+    }
+
+    const socketStreams = this.statsStreams.get(socketId);
+    console.log(`Cleaning up ${socketStreams.size} stats stream(s) for socket ${socketId}`);
+
+    for (const [operationId, stream] of socketStreams.entries()) {
+      try {
+        stream.process.kill('SIGTERM');
+        console.log(`Stopped stats stream ${operationId} for container ${stream.containerName}`);
+      } catch (error) {
+        console.error(`Error stopping stats stream ${operationId}:`, error);
+      }
+    }
+
+    this.statsStreams.delete(socketId);
   }
 
   /**

@@ -67,6 +67,8 @@ const { authenticateToken } = require('../../middleware/auth.middleware');
  *       - `docker` - Start a Docker operation (pull, upgrade, upgrade-group, create, check-updates, compose-create, compose-update, compose-pull, compose-delete, compose-upgrade)
  *       - `docker-cancel` - Cancel an ongoing operation
  *       - `docker-get-operations` - Get list of active operations
+ *       - `docker-stats-subscribe` - Subscribe to live container statistics stream
+ *       - `docker-stats-unsubscribe` - Unsubscribe from container statistics stream
  *
  *       **Event to listen for (server → client):**
  *       - `docker-update` - **ONE** event for ALL updates (status-based)
@@ -244,6 +246,39 @@ const { authenticateToken } = require('../../middleware/auth.middleware');
  *       REST Alternative: `POST /api/v1/docker/mos/compose/stacks/{name}/upgrade`
  *       (waits for completion, no streaming)
  *
+ *       Subscribe to live container stats (continuous streaming):
+ *       ```javascript
+ *       socket.emit('docker-stats-subscribe', {
+ *         token: 'your-jwt-token',
+ *         containerName: 'nginx'
+ *       });
+ *       ```
+ *       Note: Stream runs continuously until unsubscribe or disconnect
+ *
+ *       Listen for stats updates:
+ *       ```javascript
+ *       socket.on('docker-update', (data) => {
+ *         if (data.status === 'running' && data.operation === 'container-stats') {
+ *           const stats = JSON.parse(data.output);
+ *           console.log('Container:', stats.Container);
+ *           console.log('CPU:', stats.CPUPerc);
+ *           console.log('Memory:', stats.MemUsage);
+ *           console.log('Network I/O:', stats.NetIO);
+ *           console.log('Block I/O:', stats.BlockIO);
+ *           // Stats update every ~1 second
+ *         }
+ *       });
+ *       ```
+ *
+ *       Unsubscribe from stats stream:
+ *       ```javascript
+ *       socket.emit('docker-stats-unsubscribe', {
+ *         token: 'your-jwt-token',
+ *         operationId: 'stats-nginx-1234567890-abc123'
+ *       });
+ *       ```
+ *       Note: All stats streams are automatically stopped on disconnect
+ *
  *       Get active operations after reconnect:
  *       ```javascript
  *       socket.emit('docker-get-operations', { token: 'your-jwt-token' });
@@ -269,6 +304,8 @@ const { authenticateToken } = require('../../middleware/auth.middleware');
  *       - Only explicit `docker-cancel` stops the operation
  *       - Multiple clients can watch same operation via rooms
  *       - Reconnect and resume with `docker-get-operations`
+ *       - Container stats streams continuously until unsubscribe/disconnect
+ *       - Multiple clients can monitor the same container simultaneously
  *
  *     tags: [Docker WebSocket]
  *     responses:
@@ -363,6 +400,30 @@ router.get('/websocket/events', (req, res) => {
           }
         },
         {
+          event: 'docker-stats-subscribe',
+          description: 'Subscribe to live container statistics (continuous stream)',
+          payload: {
+            token: 'JWT token (required)',
+            containerName: 'Container name to monitor'
+          },
+          example: {
+            token: 'eyJ...',
+            containerName: 'nginx'
+          }
+        },
+        {
+          event: 'docker-stats-unsubscribe',
+          description: 'Unsubscribe from container statistics stream',
+          payload: {
+            token: 'JWT token (required)',
+            operationId: 'Operation ID from subscribe response'
+          },
+          example: {
+            token: 'eyJ...',
+            operationId: 'stats-nginx-1234567890-abc123'
+          }
+        },
+        {
           event: 'docker-cancel',
           description: 'Cancel an ongoing operation',
           payload: {
@@ -422,6 +483,29 @@ router.get('/websocket/events', (req, res) => {
               operationId: 'pull-1234567890-abc123',
               message: 'Failed to pull image: connection timeout',
               timestamp: 1234567890789
+            },
+            'container-stats-started': {
+              status: 'started',
+              operationId: 'stats-nginx-1234567890-abc123',
+              operation: 'container-stats',
+              containerName: 'nginx',
+              timestamp: 1234567890123
+            },
+            'container-stats-running': {
+              status: 'running',
+              operationId: 'stats-nginx-1234567890-abc123',
+              operation: 'container-stats',
+              output: '{"BlockIO":"1.2MB / 0B","CPUPerc":"0.50%","Container":"nginx","ID":"abc123","MemPerc":"2.50%","MemUsage":"128MiB / 4GiB","Name":"nginx","NetIO":"1.2kB / 0B","PIDs":"10"}',
+              stream: 'stdout',
+              timestamp: 1234567891123
+            },
+            'container-stats-completed': {
+              status: 'completed',
+              operationId: 'stats-nginx-1234567890-abc123',
+              success: true,
+              message: 'Stats stream stopped for container \'nginx\'',
+              duration: 65000,
+              timestamp: 1234567955123
             }
           }
         }
@@ -439,7 +523,8 @@ router.get('/websocket/events', (req, res) => {
         'Cancel operations anytime',
         'Reconnect and resume',
         'Multiple clients can watch same operation',
-        'Live streaming of docker-compose operations'
+        'Live streaming of docker-compose operations',
+        'Real-time container statistics monitoring'
       ],
       note: 'Both REST and WebSocket use the same internal functions (dockerService, dockerComposeService)'
     }
