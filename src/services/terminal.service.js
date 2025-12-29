@@ -80,11 +80,6 @@ class TerminalService {
         });
       }
 
-      // Error handling for PTY process
-      ptyProcess.on('error', (error) => {
-        console.error(`Terminal process error for session ${sessionId}:`, error.message);
-      });
-
       ptyProcess.on('exit', (code, signal) => {
         console.log(`Terminal process exited for session ${sessionId}: code=${code}, signal=${signal}`);
         // Session is automatically cleaned up by socket handler
@@ -206,9 +201,23 @@ class TerminalService {
         session.ptyProcess.removeListener('data', session.bufferData);
       }
 
-      // Only kill if the process is still running
-      if (!session.ptyProcess.killed && session.ptyProcess.exitCode === null) {
-        session.ptyProcess.kill();
+      // Get PID before attempting kill
+      const pid = session.ptyProcess.pid;
+
+      // Try node-pty kill first
+      try {
+        session.ptyProcess.kill('SIGKILL');
+      } catch (e) {
+        // Ignore node-pty kill errors
+      }
+
+      // Also kill the process directly via OS to ensure termination
+      if (pid) {
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch (e) {
+          // Ignore errors - process may already be dead
+        }
       }
     } catch (error) {
       console.warn(`Warning killing session ${sessionId}:`, error.message);
