@@ -320,6 +320,88 @@ class MosService {
   }
 
   /**
+   * Get unmapped sensors (available but not yet configured)
+   * Returns same structure as /system/sensors but with mapped sources removed
+   * GET /mos/sensors/unmapped
+   * @returns {Promise<Object>} Sensor data structure with mapped entries removed
+   */
+  async getUnmappedSensors() {
+    // Get current config to find already mapped sources
+    const groupedConfig = await this.loadSensorsConfig();
+    const validTypes = this._getValidSensorTypes();
+
+    // Collect all mapped sources (unescape \. to . for comparison)
+    const mappedSources = new Set();
+    for (const type of validTypes) {
+      for (const sensor of groupedConfig[type] || []) {
+        // Unescape \. to . for comparison with raw sensor paths
+        const unescapedSource = sensor.source.replace(/\\\./g, '.');
+        mappedSources.add(unescapedSource);
+      }
+    }
+
+    // Get raw sensor data
+    let rawSensors;
+    try {
+      rawSensors = await systemService.getSensors();
+    } catch (error) {
+      throw new Error(`Cannot get sensor data: ${error.message}`);
+    }
+
+    // Deep clone and filter out mapped sources
+    const filterMapped = (obj, path = '') => {
+      if (obj === null || obj === undefined) return undefined;
+      if (typeof obj !== 'object') return obj;
+
+      const result = {};
+      for (const [key, value] of Object.entries(obj)) {
+        const currentPath = path ? `${path}.${key}` : key;
+
+        if (typeof value === 'object' && value !== null) {
+          // Recurse into nested objects
+          const filtered = filterMapped(value, currentPath);
+          // Only include if it has remaining properties
+          if (filtered && Object.keys(filtered).length > 0) {
+            result[key] = filtered;
+          }
+        } else if (typeof value === 'number') {
+          // Check if this sensor value is mapped
+          if (!mappedSources.has(currentPath)) {
+            result[key] = value;
+          }
+        } else {
+          // Keep non-numeric values (like "Adapter": "ISA adapter")
+          result[key] = value;
+        }
+      }
+
+      return result;
+    };
+
+    const unmapped = filterMapped(rawSensors);
+
+    // Remove empty adapter entries (only have "Adapter" string left)
+    const cleanEmpty = (obj) => {
+      const result = {};
+      for (const [key, value] of Object.entries(obj)) {
+        if (typeof value === 'object' && value !== null) {
+          // Check if this is an adapter with only "Adapter" key left
+          const keys = Object.keys(value);
+          const hasOnlyAdapter = keys.length === 1 && keys[0] === 'Adapter';
+          const isEmpty = keys.length === 0;
+
+          if (!hasOnlyAdapter && !isEmpty) {
+            result[key] = value;
+          }
+        }
+      }
+      return result;
+    };
+
+    return cleanEmpty(unmapped);
+  }
+
+  /**
    * Create a new sensor mapping
    * POST /mos/sensors
    * @param {Object} sensorData - Sensor configuration data

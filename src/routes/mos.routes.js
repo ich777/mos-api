@@ -3752,6 +3752,50 @@ router.get('/sensors', async (req, res) => {
 
 /**
  * @swagger
+ * /mos/sensors/unmapped:
+ *   get:
+ *     summary: Get unmapped sensors
+ *     description: Returns sensor data in the same structure as /system/sensors, but with already mapped sources removed. Empty adapters (with no remaining sensors) are also removed.
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Sensor data structure with mapped entries removed
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               additionalProperties:
+ *                 type: object
+ *                 description: Adapter with its sensors
+ *             example:
+ *               coretemp-isa-0000:
+ *                 Adapter: "ISA adapter"
+ *                 Package id 0:
+ *                   temp1_input: 32
+ *                   temp1_max: 80
+ *               nct6798-isa-0290:
+ *                 Adapter: "ISA adapter"
+ *                 fan1:
+ *                   fan1_input: 1200
+ *                   fan1_min: 0
+ *       401:
+ *         description: Not authenticated
+ *       500:
+ *         description: Server error
+ */
+router.get('/sensors/unmapped', checkRole(['admin']), async (req, res) => {
+  try {
+    const unmapped = await mosService.getUnmappedSensors();
+    res.json(unmapped);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
  * /mos/sensors/config:
  *   get:
  *     summary: Get sensor mapping configuration
