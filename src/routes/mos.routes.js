@@ -4264,4 +4264,127 @@ router.delete('/sensors/:id', checkRole(['admin']), async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /mos/tokens:
+ *   get:
+ *     summary: Get all tokens
+ *     description: Retrieve all tokens (github, dockerhub, etc.) decrypted from /boot/config/system/tokens.json (admin only)
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Tokens retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 github:
+ *                   type: string
+ *                   nullable: true
+ *                   description: Decrypted GitHub token or null if not set
+ *                 dockerhub:
+ *                   type: string
+ *                   nullable: true
+ *                   description: Decrypted Docker Hub token or null if not set
+ *             example:
+ *               github: "ghp_1234567890abcdef"
+ *               dockerhub: null
+ *       401:
+ *         description: Not authenticated
+ *       403:
+ *         description: Admin permission required
+ *       500:
+ *         description: Server error
+ *   post:
+ *     summary: Update tokens (partial updates supported)
+ *     description: Update one or more tokens (encrypted with JWT_SECRET) in /boot/config/system/tokens.json. Only provided tokens will be updated. (admin only)
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               github:
+ *                 type: string
+ *                 nullable: true
+ *                 description: GitHub token to save (will be encrypted)
+ *               dockerhub:
+ *                 type: string
+ *                 nullable: true
+ *                 description: Docker Hub token to save (will be encrypted)
+ *           examples:
+ *             update_github_only:
+ *               summary: Update only GitHub token
+ *               value:
+ *                 github: "ghp_1234567890abcdef"
+ *             update_both:
+ *               summary: Update both tokens
+ *               value:
+ *                 github: "ghp_1234567890abcdef"
+ *                 dockerhub: "dckr_pat_xyz123"
+ *             remove_token:
+ *               summary: Remove a token
+ *               value:
+ *                 github: null
+ *     responses:
+ *       200:
+ *         description: Tokens updated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 message:
+ *                   type: string
+ *                 updated:
+ *                   type: array
+ *                   items:
+ *                     type: string
+ *                   description: List of token keys that were updated
+ *             example:
+ *               success: true
+ *               message: "Tokens updated successfully"
+ *               updated: ["github"]
+ *       400:
+ *         description: Invalid request body
+ *       401:
+ *         description: Not authenticated
+ *       403:
+ *         description: Admin permission required
+ *       500:
+ *         description: Server error
+ */
+
+// GET: Read all tokens
+router.get('/tokens', checkRole(['admin']), async (req, res) => {
+  try {
+    const result = await mosService.getTokens();
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST: Update tokens (partial update supported)
+router.post('/tokens', checkRole(['admin']), async (req, res) => {
+  try {
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      return res.status(400).json({ error: 'Request body must be an object with token fields (github, dockerhub, etc.).' });
+    }
+    const result = await mosService.updateTokens(req.body);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 module.exports = router;

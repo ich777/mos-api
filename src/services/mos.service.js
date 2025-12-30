@@ -3,6 +3,7 @@ const path = require('path');
 const { exec } = require('child_process');
 const util = require('util');
 const execPromise = util.promisify(exec);
+const crypto = require('crypto');
 const PoolsService = require('./pools.service');
 const hubService = require('./hub.service');
 const systemService = require('./system.service');
@@ -12,6 +13,7 @@ class MosService {
     this.settingsPath = '/boot/config/docker.json';
     this.dashboardPath = '/boot/config/dashboard.json';
     this.sensorsConfigPath = '/boot/config/system/sensors.json';
+    this.tokensPath = '/boot/config/system/tokens.json';
 
     // Sensors config cache
     this._sensorsConfigCache = null;
@@ -3928,6 +3930,150 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
 
     // Parent is outside allowed roots → go back to virtual root
     return '/';
+  }
+
+  // ============================================================
+  // TOKEN MANAGEMENT METHODS (github, dockerhub, etc.)
+  // ============================================================
+
+  /**
+   * Encrypt token using JWT_SECRET
+   * @param {string} plainToken - Plain text token
+   * @returns {string} Encrypted token in format "iv:authTag:encrypted"
+   * @private
+   */
+  _encryptToken(plainToken) {
+    if (!plainToken) return '';
+
+    const algorithm = 'aes-256-gcm';
+    const key = crypto.scryptSync(process.env.JWT_SECRET, 'tokens-salt', 32);
+    const iv = crypto.randomBytes(16);
+
+    const cipher = crypto.createCipheriv(algorithm, key, iv);
+    cipher.setAAD(Buffer.from('tokens-auth'));
+
+    let encrypted = cipher.update(plainToken, 'utf8', 'hex');
+    encrypted += cipher.final('hex');
+
+    const authTag = cipher.getAuthTag();
+
+    return `${iv.toString('hex')}:${authTag.toString('hex')}:${encrypted}`;
+  }
+
+  /**
+   * Decrypt token using JWT_SECRET
+   * @param {string} encryptedToken - Encrypted token in format "iv:authTag:encrypted"
+   * @returns {string} Plain text token
+   * @private
+   */
+  _decryptToken(encryptedToken) {
+    if (!encryptedToken) return '';
+
+    try {
+      const [ivHex, authTagHex, encrypted] = encryptedToken.split(':');
+      if (!ivHex || !authTagHex || !encrypted) {
+        throw new Error('Invalid encrypted token format');
+      }
+
+      const algorithm = 'aes-256-gcm';
+      const key = crypto.scryptSync(process.env.JWT_SECRET, 'tokens-salt', 32);
+      const iv = Buffer.from(ivHex, 'hex');
+      const authTag = Buffer.from(authTagHex, 'hex');
+
+      const decipher = crypto.createDecipheriv(algorithm, key, iv);
+      decipher.setAuthTag(authTag);
+      decipher.setAAD(Buffer.from('tokens-auth'));
+
+      let decrypted = decipher.update(encrypted, 'hex', 'utf8');
+      decrypted += decipher.final('utf8');
+
+      return decrypted;
+    } catch (error) {
+      throw new Error(`Failed to decrypt token: ${error.message}`);
+    }
+  }
+
+  /**
+   * Get all tokens (decrypted)
+   * GET /mos/tokens
+   * @returns {Promise<Object>} Object with token keys (github, dockerhub, etc.) - all decrypted
+   */
+  async getTokens() {
+    try {
+      // Ensure directory exists
+      await fs.mkdir(path.dirname(this.tokensPath), { recursive: true });
+
+      const data = await fs.readFile(this.tokensPath, 'utf8');
+      const config = JSON.parse(data);
+
+      // Decrypt all tokens before returning
+      const decryptedTokens = {};
+      for (const [key, encryptedValue] of Object.entries(config)) {
+        decryptedTokens[key] = encryptedValue ? this._decryptToken(encryptedValue) : null;
+      }
+
+      return decryptedTokens;
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        // File doesn't exist, return empty object
+        return { github: null, dockerhub: null };
+      }
+      throw new Error(`Failed to get tokens: ${error.message}`);
+    }
+  }
+
+  /**
+   * Update tokens (encrypted) - supports partial updates
+   * POST /mos/tokens
+   * @param {Object} tokens - Object with token keys to update (e.g., {github: "...", dockerhub: "..."})
+   * @returns {Promise<Object>} Success confirmation
+   */
+  async updateTokens(tokens) {
+    try {
+      if (!tokens || typeof tokens !== 'object' || Array.isArray(tokens)) {
+        throw new Error('Tokens must be an object');
+      }
+
+      // Ensure directory exists
+      await fs.mkdir(path.dirname(this.tokensPath), { recursive: true });
+
+      // Load existing tokens
+      let existingConfig = {};
+      try {
+        const data = await fs.readFile(this.tokensPath, 'utf8');
+        existingConfig = JSON.parse(data);
+      } catch (error) {
+        if (error.code !== 'ENOENT') {
+          throw error;
+        }
+        // File doesn't exist yet, start with empty config
+      }
+
+      // Update only the provided tokens (partial update)
+      for (const [key, plainValue] of Object.entries(tokens)) {
+        if (plainValue === null || plainValue === undefined || plainValue === '') {
+          // Allow setting to null to remove a token
+          existingConfig[key] = null;
+        } else {
+          // Encrypt and store the token
+          existingConfig[key] = this._encryptToken(plainValue);
+        }
+      }
+
+      await fs.writeFile(
+        this.tokensPath,
+        JSON.stringify(existingConfig, null, 2),
+        'utf8'
+      );
+
+      return {
+        success: true,
+        message: 'Tokens updated successfully',
+        updated: Object.keys(tokens)
+      };
+    } catch (error) {
+      throw new Error(`Failed to update tokens: ${error.message}`);
+    }
   }
 }
 
