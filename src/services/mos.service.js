@@ -227,6 +227,11 @@ class MosService {
       return null;
     }
 
+    // Apply multiplier first (for voltage dividers etc.)
+    if (sensorConfig.multiplier && typeof sensorConfig.multiplier === 'number') {
+      value = value * sensorConfig.multiplier;
+    }
+
     if (sensorConfig.transform === 'percentage' && sensorConfig.value_range) {
       const { min = 0, max } = sensorConfig.value_range;
       if (max && max !== min) {
@@ -234,8 +239,8 @@ class MosService {
       }
     }
 
-    // No transformation, return raw value (rounded to 1 decimal)
-    return Math.round(value * 10) / 10;
+    // No transformation, return raw value (rounded to 2 decimals)
+    return Math.round(value * 100) / 100;
   }
 
   /**
@@ -444,6 +449,7 @@ class MosService {
       subtype: sensorData.subtype || null,
       source: sensorData.source,
       unit: sensorData.unit,
+      multiplier: sensorData.multiplier || null,
       value_range: sensorData.value_range || null,
       transform: sensorData.transform || null,
       enabled: sensorData.enabled !== undefined ? sensorData.enabled : true
@@ -490,7 +496,7 @@ class MosService {
     }
 
     // Update allowed fields (not type - handled separately)
-    const allowedFields = ['name', 'manufacturer', 'model', 'subtype', 'source', 'unit', 'value_range', 'transform', 'enabled', 'index'];
+    const allowedFields = ['name', 'manufacturer', 'model', 'subtype', 'source', 'unit', 'multiplier', 'value_range', 'transform', 'enabled', 'index'];
     for (const field of allowedFields) {
       if (updateData[field] !== undefined) {
         sensor[field] = updateData[field];

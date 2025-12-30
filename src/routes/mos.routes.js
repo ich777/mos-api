@@ -91,6 +91,11 @@ const { checkRole } = require('../middleware/auth.middleware');
  *         unit:
  *           type: string
  *           example: "%"
+ *         multiplier:
+ *           type: number
+ *           nullable: true
+ *           description: Multiplier for voltage dividers (applied before other transforms)
+ *           example: 6
  *         value_range:
  *           type: object
  *           nullable: true
@@ -3922,6 +3927,10 @@ router.get('/sensors/config', async (req, res) => {
  *                 unit:
  *                   type: string
  *                   description: Display unit
+ *                 multiplier:
+ *                   type: number
+ *                   nullable: true
+ *                   description: Multiplier for voltage dividers (e.g., 6 for 12V rail measured via divider)
  *                 value_range:
  *                   type: object
  *                   nullable: true
@@ -3965,6 +3974,15 @@ router.get('/sensors/config', async (req, res) => {
  *                   type: "temperature"
  *                   source: "nct6798-isa-0290.CPUTIN.temp2_input"
  *                   unit: "°C"
+ *             voltageWithMultiplier:
+ *               summary: Voltage with multiplier (for voltage dividers)
+ *               value:
+ *                 - name: "12V Rail"
+ *                   type: "voltage"
+ *                   subtype: "voltage"
+ *                   source: "nct6798-isa-0290.in7.in7_input"
+ *                   unit: "V"
+ *                   multiplier: 6
  *     responses:
  *       201:
  *         description: All sensors created successfully
@@ -4093,6 +4111,10 @@ router.post('/sensors', checkRole(['admin']), async (req, res) => {
  *                 type: string
  *               unit:
  *                 type: string
+ *               multiplier:
+ *                 type: number
+ *                 nullable: true
+ *                 description: Multiplier for voltage dividers
  *               value_range:
  *                 type: object
  *                 nullable: true
