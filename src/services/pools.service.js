@@ -5735,7 +5735,6 @@ class PoolsService {
 
       // Extract policies from options or use defaults
       const createPolicy = options.policies?.create || 'epmfs';
-      const readPolicy = options.policies?.read || 'ff';
       const searchPolicy = options.policies?.search || 'ff';
 
       // Build MergerFS options with custom policies
@@ -5749,7 +5748,6 @@ class PoolsService {
       const mergerfsConfig = {
         policies: {
           create: createPolicy,
-          read: readPolicy,
           search: searchPolicy
         },
         minfreespace: options.minfreespace || "20G",
@@ -6216,7 +6214,6 @@ class PoolsService {
 
       // Extract policies from options or use defaults
       const createPolicy = options.policies?.create || 'epmfs';
-      const readPolicy = options.policies?.read || 'ff';
       const searchPolicy = options.policies?.search || 'ff';
 
       // Build MergerFS options with custom policies
@@ -6230,7 +6227,6 @@ class PoolsService {
       const nonraidConfig = {
         policies: {
           create: createPolicy,
-          read: readPolicy,
           search: searchPolicy
         },
         minfreespace: options.minfreespace || "20G",

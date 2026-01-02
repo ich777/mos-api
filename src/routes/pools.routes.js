@@ -1343,11 +1343,6 @@ router.post('/mergerfs', checkRole(['admin']), async (req, res) => {
  *                         description: MergerFS create policy
  *                         default: epmfs
  *                         example: epmfs
- *                       read:
- *                         type: string
- *                         description: MergerFS read policy
- *                         default: ff
- *                         example: ff
  *                       search:
  *                         type: string
  *                         description: MergerFS search policy
