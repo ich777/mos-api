@@ -94,8 +94,13 @@ const { checkRole } = require('../middleware/auth.middleware');
  *         multiplier:
  *           type: number
  *           nullable: true
- *           description: Multiplier for voltage dividers (applied before other transforms)
+ *           description: Multiplier for voltage dividers (applied before other transforms). Cannot be used together with divisor.
  *           example: 6
+ *         divisor:
+ *           type: number
+ *           nullable: true
+ *           description: Divisor for sensors that output scaled values (applied before other transforms). Cannot be used together with multiplier.
+ *           example: 1000
  *         value_range:
  *           type: object
  *           nullable: true
@@ -3930,7 +3935,11 @@ router.get('/sensors/config', async (req, res) => {
  *                 multiplier:
  *                   type: number
  *                   nullable: true
- *                   description: Multiplier for voltage dividers (e.g., 6 for 12V rail measured via divider)
+ *                   description: Multiplier for voltage dividers. Cannot be used with divisor.
+ *                 divisor:
+ *                   type: number
+ *                   nullable: true
+ *                   description: Divisor for scaled values. Cannot be used with multiplier.
  *                 value_range:
  *                   type: object
  *                   nullable: true
@@ -3983,6 +3992,15 @@ router.get('/sensors/config', async (req, res) => {
  *                   source: "nct6798-isa-0290.in7.in7_input"
  *                   unit: "V"
  *                   multiplier: 6
+ *             powerWithDivisor:
+ *               summary: Power with divisor (for sensors outputting milliwatts)
+ *               value:
+ *                 - name: "CPU Power"
+ *                   type: "power"
+ *                   subtype: "wattage"
+ *                   source: "some-sensor.power.power1_input"
+ *                   unit: "W"
+ *                   divisor: 1000000
  *     responses:
  *       201:
  *         description: All sensors created successfully
@@ -4114,7 +4132,11 @@ router.post('/sensors', checkRole(['admin']), async (req, res) => {
  *               multiplier:
  *                 type: number
  *                 nullable: true
- *                 description: Multiplier for voltage dividers
+ *                 description: Multiplier for voltage dividers. Cannot be used with divisor.
+ *               divisor:
+ *                 type: number
+ *                 nullable: true
+ *                 description: Divisor for scaled values. Cannot be used with multiplier.
  *               value_range:
  *                 type: object
  *                 nullable: true

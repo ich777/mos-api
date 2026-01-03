@@ -234,6 +234,11 @@ class MosService {
       value = value * sensorConfig.multiplier;
     }
 
+    // Apply divisor (alternative to multiplier)
+    if (sensorConfig.divisor && typeof sensorConfig.divisor === 'number' && sensorConfig.divisor !== 0) {
+      value = value / sensorConfig.divisor;
+    }
+
     if (sensorConfig.transform === 'percentage' && sensorConfig.value_range) {
       const { min = 0, max } = sensorConfig.value_range;
       if (max && max !== min) {
@@ -440,6 +445,11 @@ class MosService {
     // Validate source exists in sensor data
     await this._validateSensorSource(sensorData.source);
 
+    // Validate multiplier/divisor exclusivity
+    if (sensorData.multiplier && sensorData.divisor) {
+      throw new Error('Cannot specify both multiplier and divisor. Use only one.');
+    }
+
     // Create new sensor config
     const targetGroup = groupedSensors[sensorData.type] || [];
     const newSensor = {
@@ -452,6 +462,7 @@ class MosService {
       source: sensorData.source,
       unit: sensorData.unit,
       multiplier: sensorData.multiplier || null,
+      divisor: sensorData.divisor || null,
       value_range: sensorData.value_range || null,
       transform: sensorData.transform || null,
       enabled: sensorData.enabled !== undefined ? sensorData.enabled : true
@@ -497,8 +508,15 @@ class MosService {
       await this._validateSensorSource(updateData.source);
     }
 
+    // Validate multiplier/divisor exclusivity (check resulting state after update)
+    const newMultiplier = updateData.multiplier !== undefined ? updateData.multiplier : sensor.multiplier;
+    const newDivisor = updateData.divisor !== undefined ? updateData.divisor : sensor.divisor;
+    if (newMultiplier && newDivisor) {
+      throw new Error('Cannot specify both multiplier and divisor. Use only one.');
+    }
+
     // Update allowed fields (not type - handled separately)
-    const allowedFields = ['name', 'manufacturer', 'model', 'subtype', 'source', 'unit', 'multiplier', 'value_range', 'transform', 'enabled', 'index'];
+    const allowedFields = ['name', 'manufacturer', 'model', 'subtype', 'source', 'unit', 'multiplier', 'divisor', 'value_range', 'transform', 'enabled', 'index'];
     for (const field of allowedFields) {
       if (updateData[field] !== undefined) {
         sensor[field] = updateData[field];
