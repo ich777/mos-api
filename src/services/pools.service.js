@@ -2927,6 +2927,8 @@ class PoolsService {
         }
       }
 
+      let result;
+
       // For single device pools
       if (pool.data_devices && pool.data_devices.length === 1 &&
           ['ext4', 'xfs', 'btrfs'].includes(pool.type)) {
@@ -2948,7 +2950,7 @@ class PoolsService {
         // Get space info after successful mount (for response only)
         const spaceInfo = await this.getDeviceSpace(mountPoint);
 
-        return {
+        result = {
           success: true,
           message: `Pool "${pool.name}" (ID: ${poolId}) mounted successfully`,
           pool: {
@@ -2961,22 +2963,32 @@ class PoolsService {
 
       // For multi-device BTRFS pools
       else if (pool.type === 'btrfs' && pool.data_devices && pool.data_devices.length > 1) {
-        return await this._mountMultiDeviceBtrfsPool(pool, options);
+        result = await this._mountMultiDeviceBtrfsPool(pool, options);
       }
 
       // For MergerFS pools
       else if (pool.type === 'mergerfs') {
-        return await this._mountMergerFSPool(pool, options);
+        result = await this._mountMergerFSPool(pool, options);
       }
 
       // For NonRAID pools
       else if (pool.type === 'nonraid') {
-        return await this._mountNonRaidPool(pool, options);
+        result = await this._mountNonRaidPool(pool, options);
       }
 
       else {
         throw new Error(`Mounting for pool type "${pool.type}" is not implemented yet`);
       }
+
+      // Set ownership of mount point to mos:mos (non-recursive)
+      const poolMountPoint = path.join(this.mountBasePath, pool.name);
+      try {
+        await execPromise(`chown mos:mos "${poolMountPoint}"`);
+      } catch (chownError) {
+        console.warn(`Warning: Could not chown mount point: ${chownError.message}`);
+      }
+
+      return result;
     } catch (error) {
       throw new Error(`Error mounting pool: ${error.message}`);
     }
