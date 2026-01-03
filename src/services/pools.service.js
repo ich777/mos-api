@@ -1619,6 +1619,7 @@ class PoolsService {
         parity_devices: [],
         config: {
           encrypted: options.config?.encrypted || false,
+          shared: options.config?.shared || false,
           raid_level: raidLevel,
           unclean_check: true,
           ...(options.config || {})
@@ -2830,6 +2831,7 @@ class PoolsService {
         parity_devices: [],
         config: {
           encrypted: options.config?.encrypted || false,
+          shared: options.config?.shared || false,
           ...(options.config || {})
         }
       };
@@ -5764,14 +5766,11 @@ class PoolsService {
         },
         minfreespace: options.minfreespace || "20G",
         moveonenospc: options.moveonenospc !== undefined ? options.moveonenospc : true,
-        category: {
-          create: createPolicy
-        },
         global_options: options.global_options || [
           "cache.files=off",
-          "dropcacheonclose=true",
-          `category.search=${searchPolicy}`
-        ]
+          "dropcacheonclose=true"
+        ],
+        shared: options.config?.shared || false
       };
 
       // Add SnapRAID config if applicable
@@ -6243,15 +6242,12 @@ class PoolsService {
         },
         minfreespace: options.minfreespace || "20G",
         moveonenospc: options.moveonenospc !== undefined ? options.moveonenospc : true,
-        category: {
-          create: createPolicy
-        },
         global_options: options.global_options || [
           "cache.files=off",
-          "dropcacheonclose=true",
-          `category.search=${searchPolicy}`
+          "dropcacheonclose=true"
         ],
         encrypted: options.config?.encrypted || false,
+        shared: options.config?.shared || false,
         unclean_check: true,
         md_writemode: options.config?.md_writemode || 'normal', // normal or turbo
         ...(options.config || {})
