@@ -446,8 +446,17 @@ class MosService {
     // Validate source exists in sensor data
     await this._validateSensorSource(sensorData.source);
 
-    // Validate multiplier/divisor exclusivity
-    if (sensorData.multiplier && sensorData.divisor) {
+    // Parse and validate multiplier/divisor (convert strings to numbers)
+    const multiplier = sensorData.multiplier ? parseFloat(sensorData.multiplier) : null;
+    const divisor = sensorData.divisor ? parseFloat(sensorData.divisor) : null;
+
+    if (multiplier !== null && isNaN(multiplier)) {
+      throw new Error('multiplier must be a valid number');
+    }
+    if (divisor !== null && isNaN(divisor)) {
+      throw new Error('divisor must be a valid number');
+    }
+    if (multiplier && divisor) {
       throw new Error('Cannot specify both multiplier and divisor. Use only one.');
     }
 
@@ -462,8 +471,8 @@ class MosService {
       subtype: sensorData.subtype || null,
       source: sensorData.source,
       unit: sensorData.unit,
-      multiplier: sensorData.multiplier || null,
-      divisor: sensorData.divisor || null,
+      multiplier: multiplier,
+      divisor: divisor,
       value_range: sensorData.value_range || null,
       transform: sensorData.transform || null,
       enabled: sensorData.enabled !== undefined ? sensorData.enabled : true
@@ -509,19 +518,42 @@ class MosService {
       await this._validateSensorSource(updateData.source);
     }
 
-    // Validate multiplier/divisor exclusivity (check resulting state after update)
-    const newMultiplier = updateData.multiplier !== undefined ? updateData.multiplier : sensor.multiplier;
-    const newDivisor = updateData.divisor !== undefined ? updateData.divisor : sensor.divisor;
-    if (newMultiplier && newDivisor) {
+    // Parse and validate multiplier/divisor (convert strings to numbers)
+    let parsedMultiplier = sensor.multiplier;
+    let parsedDivisor = sensor.divisor;
+
+    if (updateData.multiplier !== undefined) {
+      parsedMultiplier = updateData.multiplier ? parseFloat(updateData.multiplier) : null;
+      if (parsedMultiplier !== null && isNaN(parsedMultiplier)) {
+        throw new Error('multiplier must be a valid number');
+      }
+    }
+    if (updateData.divisor !== undefined) {
+      parsedDivisor = updateData.divisor ? parseFloat(updateData.divisor) : null;
+      if (parsedDivisor !== null && isNaN(parsedDivisor)) {
+        throw new Error('divisor must be a valid number');
+      }
+    }
+
+    // Validate multiplier/divisor exclusivity
+    if (parsedMultiplier && parsedDivisor) {
       throw new Error('Cannot specify both multiplier and divisor. Use only one.');
     }
 
     // Update allowed fields (not type - handled separately)
-    const allowedFields = ['name', 'manufacturer', 'model', 'subtype', 'source', 'unit', 'multiplier', 'divisor', 'value_range', 'transform', 'enabled', 'index'];
+    const allowedFields = ['name', 'manufacturer', 'model', 'subtype', 'source', 'unit', 'value_range', 'transform', 'enabled', 'index'];
     for (const field of allowedFields) {
       if (updateData[field] !== undefined) {
         sensor[field] = updateData[field];
       }
+    }
+
+    // Set parsed multiplier/divisor
+    if (updateData.multiplier !== undefined) {
+      sensor.multiplier = parsedMultiplier;
+    }
+    if (updateData.divisor !== undefined) {
+      sensor.divisor = parsedDivisor;
     }
 
     // Handle type change - move to different group
