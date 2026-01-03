@@ -4,6 +4,7 @@ const { exec } = require('child_process');
 const util = require('util');
 const execPromise = util.promisify(exec);
 const crypto = require('crypto');
+const axios = require('axios');
 const PoolsService = require('./pools.service');
 const hubService = require('./hub.service');
 const systemService = require('./system.service');
@@ -2521,6 +2522,25 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
   }
 
   /**
+   * Check if Docker daemon is actually running via socket ping
+   * @returns {Promise<boolean>} True if Docker daemon is responding
+   */
+  async _isDockerRunning() {
+    try {
+      const response = await axios({
+        method: 'GET',
+        url: 'http://localhost/_ping',
+        socketPath: '/var/run/docker.sock',
+        timeout: 2000,
+        validateStatus: () => true
+      });
+      return response.status === 200;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  /**
    * Fast read of LXC enabled status without loading defaults
    * @returns {Promise<boolean>} LXC enabled status
    */
@@ -2545,6 +2565,36 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
       return settings.enabled === true;
     } catch (error) {
       return false; // File not found or error - defaults to false
+    }
+  }
+
+  /**
+   * Check if a process with given PID is running
+   * @param {number} pid - Process ID to check
+   * @returns {Promise<boolean>} True if process is running
+   */
+  async _isProcessRunning(pid) {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  /**
+   * Check if libvirt daemon is actually running via PID files
+   * @returns {Promise<boolean>} True if libvirtd is running
+   */
+  async _isLibvirtRunning() {
+    try {
+      // Check libvirtd.pid
+      const pidData = await fs.readFile('/var/run/libvirtd.pid', 'utf8');
+      const pid = parseInt(pidData.trim(), 10);
+      if (isNaN(pid)) return false;
+      return await this._isProcessRunning(pid);
+    } catch (error) {
+      return false;
     }
   }
 
@@ -2577,23 +2627,26 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
   /**
    * Gets the status of all services from different configuration files
    * Optimized version that only reads enabled flags without loading defaults
+   * Also checks if services are actually running (not just configured)
    * @returns {Promise<Object>} Status object with all services (flat structure)
    */
   async getAllServiceStatus() {
     try {
       // Execute all status reads in parallel for maximum performance
-      const [dockerEnabled, lxcEnabled, vmEnabled, hubEnabled, networkServices] = await Promise.all([
+      const [dockerEnabled, lxcEnabled, vmEnabled, hubEnabled, networkServices, dockerRunning, vmRunning] = await Promise.all([
         this._getDockerEnabledStatus(),
         this._getLxcEnabledStatus(),
         this._getVmEnabledStatus(),
         hubService.getHubEnabledStatus(),
-        this._getNetworkServicesStatus()
+        this._getNetworkServicesStatus(),
+        this._isDockerRunning(),
+        this._isLibvirtRunning()
       ]);
 
       const result = {
-        docker: { enabled: dockerEnabled },
+        docker: { enabled: dockerEnabled, running: dockerRunning },
         lxc: { enabled: lxcEnabled },
-        vm: { enabled: vmEnabled },
+        vm: { enabled: vmEnabled, running: vmRunning },
         hub: { enabled: hubEnabled },
         ...networkServices
       };

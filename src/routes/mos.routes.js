@@ -1498,7 +1498,11 @@ router.post('/update_ui', async (req, res) => {
  *                   properties:
  *                     enabled:
  *                       type: boolean
- *                       description: Docker service status
+ *                       description: Docker service enabled in config
+ *                       example: true
+ *                     running:
+ *                       type: boolean
+ *                       description: Docker daemon is actually running (socket responding)
  *                       example: true
  *                 lxc:
  *                   type: object
@@ -1512,7 +1516,11 @@ router.post('/update_ui', async (req, res) => {
  *                   properties:
  *                     enabled:
  *                       type: boolean
- *                       description: VM service status
+ *                       description: VM service enabled in config
+ *                       example: true
+ *                     running:
+ *                       type: boolean
+ *                       description: libvirt daemon is actually running (PID check)
  *                       example: true
  *                 ssh:
  *                   type: object
@@ -1586,10 +1594,12 @@ router.post('/update_ui', async (req, res) => {
  *             example:
  *               docker:
  *                 enabled: true
+ *                 running: true
  *               lxc:
  *                 enabled: false
  *               vm:
  *                 enabled: true
+ *                 running: true
  *               ssh:
  *                 enabled: true
  *               samba:
