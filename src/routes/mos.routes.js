@@ -3896,6 +3896,130 @@ router.get('/sensors/config', async (req, res) => {
 
 /**
  * @swagger
+ * /mos/sensors/view:
+ *   get:
+ *     summary: Get sensors view settings
+ *     description: Returns UI visibility settings for sensor columns
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: View settings
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 index:
+ *                   type: boolean
+ *                 name:
+ *                   type: boolean
+ *                 type:
+ *                   type: boolean
+ *                 subtype:
+ *                   type: boolean
+ *                 manufacturer:
+ *                   type: boolean
+ *                 model:
+ *                   type: boolean
+ *                 value:
+ *                   type: boolean
+ *                 unit:
+ *                   type: boolean
+ *                 actions:
+ *                   type: boolean
+ *             example:
+ *               index: true
+ *               name: true
+ *               type: true
+ *               subtype: true
+ *               manufacturer: true
+ *               model: true
+ *               value: true
+ *               unit: true
+ *               actions: true
+ *       401:
+ *         description: Not authenticated
+ *       500:
+ *         description: Server error
+ */
+router.get('/sensors/view', checkRole(['admin']), async (req, res) => {
+  try {
+    const view = await mosService.getSensorsView();
+    res.json(view);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /mos/sensors/view:
+ *   post:
+ *     summary: Update sensors view settings
+ *     description: Update UI visibility settings for sensor columns
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               index:
+ *                 type: boolean
+ *               name:
+ *                 type: boolean
+ *               type:
+ *                 type: boolean
+ *               subtype:
+ *                 type: boolean
+ *               manufacturer:
+ *                 type: boolean
+ *               model:
+ *                 type: boolean
+ *               value:
+ *                 type: boolean
+ *               unit:
+ *                 type: boolean
+ *               actions:
+ *                 type: boolean
+ *           example:
+ *             index: false
+ *             name: true
+ *             manufacturer: true
+ *             model: true
+ *             value: true
+ *             unit: true
+ *             actions: true
+ *     responses:
+ *       200:
+ *         description: Updated view settings
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *       400:
+ *         description: Invalid input
+ *       401:
+ *         description: Not authenticated
+ *       500:
+ *         description: Server error
+ */
+router.post('/sensors/view', checkRole(['admin']), async (req, res) => {
+  try {
+    const view = await mosService.updateSensorsView(req.body);
+    res.json(view);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
  * /mos/sensors:
  *   post:
  *     summary: Create sensor mapping(s)

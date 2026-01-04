@@ -73,6 +73,24 @@ class MosService {
   }
 
   /**
+   * Get default view settings
+   * @private
+   */
+  _getDefaultViewSettings() {
+    return {
+      index: true,
+      name: true,
+      type: true,
+      subtype: true,
+      manufacturer: true,
+      model: true,
+      value: true,
+      unit: true,
+      actions: true
+    };
+  }
+
+  /**
    * Load sensors configuration from file (uses cache if available)
    * @param {boolean} forceReload - Force reload from file, bypassing cache
    * @returns {Promise<Object>} Grouped sensor configurations
@@ -115,11 +133,21 @@ class MosService {
   /**
    * Save sensors configuration to file (grouped by type)
    * Also updates the in-memory cache
+   * Preserves the view settings if they exist
    * @param {Object} groupedSensors - Grouped sensor configurations
    * @private
    */
   async _saveSensorsConfig(groupedSensors) {
     await this._ensureSensorsConfigDir();
+
+    // Load existing config to preserve view settings
+    let existingConfig = {};
+    try {
+      const data = await fs.readFile(this.sensorsConfigPath, 'utf8');
+      existingConfig = JSON.parse(data);
+    } catch (error) {
+      // File doesn't exist, start fresh
+    }
 
     // Re-index sensors within each group
     const validTypes = this._getValidSensorTypes();
@@ -135,15 +163,22 @@ class MosService {
       }
     }
 
+    // Preserve view settings
+    if (existingConfig.view) {
+      reindexed.view = existingConfig.view;
+    }
+
     await fs.writeFile(
       this.sensorsConfigPath,
       JSON.stringify(reindexed, null, 2),
       'utf8'
     );
 
-    // Update cache
-    this._sensorsConfigCache = reindexed;
-    return reindexed;
+    // Update cache (without view)
+    const cacheResult = { ...reindexed };
+    delete cacheResult.view;
+    this._sensorsConfigCache = cacheResult;
+    return cacheResult;
   }
 
   /**
@@ -278,6 +313,70 @@ class MosService {
    */
   async getSensorsConfig() {
     return await this.loadSensorsConfig();
+  }
+
+  /**
+   * Get sensors view settings
+   * GET /mos/sensors/view
+   * @returns {Promise<Object>} View settings
+   */
+  async getSensorsView() {
+    const config = await this._loadFullSensorsConfig();
+    return config.view || this._getDefaultViewSettings();
+  }
+
+  /**
+   * Update sensors view settings
+   * POST /mos/sensors/view
+   * @param {Object} viewData - View settings to update
+   * @returns {Promise<Object>} Updated view settings
+   */
+  async updateSensorsView(viewData) {
+    const config = await this._loadFullSensorsConfig();
+    const currentView = config.view || this._getDefaultViewSettings();
+
+    // Merge with existing settings (only update provided fields)
+    const updatedView = { ...currentView };
+    const allowedFields = ['index', 'name', 'type', 'subtype', 'manufacturer', 'model', 'value', 'unit', 'actions'];
+
+    for (const field of allowedFields) {
+      if (viewData[field] !== undefined) {
+        updatedView[field] = Boolean(viewData[field]);
+      }
+    }
+
+    config.view = updatedView;
+    await this._saveFullSensorsConfig(config);
+
+    return updatedView;
+  }
+
+  /**
+   * Load full sensors config including view (internal use)
+   * @private
+   */
+  async _loadFullSensorsConfig() {
+    try {
+      const data = await fs.readFile(this.sensorsConfigPath, 'utf-8');
+      return JSON.parse(data);
+    } catch (error) {
+      // Return default structure
+      return {
+        ...this._getEmptyGroupedSensors(),
+        view: this._getDefaultViewSettings()
+      };
+    }
+  }
+
+  /**
+   * Save full sensors config including view (internal use)
+   * @private
+   */
+  async _saveFullSensorsConfig(config) {
+    await this._ensureSensorsConfigDir();
+    await fs.writeFile(this.sensorsConfigPath, JSON.stringify(config, null, 2));
+    // Invalidate cache
+    this._sensorsConfigCache = null;
   }
 
   /**
