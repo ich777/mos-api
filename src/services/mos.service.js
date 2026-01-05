@@ -8,6 +8,7 @@ const axios = require('axios');
 const PoolsService = require('./pools.service');
 const hubService = require('./hub.service');
 const systemService = require('./system.service');
+const swapService = require('./swap.service');
 
 class MosService {
   constructor() {
@@ -2129,9 +2130,12 @@ class MosService {
         governor: 'ondemand',
         max_speed: 0,
         min_speed: 0
-      }
+      },
+      swapfile: swapService.getDefaultConfig()
     };
   }
+
+  // Swapfile management is handled by swap.service.js
 
   /**
    * Reads the system settings from the system.json file.
@@ -2186,8 +2190,9 @@ class MosService {
         if (error.code !== 'ENOENT') throw error;
       }
       // Only allowed fields are updated
-      const allowed = ['hostname', 'global_spindown', 'keymap', 'timezone', 'display', 'persist_history', 'ntp', 'notification_sound', 'cpufreq'];
+      const allowed = ['hostname', 'global_spindown', 'keymap', 'timezone', 'display', 'persist_history', 'ntp', 'notification_sound', 'cpufreq', 'swapfile'];
       let ntpChanged = false;
+      let swapfileUpdate = null;
       let keymapChanged = false;
       let timezoneChanged = false;
       let displayChanged = false;
@@ -2316,6 +2321,11 @@ class MosService {
               min_speed: updates.cpufreq.min_speed !== undefined ? updates.cpufreq.min_speed : current.cpufreq.min_speed
             };
           }
+        } else if (key === 'swapfile') {
+          // Mark swapfile for update - will be processed after file is written
+          if (typeof updates.swapfile === 'object' && updates.swapfile !== null) {
+            swapfileUpdate = updates.swapfile;
+          }
         } else {
           current[key] = updates[key];
         }
@@ -2400,6 +2410,25 @@ class MosService {
           await execPromise('/etc/init.d/cpupower start');
         } catch (error) {
           console.warn('Warning: Could not apply cpufreq settings with cpupower:', error.message);
+        }
+      }
+
+      // Handle swapfile configuration update
+      if (swapfileUpdate !== null) {
+        try {
+          // Initialize swapfile with defaults if not present
+          if (!current.swapfile) {
+            current.swapfile = this._getDefaultSystemSettings().swapfile;
+          }
+
+          // Handle the swapfile update (create/remove/modify) via swap.service.js
+          const updatedSwapfile = await swapService.handleUpdate(current.swapfile, swapfileUpdate);
+          current.swapfile = updatedSwapfile;
+
+          // Write updated config back to file (with new swapfile settings)
+          await fs.writeFile('/boot/config/system.json', JSON.stringify(current, null, 2), 'utf8');
+        } catch (error) {
+          throw new Error(`Swapfile configuration failed: ${error.message}`);
         }
       }
 
@@ -4309,6 +4338,261 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
       };
     } catch (error) {
       throw new Error(`Failed to update tokens: ${error.message}`);
+    }
+  }
+
+  /**
+   * Creates a new file on the filesystem
+   * @param {string} filePath - Path to the file to create
+   * @param {string} content - Content for the new file (default: empty)
+   * @param {Object} options - Optional settings
+   * @param {string} options.user - User ID or username (default: '500')
+   * @param {string} options.group - Group ID or group name (default: '500')
+   * @param {string} options.permissions - File permissions in octal (default: '777')
+   * @returns {Promise<Object>} Result object with success status
+   */
+  async createFile(filePath, content = '', options = {}) {
+    const { user = '500', group = '500', permissions = '777' } = options;
+
+    try {
+      // Check if file or folder already exists at this path
+      try {
+        const stats = await fs.stat(filePath);
+        if (stats.isDirectory()) {
+          throw new Error(`Path already exists as a directory: ${filePath}`);
+        } else {
+          throw new Error(`File already exists: ${filePath}`);
+        }
+      } catch (error) {
+        if (error.code !== 'ENOENT') {
+          throw error;
+        }
+        // Path doesn't exist, continue
+      }
+
+      // Ensure parent directory exists
+      const parentDir = path.dirname(filePath);
+      await fs.mkdir(parentDir, { recursive: true });
+
+      // Write the file
+      await fs.writeFile(filePath, content, 'utf8');
+
+      // Set ownership (chown)
+      await execPromise(`chown ${user}:${group} "${filePath}"`);
+
+      // Set permissions (chmod)
+      await execPromise(`chmod ${permissions} "${filePath}"`);
+
+      return {
+        success: true,
+        message: 'File created successfully',
+        path: filePath,
+        user: user,
+        group: group,
+        permissions: permissions
+      };
+    } catch (error) {
+      console.error('Error creating file:', error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Creates a new folder on the filesystem
+   * @param {string} folderPath - Path to the folder to create
+   * @param {Object} options - Optional settings
+   * @param {string} options.user - User ID or username (default: '500')
+   * @param {string} options.group - Group ID or group name (default: '500')
+   * @param {string} options.permissions - Folder permissions in octal (default: '777')
+   * @returns {Promise<Object>} Result object with success status
+   */
+  async createFolder(folderPath, options = {}) {
+    const { user = '500', group = '500', permissions = '777' } = options;
+
+    try {
+      // Check if folder already exists
+      try {
+        const stats = await fs.stat(folderPath);
+        if (stats.isDirectory()) {
+          throw new Error(`Folder already exists: ${folderPath}`);
+        } else {
+          throw new Error(`Path exists but is not a directory: ${folderPath}`);
+        }
+      } catch (error) {
+        if (error.code !== 'ENOENT') {
+          throw error;
+        }
+        // Folder doesn't exist, continue
+      }
+
+      // Create the folder (including parents if needed)
+      await fs.mkdir(folderPath, { recursive: true });
+
+      // Set ownership (chown)
+      await execPromise(`chown ${user}:${group} "${folderPath}"`);
+
+      // Set permissions (chmod)
+      await execPromise(`chmod ${permissions} "${folderPath}"`);
+
+      return {
+        success: true,
+        message: 'Folder created successfully',
+        path: folderPath,
+        user: user,
+        group: group,
+        permissions: permissions
+      };
+    } catch (error) {
+      console.error('Error creating folder:', error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Change ownership of a file or folder
+   * @param {string} itemPath - Path to the file or folder
+   * @param {Object} options - Optional settings
+   * @param {string} options.user - User ID or username (default: '500')
+   * @param {string} options.group - Group ID or group name (default: '500')
+   * @param {boolean} options.recursive - Apply recursively (default: false)
+   * @returns {Promise<Object>} Result object with success status
+   */
+  async chown(itemPath, options = {}) {
+    const { user = '500', group = '500', recursive = false } = options;
+
+    try {
+      // Check if path exists
+      try {
+        await fs.stat(itemPath);
+      } catch (error) {
+        if (error.code === 'ENOENT') {
+          throw new Error(`Path does not exist: ${itemPath}`);
+        }
+        throw error;
+      }
+
+      // Build chown command
+      const recursiveFlag = recursive ? '-R ' : '';
+      await execPromise(`chown ${recursiveFlag}${user}:${group} "${itemPath}"`);
+
+      return {
+        success: true,
+        message: 'Ownership changed successfully',
+        path: itemPath,
+        user: user,
+        group: group,
+        recursive: recursive
+      };
+    } catch (error) {
+      console.error('Error changing ownership:', error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Change permissions of a file or folder
+   * @param {string} itemPath - Path to the file or folder
+   * @param {Object} options - Optional settings
+   * @param {string} options.permissions - Permissions in octal format (default: '777')
+   * @param {boolean} options.recursive - Apply recursively (default: false)
+   * @returns {Promise<Object>} Result object with success status
+   */
+  async chmod(itemPath, options = {}) {
+    const { permissions = '777', recursive = false } = options;
+
+    try {
+      // Check if path exists
+      try {
+        await fs.stat(itemPath);
+      } catch (error) {
+        if (error.code === 'ENOENT') {
+          throw new Error(`Path does not exist: ${itemPath}`);
+        }
+        throw error;
+      }
+
+      // Build chmod command
+      const recursiveFlag = recursive ? '-R ' : '';
+      await execPromise(`chmod ${recursiveFlag}${permissions} "${itemPath}"`);
+
+      return {
+        success: true,
+        message: 'Permissions changed successfully',
+        path: itemPath,
+        permissions: permissions,
+        recursive: recursive
+      };
+    } catch (error) {
+      console.error('Error changing permissions:', error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Deletes a file or folder from the filesystem
+   * @param {string} itemPath - Path to the file or folder to delete
+   * @param {Object} options - Optional settings
+   * @param {boolean} options.force - Force deletion (ignore nonexistent files, default: true)
+   * @param {boolean} options.recursive - Recursively delete directories (default: false)
+   * @returns {Promise<Object>} Result object with success status
+   */
+  async deleteItem(itemPath, options = {}) {
+    const { force = true, recursive = false } = options;
+
+    try {
+      // Check if path exists
+      let stats;
+      try {
+        stats = await fs.stat(itemPath);
+      } catch (error) {
+        if (error.code === 'ENOENT') {
+          if (force) {
+            return {
+              success: true,
+              message: 'Item does not exist (force mode)',
+              path: itemPath
+            };
+          }
+          throw new Error(`Path does not exist: ${itemPath}`);
+        }
+        throw error;
+      }
+
+      const isDirectory = stats.isDirectory();
+
+      if (isDirectory) {
+        // Check if directory is empty when recursive is false
+        if (!recursive) {
+          const contents = await fs.readdir(itemPath);
+          if (contents.length > 0) {
+            throw new Error(`Directory is not empty. Use recursive: true to delete non-empty directories: ${itemPath}`);
+          }
+          // Empty directory, use rmdir
+          await fs.rmdir(itemPath);
+        } else {
+          // Recursive delete
+          await fs.rm(itemPath, { recursive: true, force: force });
+        }
+      } else {
+        // It's a file
+        if (force) {
+          await fs.rm(itemPath, { force: true });
+        } else {
+          await fs.unlink(itemPath);
+        }
+      }
+
+      return {
+        success: true,
+        message: isDirectory ? 'Folder deleted successfully' : 'File deleted successfully',
+        path: itemPath,
+        type: isDirectory ? 'directory' : 'file',
+        recursive: recursive,
+        force: force
+      };
+    } catch (error) {
+      console.error('Error deleting item:', error.message);
+      throw error;
     }
   }
 }

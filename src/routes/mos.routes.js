@@ -1,6 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const mosService = require('../services/mos.service');
+const zramService = require('../services/zram.service');
+const swapService = require('../services/swap.service');
 const { checkRole } = require('../middleware/auth.middleware');
 
 /**
@@ -374,6 +376,55 @@ const { checkRole } = require('../middleware/auth.middleware');
      *               type: boolean
      *               description: Enable sound notification on system shutdown
      *               example: true
+     *         swapfile:
+     *           type: object
+     *           description: Swapfile configuration
+     *           properties:
+     *             enabled:
+     *               type: boolean
+     *               description: Enable swapfile
+     *               example: false
+     *             path:
+     *               type: string
+     *               nullable: true
+     *               description: Directory path for swapfile (must be on mounted pool under /mnt/)
+     *               example: "/mnt/pool1"
+     *             size:
+     *               type: string
+     *               description: Swapfile size (e.g., "10G", "1024M")
+     *               example: "10G"
+     *             priority:
+     *               type: integer
+     *               description: Swap priority (default -2)
+     *               example: -2
+     *             config:
+     *               type: object
+     *               description: Zswap configuration
+     *               properties:
+     *                 zswap:
+     *                   type: boolean
+     *                   description: Enable zswap (compressed swap cache)
+     *                   example: false
+     *                 shrinker:
+     *                   type: boolean
+     *                   description: Enable zswap shrinker
+     *                   example: true
+     *                 max_pool_percent:
+     *                   type: integer
+     *                   description: Maximum pool size as percentage of RAM
+     *                   example: 20
+     *                 compressor:
+     *                   type: string
+     *                   description: Compression algorithm (zstd, lz4, lzo, etc.)
+     *                   example: "zstd"
+     *                 zpool:
+     *                   type: string
+     *                   description: Zpool allocator (zsmalloc, z3fold, zbud)
+     *                   example: "zsmalloc"
+     *                 accept_threshold_percent:
+     *                   type: integer
+     *                   description: Accept threshold percentage
+     *                   example: 90
  *     Keymap:
  *       type: object
  *       properties:
@@ -1279,6 +1330,54 @@ router.get('/settings/system', async (req, res) => {
  *                     type: integer
  *                     description: Minimum CPU frequency in kHz (0 = system default)
  *                     example: 800000
+ *               swapfile:
+ *                 type: object
+ *                 description: Swapfile configuration. Path must be on mounted pool under /mnt/. BTRFS RAID pools are not supported.
+ *                 properties:
+ *                   enabled:
+ *                     type: boolean
+ *                     description: Enable or disable swapfile
+ *                     example: true
+ *                   path:
+ *                     type: string
+ *                     description: Directory path for swapfile (must be on mounted pool under /mnt/)
+ *                     example: "/mnt/pool1"
+ *                   size:
+ *                     type: string
+ *                     description: Swapfile size (e.g., "10G", "1024M"). Changing size recreates the swapfile.
+ *                     example: "10G"
+ *                   priority:
+ *                     type: integer
+ *                     description: Swap priority (default -2). Changing priority recreates the swapfile.
+ *                     example: -2
+ *                   config:
+ *                     type: object
+ *                     description: Zswap configuration (compressed swap cache)
+ *                     properties:
+ *                       zswap:
+ *                         type: boolean
+ *                         description: Enable zswap
+ *                         example: false
+ *                       shrinker:
+ *                         type: boolean
+ *                         description: Enable zswap shrinker (default true)
+ *                         example: true
+ *                       max_pool_percent:
+ *                         type: integer
+ *                         description: Maximum pool size as percentage of RAM (default 20)
+ *                         example: 20
+ *                       compressor:
+ *                         type: string
+ *                         description: Compression algorithm (default zstd)
+ *                         example: "zstd"
+ *                       zpool:
+ *                         type: string
+ *                         description: Zpool allocator (default zsmalloc)
+ *                         example: "zsmalloc"
+ *                       accept_threshold_percent:
+ *                         type: integer
+ *                         description: Accept threshold percentage (default 90)
+ *                         example: 90
  *     responses:
  *       200:
  *         description: System settings updated successfully
@@ -3446,6 +3545,564 @@ router.post('/editfile', checkRole(['admin']), async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /mos/createfile:
+ *   post:
+ *     summary: Create a new file on the filesystem
+ *     description: Create a new file with optional content and ownership/permission settings
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - path
+ *             properties:
+ *               path:
+ *                 type: string
+ *                 description: Absolute path to the file to create
+ *                 example: "/mnt/pool1/newfile.txt"
+ *               content:
+ *                 type: string
+ *                 description: Content for the new file (default empty)
+ *                 example: "file content here"
+ *                 default: ""
+ *               user:
+ *                 type: string
+ *                 description: User ID or username for file ownership
+ *                 example: "500"
+ *                 default: "500"
+ *               group:
+ *                 type: string
+ *                 description: Group ID or group name for file ownership
+ *                 example: "500"
+ *                 default: "500"
+ *               permissions:
+ *                 type: string
+ *                 description: File permissions in octal format
+ *                 example: "777"
+ *                 default: "777"
+ *     responses:
+ *       200:
+ *         description: File created successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "File created successfully"
+ *                 path:
+ *                   type: string
+ *                   example: "/mnt/pool1/newfile.txt"
+ *                 user:
+ *                   type: string
+ *                   example: "500"
+ *                 group:
+ *                   type: string
+ *                   example: "500"
+ *                 permissions:
+ *                   type: string
+ *                   example: "777"
+ *       400:
+ *         description: Bad request - missing path or file already exists
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+
+// POST: Create a new file on the filesystem
+router.post('/createfile', checkRole(['admin']), async (req, res) => {
+  try {
+    const { path, content = '', user = '500', group = '500', permissions = '777' } = req.body;
+
+    if (!path) {
+      return res.status(400).json({ error: 'path parameter is required' });
+    }
+
+    const result = await mosService.createFile(path, content, { user, group, permissions });
+    res.json(result);
+  } catch (error) {
+    if (error.message.includes('already exists') || error.message.includes('Path already exists')) {
+      return res.status(400).json({ error: error.message });
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /mos/createfolder:
+ *   post:
+ *     summary: Create a new folder on the filesystem
+ *     description: Create a new folder with optional ownership/permission settings
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - path
+ *             properties:
+ *               path:
+ *                 type: string
+ *                 description: Absolute path to the folder to create
+ *                 example: "/mnt/pool1/newfolder"
+ *               user:
+ *                 type: string
+ *                 description: User ID or username for folder ownership
+ *                 example: "500"
+ *                 default: "500"
+ *               group:
+ *                 type: string
+ *                 description: Group ID or group name for folder ownership
+ *                 example: "500"
+ *                 default: "500"
+ *               permissions:
+ *                 type: string
+ *                 description: Folder permissions in octal format
+ *                 example: "777"
+ *                 default: "777"
+ *     responses:
+ *       200:
+ *         description: Folder created successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "Folder created successfully"
+ *                 path:
+ *                   type: string
+ *                   example: "/mnt/pool1/newfolder"
+ *                 user:
+ *                   type: string
+ *                   example: "500"
+ *                 group:
+ *                   type: string
+ *                   example: "500"
+ *                 permissions:
+ *                   type: string
+ *                   example: "777"
+ *       400:
+ *         description: Bad request - missing path or folder already exists
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+
+// POST: Create a new folder on the filesystem
+router.post('/createfolder', checkRole(['admin']), async (req, res) => {
+  try {
+    const { path, user = '500', group = '500', permissions = '777' } = req.body;
+
+    if (!path) {
+      return res.status(400).json({ error: 'path parameter is required' });
+    }
+
+    const result = await mosService.createFolder(path, { user, group, permissions });
+    res.json(result);
+  } catch (error) {
+    if (error.message.includes('already exists') || error.message.includes('not a directory')) {
+      return res.status(400).json({ error: error.message });
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /mos/delete:
+ *   post:
+ *     summary: Delete a file or folder from the filesystem
+ *     description: |
+ *       Delete a file or folder with optional force and recursive flags.
+ *       - For files: deletes the file directly
+ *       - For empty folders: deletes without recursive flag
+ *       - For non-empty folders: requires recursive=true
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - path
+ *             properties:
+ *               path:
+ *                 type: string
+ *                 description: Absolute path to the file or folder to delete
+ *                 example: "/mnt/pool1/oldfile.txt"
+ *               force:
+ *                 type: boolean
+ *                 description: Force deletion (ignore nonexistent files)
+ *                 example: true
+ *                 default: true
+ *               recursive:
+ *                 type: boolean
+ *                 description: Recursively delete directories (required for non-empty folders)
+ *                 example: false
+ *                 default: false
+ *     responses:
+ *       200:
+ *         description: Item deleted successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "File deleted successfully"
+ *                 path:
+ *                   type: string
+ *                   example: "/mnt/pool1/oldfile.txt"
+ *                 type:
+ *                   type: string
+ *                   enum: [file, directory]
+ *                   example: "file"
+ *                 recursive:
+ *                   type: boolean
+ *                   example: false
+ *                 force:
+ *                   type: boolean
+ *                   example: true
+ *       400:
+ *         description: Bad request - missing path or directory not empty
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Path not found (when force=false)
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+
+// POST: Delete a file or folder from the filesystem
+router.post('/delete', checkRole(['admin']), async (req, res) => {
+  try {
+    const { path, force = true, recursive = false } = req.body;
+
+    if (!path) {
+      return res.status(400).json({ error: 'path parameter is required' });
+    }
+
+    const result = await mosService.deleteItem(path, { force, recursive });
+    res.json(result);
+  } catch (error) {
+    if (error.message.includes('does not exist')) {
+      return res.status(404).json({ error: error.message });
+    }
+    if (error.message.includes('not empty')) {
+      return res.status(400).json({ error: error.message });
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /mos/chown:
+ *   post:
+ *     summary: Change ownership of a file or folder
+ *     description: Change the user and group ownership of a file or folder, optionally recursive
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - path
+ *             properties:
+ *               path:
+ *                 type: string
+ *                 description: Absolute path to the file or folder
+ *                 example: "/mnt/pool1/myfile.txt"
+ *               user:
+ *                 type: string
+ *                 description: User ID or username for ownership
+ *                 example: "500"
+ *                 default: "500"
+ *               group:
+ *                 type: string
+ *                 description: Group ID or group name for ownership
+ *                 example: "500"
+ *                 default: "500"
+ *               recursive:
+ *                 type: boolean
+ *                 description: Apply ownership change recursively
+ *                 example: false
+ *                 default: false
+ *     responses:
+ *       200:
+ *         description: Ownership changed successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "Ownership changed successfully"
+ *                 path:
+ *                   type: string
+ *                   example: "/mnt/pool1/myfile.txt"
+ *                 user:
+ *                   type: string
+ *                   example: "500"
+ *                 group:
+ *                   type: string
+ *                   example: "500"
+ *                 recursive:
+ *                   type: boolean
+ *                   example: false
+ *       400:
+ *         description: Bad request - missing path
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Path not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+
+// POST: Change ownership of a file or folder
+router.post('/chown', checkRole(['admin']), async (req, res) => {
+  try {
+    const { path, user = '500', group = '500', recursive = false } = req.body;
+
+    if (!path) {
+      return res.status(400).json({ error: 'path parameter is required' });
+    }
+
+    const result = await mosService.chown(path, { user, group, recursive });
+    res.json(result);
+  } catch (error) {
+    if (error.message.includes('does not exist')) {
+      return res.status(404).json({ error: error.message });
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /mos/chmod:
+ *   post:
+ *     summary: Change permissions of a file or folder
+ *     description: Change the permissions of a file or folder, optionally recursive
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - path
+ *             properties:
+ *               path:
+ *                 type: string
+ *                 description: Absolute path to the file or folder
+ *                 example: "/mnt/pool1/myfile.txt"
+ *               permissions:
+ *                 type: string
+ *                 description: Permissions in octal format
+ *                 example: "777"
+ *                 default: "777"
+ *               recursive:
+ *                 type: boolean
+ *                 description: Apply permission change recursively
+ *                 example: false
+ *                 default: false
+ *     responses:
+ *       200:
+ *         description: Permissions changed successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "Permissions changed successfully"
+ *                 path:
+ *                   type: string
+ *                   example: "/mnt/pool1/myfile.txt"
+ *                 permissions:
+ *                   type: string
+ *                   example: "777"
+ *                 recursive:
+ *                   type: boolean
+ *                   example: false
+ *       400:
+ *         description: Bad request - missing path
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Path not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+
+// POST: Change permissions of a file or folder
+router.post('/chmod', checkRole(['admin']), async (req, res) => {
+  try {
+    const { path, permissions = '777', recursive = false } = req.body;
+
+    if (!path) {
+      return res.status(400).json({ error: 'path parameter is required' });
+    }
+
+    const result = await mosService.chmod(path, { permissions, recursive });
+    res.json(result);
+  } catch (error) {
+    if (error.message.includes('does not exist')) {
+      return res.status(404).json({ error: error.message });
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // GET: Read dashboard layout
 router.get('/dashboard', async (req, res) => {
   try {
@@ -4544,6 +5201,504 @@ router.post('/tokens', checkRole(['admin']), async (req, res) => {
     }
     const result = await mosService.updateTokens(req.body);
     res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================
+// ZRAM ENDPOINTS
+// ============================================================
+
+/**
+ * @swagger
+ * /mos/zram:
+ *   get:
+ *     summary: Get ZRAM configuration and status
+ *     description: Retrieve current ZRAM configuration including module status (admin only)
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: ZRAM configuration retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 enabled:
+ *                   type: boolean
+ *                   description: Whether ZRAM is globally enabled
+ *                 zram_devices:
+ *                   type: integer
+ *                   description: Number of configured ZRAM devices
+ *                 module_loaded:
+ *                   type: boolean
+ *                   description: Whether the ZRAM kernel module is loaded
+ *                 devices:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/ZramDevice'
+ *       401:
+ *         description: Not authenticated
+ *       403:
+ *         description: Admin permission required
+ *       500:
+ *         description: Server error
+ *   post:
+ *     summary: Update ZRAM configuration
+ *     description: Update ZRAM settings. Changing enabled from false to true loads the module and activates devices. Changing from true to false checks for mounted ramdisks and unloads the module (admin only)
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               enabled:
+ *                 type: boolean
+ *               zram_devices:
+ *                 type: integer
+ *                 description: Number of ZRAM devices (must match devices array length)
+ *               devices:
+ *                 type: array
+ *                 items:
+ *                   $ref: '#/components/schemas/ZramDevice'
+ *           example:
+ *             enabled: true
+ *             zram_devices: 2
+ *             devices:
+ *               - name: "ZRAM Swap"
+ *                 enabled: true
+ *                 index: 0
+ *                 algorithm: "zstd"
+ *                 size: "5G"
+ *                 type: "swap"
+ *                 config:
+ *                   priority: -2
+ *                   uuid: null
+ *                   filesystem: null
+ *               - name: "Temp Ramdisk"
+ *                 enabled: false
+ *                 index: 1
+ *                 algorithm: "lz4"
+ *                 size: "2G"
+ *                 type: "ramdisk"
+ *                 config:
+ *                   priority: null
+ *                   uuid: null
+ *                   filesystem: "ext4"
+ *     responses:
+ *       200:
+ *         description: ZRAM configuration updated successfully
+ *       400:
+ *         description: Invalid configuration or mounted ramdisks prevent disable
+ *       401:
+ *         description: Not authenticated
+ *       403:
+ *         description: Admin permission required
+ *       500:
+ *         description: Server error
+ *
+ * components:
+ *   schemas:
+ *     ZramDevice:
+ *       type: object
+ *       properties:
+ *         id:
+ *           type: string
+ *           description: Unique device ID (timestamp-based)
+ *         name:
+ *           type: string
+ *           description: User-defined device name
+ *         enabled:
+ *           type: boolean
+ *           description: Whether this device should be activated
+ *         index:
+ *           type: integer
+ *           description: ZRAM device index (0 = /dev/zram0)
+ *         algorithm:
+ *           type: string
+ *           enum: [zstd, lz4, lzo, lzo-rle]
+ *           description: Compression algorithm
+ *         size:
+ *           type: string
+ *           description: Device size (e.g., "4G", "512M")
+ *         type:
+ *           type: string
+ *           enum: [swap, ramdisk]
+ *           description: Device type
+ *         config:
+ *           type: object
+ *           properties:
+ *             priority:
+ *               type: integer
+ *               nullable: true
+ *               description: Swap priority (required for enabled swap type, can be null if disabled)
+ *             uuid:
+ *               type: string
+ *               nullable: true
+ *               description: Filesystem UUID (auto-generated if not provided for ramdisk type)
+ *             filesystem:
+ *               type: string
+ *               nullable: true
+ *               enum: [ext4, xfs, btrfs]
+ *               description: Filesystem type (required for enabled ramdisk type, can be null if disabled)
+ */
+
+// GET: Read ZRAM configuration
+router.get('/zram', async (req, res) => {
+  try {
+    const config = await zramService.getConfig();
+    res.json(config);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST: Update ZRAM configuration
+router.post('/zram', async (req, res) => {
+  try {
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      return res.status(400).json({ error: 'Request body must be an object.' });
+    }
+    const result = await zramService.updateConfig(req.body);
+    res.json(result);
+  } catch (error) {
+    if (error.message.includes('mounted') || error.message.includes('Unmount')) {
+      res.status(400).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
+/**
+ * @swagger
+ * /mos/zram/algorithms:
+ *   get:
+ *     summary: Get available compression algorithms
+ *     description: Returns list of compression algorithms supported by the kernel for ZRAM
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: List of available algorithms
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: string
+ *             example: ["lzo", "lzo-rle", "lz4", "lz4hc", "zstd", "deflate", "842"]
+ *       401:
+ *         description: Not authenticated
+ *       500:
+ *         description: Server error
+ */
+
+// GET: Available compression algorithms
+router.get('/zram/algorithms', async (req, res) => {
+  try {
+    const algorithms = await zramService.getAlgorithms();
+    res.json(algorithms);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /mos/zram/status:
+ *   get:
+ *     summary: Get ZRAM device status
+ *     description: Get detailed status of all ZRAM devices including compression stats (admin only)
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: ZRAM status retrieved successfully
+ *       401:
+ *         description: Not authenticated
+ *       403:
+ *         description: Admin permission required
+ *       500:
+ *         description: Server error
+ */
+
+// GET: ZRAM device status
+router.get('/zram/status', async (req, res) => {
+  try {
+    const status = await zramService.getStatus();
+    res.json(status);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /mos/zram/devices:
+ *   post:
+ *     summary: Add a new ZRAM device
+ *     description: Add a new ZRAM device configuration. For swap type, config.priority is required. For ramdisk type, config.filesystem is required and config.uuid will be auto-generated if not provided (admin only)
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - name
+ *               - type
+ *             properties:
+ *               name:
+ *                 type: string
+ *               enabled:
+ *                 type: boolean
+ *                 default: false
+ *               algorithm:
+ *                 type: string
+ *                 default: zstd
+ *               size:
+ *                 type: string
+ *               type:
+ *                 type: string
+ *                 enum: [swap, ramdisk]
+ *               config:
+ *                 type: object
+ *           examples:
+ *             swap_device:
+ *               summary: Create enabled swap device
+ *               value:
+ *                 name: "ZRAM Swap"
+ *                 enabled: true
+ *                 algorithm: "zstd"
+ *                 size: "5G"
+ *                 type: "swap"
+ *                 config:
+ *                   priority: -2
+ *             ramdisk_device_enabled:
+ *               summary: Create enabled ramdisk device (uuid auto-generated)
+ *               value:
+ *                 name: "Temp Ramdisk"
+ *                 enabled: true
+ *                 algorithm: "lz4"
+ *                 size: "2G"
+ *                 type: "ramdisk"
+ *                 config:
+ *                   filesystem: "ext4"
+ *             ramdisk_device_disabled:
+ *               summary: Create disabled ramdisk device (config can be null)
+ *               value:
+ *                 name: "Reserved Ramdisk"
+ *                 enabled: false
+ *                 type: "ramdisk"
+ *                 config:
+ *                   filesystem: null
+ *                   uuid: null
+ *     responses:
+ *       200:
+ *         description: Device created successfully
+ *       400:
+ *         description: Invalid device configuration
+ *       401:
+ *         description: Not authenticated
+ *       403:
+ *         description: Admin permission required
+ *       500:
+ *         description: Server error
+ */
+
+// POST: Add new ZRAM device
+router.post('/zram/devices', async (req, res) => {
+  try {
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      return res.status(400).json({ error: 'Request body must be an object.' });
+    }
+    const device = await zramService.addDevice(req.body);
+    res.json(device);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /mos/zram/devices/{id}:
+ *   post:
+ *     summary: Update a ZRAM device
+ *     description: Update an existing ZRAM device configuration. Disabling a device will reset it (swap will be disabled, ramdisk must not be mounted) (admin only)
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Device ID
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *     responses:
+ *       200:
+ *         description: Device updated successfully
+ *       400:
+ *         description: Invalid update or device is mounted
+ *       404:
+ *         description: Device not found
+ *       401:
+ *         description: Not authenticated
+ *       403:
+ *         description: Admin permission required
+ *       500:
+ *         description: Server error
+ *   delete:
+ *     summary: Delete a ZRAM device
+ *     description: Delete a ZRAM device configuration. Device will be deactivated first (admin only)
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Device ID
+ *     responses:
+ *       200:
+ *         description: Device deleted successfully
+ *       400:
+ *         description: Device is mounted and cannot be deleted
+ *       404:
+ *         description: Device not found
+ *       401:
+ *         description: Not authenticated
+ *       403:
+ *         description: Admin permission required
+ *       500:
+ *         description: Server error
+ */
+
+// POST: Update ZRAM device
+router.post('/zram/devices/:id', async (req, res) => {
+  try {
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      return res.status(400).json({ error: 'Request body must be an object.' });
+    }
+    const device = await zramService.updateDevice(req.params.id, req.body);
+    res.json(device);
+  } catch (error) {
+    if (error.message.includes('not found')) {
+      res.status(404).json({ error: error.message });
+    } else if (error.message.includes('mounted') || error.message.includes('Unmount')) {
+      res.status(400).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
+// DELETE: Delete ZRAM device
+router.delete('/zram/devices/:id', async (req, res) => {
+  try {
+    const deleted = await zramService.deleteDevice(req.params.id);
+    res.json({ success: true, deleted });
+  } catch (error) {
+    if (error.message.includes('not found')) {
+      res.status(404).json({ error: error.message });
+    } else if (error.message.includes('mounted') || error.message.includes('Unmount')) {
+      res.status(400).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
+// ============================================================
+// ZSWAP ENDPOINTS
+// ============================================================
+
+/**
+ * @swagger
+ * /mos/zswap/algorithms:
+ *   get:
+ *     summary: Get available zswap compression algorithms
+ *     description: Returns list of compression algorithms supported by the kernel for zswap
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: List of available algorithms
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: string
+ *               example: ["lzo", "lz4", "lz4hc", "zstd", "deflate", "842"]
+ *       401:
+ *         description: Not authenticated
+ *       500:
+ *         description: Server error
+ */
+
+// GET: Available zswap compression algorithms
+router.get('/zswap/algorithms', (req, res) => {
+  try {
+    const algorithms = swapService.getAlgorithms();
+    res.json(algorithms);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /mos/zswap/zpools:
+ *   get:
+ *     summary: Get available zswap zpool allocators
+ *     description: Returns list of zpool allocators supported by the kernel for zswap
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: List of available zpool allocators
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: string
+ *               example: ["zbud", "z3fold", "zsmalloc"]
+ *       401:
+ *         description: Not authenticated
+ *       500:
+ *         description: Server error
+ */
+
+// GET: Available zswap zpool allocators
+router.get('/zswap/zpools', (req, res) => {
+  try {
+    const zpools = swapService.getZpools();
+    res.json(zpools);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

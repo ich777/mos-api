@@ -1801,6 +1801,62 @@ router.post('/:device/unmount', checkRole(['admin']), async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /disks/zram/ramdisks:
+ *   get:
+ *     summary: Get ZRAM ramdisk devices
+ *     description: Returns all active ZRAM ramdisk devices (type=ramdisk, enabled=true) that can be used as storage pools
+ *     tags: [Disks]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: List of ZRAM ramdisk devices
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: object
+ *                 properties:
+ *                   device:
+ *                     type: string
+ *                     example: "/dev/zram0"
+ *                   name:
+ *                     type: string
+ *                     example: "Temp Ramdisk"
+ *                   id:
+ *                     type: string
+ *                   size:
+ *                     type: integer
+ *                   sizeHuman:
+ *                     type: string
+ *                   type:
+ *                     type: string
+ *                     example: "ramdisk"
+ *                   algorithm:
+ *                     type: string
+ *                   filesystem:
+ *                     type: string
+ *                   uuid:
+ *                     type: string
+ *                   isZram:
+ *                     type: boolean
+ *       401:
+ *         description: Not authenticated
+ *       500:
+ *         description: Server error
+ */
 
+// GET: ZRAM ramdisk devices
+router.get('/zram/ramdisks', async (req, res) => {
+  try {
+    const ramdisks = await disksService.getZramRamdisks(req.user);
+    res.json(ramdisks);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
 module.exports = router; 

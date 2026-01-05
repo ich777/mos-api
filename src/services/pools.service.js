@@ -748,9 +748,23 @@ class PoolsService {
         await fs.access(partuuidPath);
         return partuuidPath;
       } catch (error) {
-        // Not found either
-        return null;
+        // Not found via symlink, try ZRAM config lookup
       }
+
+      // Try ZRAM config lookup (ZRAM devices may not have /dev/disk/by-uuid symlinks)
+      try {
+        const ZramService = require('./zram.service');
+        const zramConfig = await ZramService.loadConfig();
+        for (const device of zramConfig.devices || []) {
+          if (device.config?.uuid === uuid) {
+            return `/dev/zram${device.index}`;
+          }
+        }
+      } catch {
+        // ZRAM service not available
+      }
+
+      return null;
     } catch (error) {
       // Other error
       return null;
@@ -790,9 +804,23 @@ class PoolsService {
         const devicePath = path.resolve(path.dirname(partuuidPath), relativePath);
         return devicePath || null;
       } catch (error) {
-        // Not found either
-        return null;
+        // Not found via symlink, try ZRAM config lookup
       }
+
+      // Try ZRAM config lookup (ZRAM devices may not have /dev/disk/by-uuid symlinks)
+      try {
+        const ZramService = require('./zram.service');
+        const zramConfig = await ZramService.loadConfig();
+        for (const device of zramConfig.devices || []) {
+          if (device.config?.uuid === uuid) {
+            return `/dev/zram${device.index}`;
+          }
+        }
+      } catch {
+        // ZRAM service not available
+      }
+
+      return null;
     } catch (error) {
       // Other error
       return null;
@@ -2379,11 +2407,26 @@ class PoolsService {
   }
 
   /**
+   * Check if device is a ZRAM device
+   * @param {string} device - Device path
+   * @returns {boolean}
+   */
+  _isZramDevice(device) {
+    return /\/dev\/zram\d+/.test(device);
+  }
+
+  /**
    * Create a partition on a whole disk if needed
    * @param {string} device - Device path
-   * @returns {Promise<string>} - Partition path or original device if already a partition
+   * @returns {Promise<string>} - Partition path or original device if already a partition/ZRAM
    */
   async _ensurePartition(device) {
+    // ZRAM devices are formatted directly without partition
+    if (this._isZramDevice(device)) {
+      console.log(`${device} is a ZRAM device, using directly without partition`);
+      return device;
+    }
+
     // Check if device is a partition or a whole disk
     const isPartition = this._isPartitionPath(device);
     let targetDevice = device;
@@ -2423,6 +2466,11 @@ class PoolsService {
    * Creates a partition first if device is a whole disk
    */
   async formatDevice(device, filesystem = 'xfs') {
+    // ZRAM devices are formatted by zram.service, not pools
+    if (this._isZramDevice(device)) {
+      throw new Error(`ZRAM device ${device} cannot be formatted via pools. Use /mos/zram to configure ZRAM devices.`);
+    }
+
     console.log(`Formatting ${device} with ${filesystem}...`);
 
     try {
@@ -2748,6 +2796,11 @@ class PoolsService {
         }
         if (options.passphrase.length < 8) {
           throw new Error('Passphrase must be at least 8 characters long for LUKS encryption');
+        }
+
+        // ZRAM devices cannot be encrypted
+        if (this._isZramDevice(device)) {
+          throw new Error(`ZRAM device ${device} cannot be encrypted. ZRAM uses RAM compression and does not support LUKS.`);
         }
       }
 
@@ -3840,6 +3893,20 @@ class PoolsService {
         if (underlying) {
           physicalDevice = underlying;
         }
+      }
+
+      // Check if this is a ZRAM device
+      if (this._isZramDevice(physicalDevice)) {
+        return {
+          ...device,
+          diskType: {
+            type: 'ramdisk',
+            rotational: false,
+            removable: false,
+            usbInfo: null,
+            isZram: true
+          }
+        };
       }
 
       // Convert partition to base disk (e.g. /dev/sdj1 -> /dev/sdj)
@@ -5482,6 +5549,13 @@ class PoolsService {
         }
         if (options.passphrase.length < 8) {
           throw new Error('Passphrase must be at least 8 characters long for LUKS encryption');
+        }
+
+        // ZRAM devices cannot be encrypted
+        for (const device of devices) {
+          if (this._isZramDevice(device)) {
+            throw new Error(`ZRAM device ${device} cannot be encrypted. ZRAM uses RAM compression and does not support LUKS.`);
+          }
         }
       }
 

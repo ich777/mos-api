@@ -1652,8 +1652,8 @@ class DisksService {
       const disks = [];
 
       for (const disk of blockDevices) {
-        // Nur physische Disks, keine Partitionen, Loop-Devices oder md-Partitionen
-        if (disk.type !== 'disk' || disk.name.includes('loop') || disk.name.match(/md\d+p\d+/)) {
+        // Only physical disks, no partitions, loop devices, md partitions or ZRAM (ZRAM handled separately)
+        if (disk.type !== 'disk' || disk.name.includes('loop') || disk.name.match(/md\d+p\d+/) || disk.name.match(/^zram\d+/)) {
           continue;
         }
 
@@ -1707,6 +1707,32 @@ class DisksService {
           partitions,
           performance,
           standbySkipped: false
+        });
+      }
+
+      // Add ZRAM ramdisks (not swaps) to the list
+      const zramRamdisks = await this.getZramRamdisks(user);
+      for (const ramdisk of zramRamdisks) {
+        disks.push({
+          device: ramdisk.device,
+          name: ramdisk.device.replace('/dev/', ''),
+          model: ramdisk.name,
+          serial: ramdisk.id,
+          size: ramdisk.size,
+          size_human: ramdisk.sizeHuman,
+          powerStatus: 'active',
+          type: 'ramdisk',
+          rotational: false,
+          removable: false,
+          partitions: [],
+          performance: null,
+          standbySkipped: false,
+          isZram: true,
+          zramConfig: {
+            algorithm: ramdisk.algorithm,
+            filesystem: ramdisk.filesystem,
+            uuid: ramdisk.uuid
+          }
         });
       }
 
@@ -1843,6 +1869,21 @@ class DisksService {
         console.warn('Failed to load pools:', error.message);
       }
 
+      // Load active ZRAM swaps to filter them out
+      const zramSwaps = new Set();
+      try {
+        const { stdout } = await execPromise('cat /proc/swaps');
+        const lines = stdout.split('\n');
+        for (const line of lines) {
+          const match = line.match(/^(\/dev\/zram\d+)/);
+          if (match) {
+            zramSwaps.add(match[1]);
+          }
+        }
+      } catch {
+        // Ignore errors
+      }
+
       // Load mounts once
       const mounts = await this._getMountInfo();
 
@@ -1871,6 +1912,11 @@ class DisksService {
 
       // Check each disk
       for (const disk of allDisks) {
+        // Skip ZRAM devices (handled separately - swaps filtered, ramdisks via pools)
+        if (this.isZramDevice(disk.device)) {
+          continue;
+        }
+
         // Check if disk is a system disk
         const isSystem = await this._isSystemDisk(disk.device);
 
@@ -1965,6 +2011,47 @@ class DisksService {
             ...disk
           });
         }
+      }
+
+      // Add unmounted ZRAM ramdisks to unassigned
+      const zramRamdisks = await this.getZramRamdisks(user);
+      for (const ramdisk of zramRamdisks) {
+        // Check if already in a pool
+        const isInPool = pools.some(pool =>
+          pool.data_devices?.some(d => d.device === ramdisk.device)
+        );
+        if (isInPool) continue;
+
+        // Check if mounted
+        try {
+          const { stdout } = await execPromise('cat /proc/mounts');
+          if (stdout.includes(ramdisk.device)) continue;
+        } catch {
+          // Ignore errors
+        }
+
+        // Not in pool and not mounted - add as unassigned
+        unassignedDisks.push({
+          device: ramdisk.device,
+          name: ramdisk.device.replace('/dev/', ''),
+          model: ramdisk.name,
+          serial: ramdisk.id,
+          size: ramdisk.size,
+          size_human: ramdisk.sizeHuman,
+          powerStatus: 'active',
+          type: 'ramdisk',
+          rotational: false,
+          removable: false,
+          partitions: [],
+          filesystem: ramdisk.filesystem,
+          uuid: ramdisk.uuid,
+          isZram: true,
+          zramConfig: {
+            algorithm: ramdisk.algorithm,
+            filesystem: ramdisk.filesystem,
+            uuid: ramdisk.uuid
+          }
+        });
       }
 
       return {
@@ -2770,6 +2857,97 @@ class DisksService {
       success: true,
       message: 'Cache refresh skipped - using live data'
     };
+  }
+
+  // ============================================================
+  // ZRAM HELPERS
+  // ============================================================
+
+  /**
+   * Check if a device is a ZRAM device
+   * @param {string} device - Device path or name
+   * @returns {boolean}
+   */
+  isZramDevice(device) {
+    const name = device.replace('/dev/', '');
+    return /^zram\d+/.test(name);
+  }
+
+  /**
+   * Get ZRAM device info from zram.service config
+   * @param {string} device - Device path (e.g., /dev/zram0 or /dev/zram0p1)
+   * @returns {Promise<Object|null>} ZRAM device config or null if not found/not ZRAM
+   */
+  async getZramDeviceInfo(device) {
+    if (!this.isZramDevice(device)) return null;
+
+    try {
+      const ZramService = require('./zram.service');
+      const config = await ZramService.loadConfig();
+
+      // Extract zram index from device name (handles both /dev/zram0 and /dev/zram0p1)
+      const match = device.match(/zram(\d+)/);
+      if (!match) return null;
+      const index = parseInt(match[1]);
+
+      const zramDevice = config.devices.find(d => d.index === index);
+      if (zramDevice) {
+        return {
+          ...zramDevice,
+          isZram: true,
+          zramType: zramDevice.type // 'swap' or 'ramdisk'
+        };
+      }
+    } catch {
+      // ZRAM service not available
+    }
+    return null;
+  }
+
+  /**
+   * Get all ZRAM ramdisk devices (for pools)
+   * @param {Object} user - User object for formatting
+   * @returns {Promise<Array>} Array of ZRAM ramdisk devices
+   */
+  async getZramRamdisks(user = null) {
+    try {
+      const ZramService = require('./zram.service');
+      const config = await ZramService.loadConfig();
+
+      if (!config.enabled) return [];
+
+      const ramdisks = [];
+      for (const device of config.devices) {
+        if (device.type === 'ramdisk' && device.enabled) {
+          // Get size from sysfs
+          let sizeBytes = 0;
+          try {
+            const { stdout } = await execPromise(`cat /sys/block/zram${device.index}/disksize`);
+            sizeBytes = parseInt(stdout.trim()) || 0;
+          } catch {
+            // Device might not be active
+          }
+
+          ramdisks.push({
+            device: `/dev/zram${device.index}`,
+            name: device.name,
+            id: device.id,
+            index: device.index,
+            size: sizeBytes,
+            sizeHuman: this.formatBytes(sizeBytes, user),
+            type: 'ramdisk',
+            algorithm: device.algorithm,
+            filesystem: device.config.filesystem,
+            uuid: device.config.uuid,
+            isZram: true
+          });
+        }
+      }
+
+      return ramdisks;
+    } catch {
+      return [];
+    }
   }
 }
 
