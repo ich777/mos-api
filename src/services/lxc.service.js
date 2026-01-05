@@ -1,10 +1,25 @@
 const { exec } = require('child_process');
 const util = require('util');
 const fs = require('fs');
+const fsPromises = require('fs').promises;
 const path = require('path');
 const https = require('https');
 
 const execPromise = util.promisify(exec);
+
+/**
+ * Get LXC registry from settings
+ * @returns {Promise<string|null>} The lxc_registry value or null
+ */
+async function getLxcRegistry() {
+  try {
+    const data = await fsPromises.readFile('/boot/config/lxc.json', 'utf8');
+    const settings = JSON.parse(data);
+    return settings.lxc_registry || null;
+  } catch (error) {
+    return null;
+  }
+}
 
 /**
  * LXC Container Service
@@ -271,8 +286,14 @@ class LxcService {
         throw new Error(`Invalid container name. Container names must be 1-64 characters long, contain only letters, numbers, hyphens, and underscores, and must not start or end with a hyphen or underscore.`);
       }
 
-      // Create the container
-      const command = `lxc-create --name ${containerName} --template download -- --dist ${distribution} --release ${release} --arch ${arch}`;
+      // Get custom registry if configured
+      const lxcRegistry = await getLxcRegistry();
+
+      // Create the container (add --server if custom registry is set)
+      let command = `lxc-create --name ${containerName} --template download -- --dist ${distribution} --release ${release} --arch ${arch}`;
+      if (lxcRegistry) {
+        command = `lxc-create --name ${containerName} --template download -- --server ${lxcRegistry} --dist ${distribution} --release ${release} --arch ${arch}`;
+      }
       await execPromise(command);
 
       // Set autostart configuration

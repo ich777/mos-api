@@ -1312,7 +1312,8 @@ class MosService {
       enabled: false,
       bridge: false,
       directory: defaultPaths ? defaultPaths.lxc.directory : null,
-      start_wait: 0
+      start_wait: 0,
+      lxc_registry: null
     };
   }
 
@@ -1379,7 +1380,15 @@ class MosService {
         if (error.code !== 'ENOENT') throw error;
       }
       // Only allowed fields are updated
-      const allowed = ['enabled', 'bridge', 'directory', 'start_wait'];
+      const allowed = ['enabled', 'bridge', 'directory', 'start_wait', 'lxc_registry'];
+
+      // Validate lxc_registry if provided (must not contain protocol prefixes)
+      if (updates.lxc_registry !== undefined && updates.lxc_registry !== null && updates.lxc_registry !== '') {
+        const protocolPattern = /^(https?|ftp):\/\//i;
+        if (protocolPattern.test(updates.lxc_registry)) {
+          throw new Error('lxc_registry must not contain protocol prefixes (http://, https://, ftp://). Example: my.lxc.org');
+        }
+      }
 
       // Check directory paths for mount status
       const pathsToCheck = {};
@@ -1398,6 +1407,12 @@ class MosService {
         }
       }
 
+      // Track if we need to restart the service (only for enabled, directory, or bridge changes)
+      const previousEnabled = current.enabled;
+      const previousDirectory = current.directory;
+      const previousBridge = current.bridge;
+      const previousRegistry = current.lxc_registry;
+
       for (const key of Object.keys(updates)) {
         if (!allowed.includes(key)) {
           throw new Error(`Invalid field: ${key}`);
@@ -1408,28 +1423,47 @@ class MosService {
       // Write the file
       await fs.writeFile('/boot/config/lxc.json', JSON.stringify(current, null, 2), 'utf8');
 
-      // LXC service stop/start on configuration changes
-      try {
-        // LXC always stop when configuration is changed
-        // Ignore errors on stop (e.g. if service is already stopped)
+      // Delete container index cache if lxc_registry changed
+      const registryChanged = updates.lxc_registry !== undefined && updates.lxc_registry !== previousRegistry;
+      if (registryChanged) {
+        const indexPath = '/var/mos/lxc/container_index.json';
         try {
-          await exec('/etc/init.d/lxc stop');
-        } catch (stopError) {
-          // Ignore stop errors (service could already be stopped)
+          await fs.unlink(indexPath);
+        } catch (unlinkError) {
+          // Ignore if file doesn't exist
+          if (unlinkError.code !== 'ENOENT') {
+            console.warn(`Warning: Could not delete container index: ${unlinkError.message}`);
+          }
         }
+      }
 
+      // Only restart LXC service if enabled, directory, or bridge changed
+      const enabledChanged = updates.enabled !== undefined && updates.enabled !== previousEnabled;
+      const directoryChanged = updates.directory !== undefined && updates.directory !== previousDirectory;
+      const bridgeChanged = updates.bridge !== undefined && updates.bridge !== previousBridge;
+
+      if (enabledChanged || directoryChanged || bridgeChanged) {
         try {
-          await exec('/etc/init.d/lxc-net stop');
-        } catch (stopError) {
-          // Ignore stop errors (service could already be stopped)
-        }
+          // Stop services first (ignore errors if already stopped)
+          try {
+            await exec('/etc/init.d/lxc stop');
+          } catch (stopError) {
+            // Ignore stop errors (service could already be stopped)
+          }
 
-        // LXC only start if enabled = true (mos-start reads the new file)
-        if (current.enabled === true) {
-          await execPromise('/usr/local/bin/mos-start lxc');
+          try {
+            await exec('/etc/init.d/lxc-net stop');
+          } catch (stopError) {
+            // Ignore stop errors (service could already be stopped)
+          }
+
+          // Only start if enabled = true (mos-start reads the new file)
+          if (current.enabled === true) {
+            await execPromise('/usr/local/bin/mos-start lxc');
+          }
+        } catch (error) {
+          throw new Error(`Error restarting lxc service: ${error.message}`);
         }
-      } catch (error) {
-        throw new Error(`Error restarting lxc service: ${error.message}`);
       }
 
       return current;

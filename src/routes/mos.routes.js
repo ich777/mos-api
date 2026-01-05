@@ -201,6 +201,11 @@ const { checkRole } = require('../middleware/auth.middleware');
  *           type: string
  *           description: LXC containers directory
  *           example: "/mnt/pool1/lxc"
+ *         lxc_registry:
+ *           type: string
+ *           nullable: true
+ *           description: Custom LXC container registry server (without protocol prefix). When set, containers are downloaded from this server instead of the default. Example format - my.lxc.org (not https://my.lxc.org)
+ *           example: "images.linuxcontainers.org"
  *     VmSettings:
  *       type: object
  *       properties:
@@ -592,6 +597,7 @@ router.post('/settings/docker', async (req, res) => {
  *           example:
  *             enabled: true
  *             directory: "/mnt/pool1/lxc"
+ *             lxc_registry: "images.linuxcontainers.org"
  *     responses:
  *       200:
  *         description: LXC settings updated successfully
