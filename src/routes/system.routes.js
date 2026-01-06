@@ -2121,6 +2121,45 @@ router.get('/sensors', authenticateToken, async (req, res) => {
 /**
  * @swagger
  * /system/timedate:
+ *   get:
+ *     summary: Get current system date and time
+ *     description: Retrieve the current system date and time
+ *     tags: [System]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Current date and time retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 date:
+ *                   type: string
+ *                   description: Date in YYYY-MM-DD format
+ *                   example: "2026-01-06"
+ *                 time:
+ *                   type: string
+ *                   description: Time in HH:MM:SS format
+ *                   example: "12:01:00"
+ *       401:
+ *         description: Not authenticated
+ *       500:
+ *         description: Server error
+ */
+router.get('/timedate', authenticateToken, async (req, res) => {
+  try {
+    const dateTime = await systemService.getDateTime();
+    res.json(dateTime);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /system/timedate:
  *   put:
  *     summary: Set system date and/or time
  *     description: Set the system date and/or time. At least one of date or time must be provided. Requires admin privileges.

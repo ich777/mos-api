@@ -1869,6 +1869,26 @@ class SystemService {
   }
 
   /**
+   * Get current system date and time
+   * @returns {Promise<Object>} Current date and time
+   */
+  async getDateTime() {
+    try {
+      const [dateResult, timeResult] = await Promise.all([
+        execAsync('date "+%Y-%m-%d"'),
+        execAsync('date "+%H:%M:%S"')
+      ]);
+
+      return {
+        date: dateResult.stdout.trim(),
+        time: timeResult.stdout.trim()
+      };
+    } catch (error) {
+      throw new Error(`Error getting date/time: ${error.message}`);
+    }
+  }
+
+  /**
    * Set system date and/or time
    * @param {Object} options - Options object
    * @param {string} options.date - Date in YYYY-MM-DD format (optional)
