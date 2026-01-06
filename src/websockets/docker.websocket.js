@@ -60,18 +60,19 @@ function calculateContainerStats(raw, user = null) {
   if (raw.cpu_stats && raw.precpu_stats) {
     const cpuDelta = raw.cpu_stats.cpu_usage.total_usage - raw.precpu_stats.cpu_usage.total_usage;
     const systemDelta = raw.cpu_stats.system_cpu_usage - raw.precpu_stats.system_cpu_usage;
-    const cpuCount = raw.cpu_stats.online_cpus || raw.cpu_stats.cpu_usage.percpu_usage?.length || 1;
     if (systemDelta > 0 && cpuDelta > 0) {
-      cpuPercent = (cpuDelta / systemDelta) * cpuCount * 100;
+      // Don't multiply by CPU cores
+      cpuPercent = (cpuDelta / systemDelta) * 100;
     }
   }
 
-  // Memory calculation (always binary for RAM)
+  // Memory calculation (always binary for RAM) - matches docker stats CLI output
   let memoryUsage = 0;
   let memoryLimit = 0;
   let memoryPercent = 0;
   if (raw.memory_stats) {
-    memoryUsage = raw.memory_stats.usage - (raw.memory_stats.stats?.cache || 0);
+    const inactiveFile = raw.memory_stats.stats?.inactive_file || 0;
+    memoryUsage = raw.memory_stats.usage - inactiveFile;
     memoryLimit = raw.memory_stats.limit;
     if (memoryLimit > 0) {
       memoryPercent = (memoryUsage / memoryLimit) * 100;
