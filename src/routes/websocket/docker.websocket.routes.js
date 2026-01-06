@@ -250,7 +250,7 @@ const { authenticateToken } = require('../../middleware/auth.middleware');
  *       ```javascript
  *       socket.emit('docker-stats-subscribe', {
  *         token: 'your-jwt-token',
- *         containerName: 'nginx'
+ *         params: { name: 'nginx' }
  *       });
  *       ```
  *       Note: Stream runs continuously until unsubscribe or disconnect
@@ -258,13 +258,13 @@ const { authenticateToken } = require('../../middleware/auth.middleware');
  *       Listen for stats updates:
  *       ```javascript
  *       socket.on('docker-update', (data) => {
- *         if (data.status === 'running' && data.operation === 'container-stats') {
- *           const stats = JSON.parse(data.output);
- *           console.log('Container:', stats.Container);
- *           console.log('CPU:', stats.CPUPerc);
- *           console.log('Memory:', stats.MemUsage);
- *           console.log('Network I/O:', stats.NetIO);
- *           console.log('Block I/O:', stats.BlockIO);
+ *         if (data.status === 'running' && data.stats) {
+ *           const { stats } = data;
+ *           // Docker API format (raw stats object)
+ *           console.log('CPU:', stats.cpu_stats);
+ *           console.log('Memory:', stats.memory_stats);
+ *           console.log('Networks:', stats.networks);
+ *           console.log('Block I/O:', stats.blkio_stats);
  *           // Stats update every ~1 second
  *         }
  *       });
@@ -404,11 +404,13 @@ router.get('/websocket/events', (req, res) => {
           description: 'Subscribe to live container statistics (continuous stream)',
           payload: {
             token: 'JWT token (required)',
-            containerName: 'Container name to monitor'
+            params: {
+              name: 'Container name to monitor'
+            }
           },
           example: {
             token: 'eyJ...',
-            containerName: 'nginx'
+            params: { name: 'nginx' }
           }
         },
         {
@@ -488,14 +490,18 @@ router.get('/websocket/events', (req, res) => {
               status: 'started',
               operationId: 'stats-nginx-1234567890-abc123',
               operation: 'container-stats',
-              containerName: 'nginx',
+              name: 'nginx',
               timestamp: 1234567890123
             },
             'container-stats-running': {
               status: 'running',
               operationId: 'stats-nginx-1234567890-abc123',
-              operation: 'container-stats',
-              output: '{"BlockIO":"1.2MB / 0B","CPUPerc":"0.50%","Container":"nginx","ID":"abc123","MemPerc":"2.50%","MemUsage":"128MiB / 4GiB","Name":"nginx","NetIO":"1.2kB / 0B","PIDs":"10"}',
+              stats: {
+                cpu_stats: { cpu_usage: { total_usage: 123456789 }, system_cpu_usage: 987654321 },
+                memory_stats: { usage: 134217728, limit: 4294967296 },
+                networks: { eth0: { rx_bytes: 1234, tx_bytes: 5678 } },
+                blkio_stats: { io_service_bytes_recursive: [] }
+              },
               stream: 'stdout',
               timestamp: 1234567891123
             },

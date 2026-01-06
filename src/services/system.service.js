@@ -1867,6 +1867,57 @@ class SystemService {
       throw new Error(`Error getting sensors: ${error.message}`);
     }
   }
+
+  /**
+   * Set system date and/or time
+   * @param {Object} options - Options object
+   * @param {string} options.date - Date in YYYY-MM-DD format (optional)
+   * @param {string} options.time - Time in HH:MM:SS format (optional)
+   * @returns {Promise<Object>} Result with new date/time
+   */
+  async setDateTime({ date, time }) {
+    try {
+      if (!date && !time) {
+        throw new Error('Either date or time must be provided');
+      }
+
+      // Validate date format if provided
+      if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        throw new Error('Invalid date format. Use YYYY-MM-DD');
+      }
+
+      // Validate time format if provided
+      if (time && !/^\d{2}:\d{2}(:\d{2})?$/.test(time)) {
+        throw new Error('Invalid time format. Use HH:MM or HH:MM:SS');
+      }
+
+      // Ensure time has seconds
+      let timeWithSeconds = time;
+      if (time && time.length === 5) {
+        timeWithSeconds = `${time}:00`;
+      }
+
+      let command;
+      if (date && timeWithSeconds) {
+        // Set both date and time
+        command = `date -s "${date} ${timeWithSeconds}"`;
+      } else if (date) {
+        // Set only date, preserve current time
+        const { stdout: currentTime } = await execAsync('date "+%H:%M:%S"');
+        command = `date -s "${date} ${currentTime.trim()}"`;
+      } else {
+        // Set only time, preserve current date
+        const { stdout: currentDate } = await execAsync('date "+%Y-%m-%d"');
+        command = `date -s "${currentDate.trim()} ${timeWithSeconds}"`;
+      }
+
+      await execAsync(command);
+
+      return { success: true };
+    } catch (error) {
+      throw new Error(`Error setting date/time: ${error.message}`);
+    }
+  }
 }
 
 module.exports = new SystemService();

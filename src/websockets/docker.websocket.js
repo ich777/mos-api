@@ -1,5 +1,16 @@
 const { spawn } = require('child_process');
 const EventEmitter = require('events');
+const axios = require('axios');
+
+/**
+ * Strip ANSI escape codes from string
+ * @param {string} str - String potentially containing ANSI codes
+ * @returns {string} Clean string without ANSI codes
+ */
+function stripAnsi(str) {
+  // eslint-disable-next-line no-control-regex
+  return str.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '');
+}
 
 /**
  * Docker WebSocket Manager - Handles real-time Docker operations with streaming output
@@ -167,7 +178,8 @@ class DockerWebSocketManager extends EventEmitter {
     // Subscribe to container stats stream
     socket.on('docker-stats-subscribe', async (data) => {
       try {
-        const { token, containerName } = data;
+        const { token, params } = data;
+        const { name } = params || {};
 
         // Authenticate user
         const authResult = await this.authenticateUser(token);
@@ -182,21 +194,21 @@ class DockerWebSocketManager extends EventEmitter {
           return;
         }
 
-        if (!containerName) {
+        if (!name) {
           this.sendUpdate(socket, null, 'error', { message: 'Container name is required for stats subscription' });
           return;
         }
 
-        console.log(`Client ${socket.id} subscribing to stats for container: ${containerName}`);
+        console.log(`Client ${socket.id} subscribing to stats for container: ${name}`);
 
         // Generate unique operation ID
-        const operationId = `stats-${containerName}-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
+        const operationId = `stats-${name}-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
 
         // Join operation room
         socket.join(`operation-${operationId}`);
 
         // Execute stats stream
-        await this.executeContainerStats(socket.id, operationId, containerName);
+        await this.executeContainerStats(socket.id, operationId, name);
 
       } catch (error) {
         console.error('Error in docker-stats-subscribe:', error);
@@ -637,7 +649,14 @@ class DockerWebSocketManager extends EventEmitter {
     return new Promise((resolve, reject) => {
       const process = spawn(command, args, {
         ...options,
-        shell: false
+        shell: false,
+        env: {
+          ...process.env,
+          ...options.env,
+          TERM: 'dumb',
+          NO_COLOR: '1',
+          FORCE_COLOR: '0'
+        }
       });
 
       const startTime = Date.now();
@@ -656,7 +675,7 @@ class DockerWebSocketManager extends EventEmitter {
 
       // Stream stdout
       process.stdout.on('data', (data) => {
-        const output = data.toString();
+        const output = stripAnsi(data.toString());
         stdout += output;
 
         // Send progress to all clients in operation room
@@ -668,7 +687,7 @@ class DockerWebSocketManager extends EventEmitter {
 
       // Stream stderr (Docker often uses stderr for progress)
       process.stderr.on('data', (data) => {
-        const output = data.toString();
+        const output = stripAnsi(data.toString());
         stderr += output;
 
         // Send progress to all clients in operation room
@@ -1525,69 +1544,77 @@ class DockerWebSocketManager extends EventEmitter {
   }
 
   /**
-   * Execute container stats stream with continuous JSON output
+   * Execute container stats stream using Docker Socket API via Axios
    */
   async executeContainerStats(socketId, operationId, containerName) {
     this.sendUpdate(null, operationId, 'started', {
       operation: 'container-stats',
-      containerName
+      name: containerName
     });
 
-    try {
-      const dockerPath = '/usr/bin/docker';
-      const args = ['stats', '--format', 'json', '--no-trunc', containerName];
+    const startTime = Date.now();
 
-      const process = spawn(dockerPath, args, {
-        shell: false
+    try {
+      const response = await axios({
+        method: 'GET',
+        url: `http://localhost/containers/${encodeURIComponent(containerName)}/stats?stream=1`,
+        socketPath: '/var/run/docker.sock',
+        responseType: 'stream',
+        validateStatus: () => true
       });
 
-      const startTime = Date.now();
+      // Handle non-200 responses
+      if (response.status !== 200) {
+        let message = `Container '${containerName}' not found or not running`;
+        if (response.data && response.data.message) {
+          message = response.data.message;
+        }
+        this.sendUpdate(null, operationId, 'error', { message });
+        return;
+      }
+
+      const stream = response.data;
 
       // Initialize socket stats streams map if not exists
       if (!this.statsStreams.has(socketId)) {
         this.statsStreams.set(socketId, new Map());
       }
 
-      // Store stats stream for this socket
+      // Store stream for this socket (to allow cancellation)
       this.statsStreams.get(socketId).set(operationId, {
-        process,
+        stream,
         containerName,
         startTime
       });
 
       let buffer = '';
 
-      // Stream stdout - docker stats outputs JSON lines continuously
-      process.stdout.on('data', (data) => {
-        buffer += data.toString();
+      // Stream data from Docker API
+      stream.on('data', (chunk) => {
+        buffer += chunk.toString();
         const lines = buffer.split('\n');
 
         // Keep the last incomplete line in buffer
         buffer = lines.pop();
 
-        // Process complete lines
+        // Process complete JSON lines
         for (const line of lines) {
           if (line.trim()) {
-            // Send each stats update to all clients in operation room
-            this.sendUpdate(null, operationId, 'running', {
-              output: line.trim(),
-              stream: 'stdout'
-            });
+            try {
+              const stats = JSON.parse(line);
+              // Send parsed stats directly
+              this.sendUpdate(null, operationId, 'running', {
+                stats,
+                stream: 'stdout'
+              });
+            } catch (e) {
+              // Skip malformed JSON
+            }
           }
         }
       });
 
-      // Stream stderr for errors
-      process.stderr.on('data', (data) => {
-        const output = data.toString();
-        this.sendUpdate(null, operationId, 'running', {
-          output,
-          stream: 'stderr'
-        });
-      });
-
-      // Handle process exit
-      process.on('close', (code) => {
+      stream.on('end', () => {
         // Remove from stats streams
         if (this.statsStreams.has(socketId)) {
           this.statsStreams.get(socketId).delete(operationId);
@@ -1597,23 +1624,14 @@ class DockerWebSocketManager extends EventEmitter {
         }
 
         const duration = Date.now() - startTime;
-
-        if (code === 0) {
-          this.sendUpdate(null, operationId, 'completed', {
-            success: true,
-            message: `Stats stream stopped for container '${containerName}'`,
-            duration
-          });
-        } else {
-          this.sendUpdate(null, operationId, 'error', {
-            message: `Stats stream ended with code ${code}`,
-            exitCode: code
-          });
-        }
+        this.sendUpdate(null, operationId, 'completed', {
+          success: true,
+          message: `Stats stream stopped for container '${containerName}'`,
+          duration
+        });
       });
 
-      // Handle process errors
-      process.on('error', (error) => {
+      stream.on('error', (error) => {
         // Remove from stats streams
         if (this.statsStreams.has(socketId)) {
           this.statsStreams.get(socketId).delete(operationId);
@@ -1656,8 +1674,10 @@ class DockerWebSocketManager extends EventEmitter {
     }
 
     try {
-      // Kill the stats process
-      stream.process.kill('SIGTERM');
+      // Destroy the axios stream to stop streaming
+      if (stream.stream) {
+        stream.stream.destroy();
+      }
 
       // Remove from tracking
       socketStreams.delete(operationId);
@@ -1692,7 +1712,7 @@ class DockerWebSocketManager extends EventEmitter {
 
     for (const [operationId, stream] of socketStreams.entries()) {
       try {
-        stream.process.kill('SIGTERM');
+        if (stream.stream) stream.stream.destroy();
         console.log(`Stopped stats stream ${operationId} for container ${stream.containerName}`);
       } catch (error) {
         console.error(`Error stopping stats stream ${operationId}:`, error);

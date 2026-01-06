@@ -2295,7 +2295,8 @@ router.use('/*', checkRole('admin'), async (req, res) => {
   // Define variables outside try block so they're available in catch
   const isStreamingEndpoint = req.originalUrl.includes('/logs') ||
                              req.originalUrl.includes('/attach') ||
-                             req.originalUrl.includes('/exec');
+                             req.originalUrl.includes('/exec') ||
+                             req.originalUrl.includes('/stats');
 
   const isContainerStateChange = req.method === 'POST' &&
                                 (req.originalUrl.includes('/start') ||

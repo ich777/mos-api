@@ -2118,4 +2118,102 @@ router.get('/sensors', authenticateToken, async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /system/timedate:
+ *   put:
+ *     summary: Set system date and/or time
+ *     description: Set the system date and/or time. At least one of date or time must be provided. Requires admin privileges.
+ *     tags: [System]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               date:
+ *                 type: string
+ *                 description: Date in YYYY-MM-DD format
+ *                 example: "2026-01-06"
+ *               time:
+ *                 type: string
+ *                 description: Time in HH:MM or HH:MM:SS format
+ *                 example: "12:30:00"
+ *           examples:
+ *             both:
+ *               summary: Set both date and time
+ *               value:
+ *                 date: "2026-01-06"
+ *                 time: "12:30:00"
+ *             dateOnly:
+ *               summary: Set only date
+ *               value:
+ *                 date: "2026-01-06"
+ *             timeOnly:
+ *               summary: Set only time
+ *               value:
+ *                 time: "12:30:00"
+ *     responses:
+ *       200:
+ *         description: Date/time set successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *       400:
+ *         description: Invalid request (missing or invalid date/time format)
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *             examples:
+ *               missing:
+ *                 value:
+ *                   error: "Either date or time must be provided"
+ *               invalidDate:
+ *                 value:
+ *                   error: "Invalid date format. Use YYYY-MM-DD"
+ *               invalidTime:
+ *                 value:
+ *                   error: "Invalid time format. Use HH:MM or HH:MM:SS"
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+router.put('/timedate', checkRole(['admin']), async (req, res) => {
+  try {
+    const { date, time } = req.body;
+    const result = await systemService.setDateTime({ date, time });
+    res.json(result);
+  } catch (error) {
+    if (error.message.includes('must be provided') || error.message.includes('Invalid')) {
+      res.status(400).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
 module.exports = router; 
