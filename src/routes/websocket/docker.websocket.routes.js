@@ -260,11 +260,14 @@ const { authenticateToken } = require('../../middleware/auth.middleware');
  *       socket.on('docker-update', (data) => {
  *         if (data.status === 'running' && data.stats) {
  *           const { stats } = data;
- *           // Docker API format (raw stats object)
- *           console.log('CPU:', stats.cpu_stats);
- *           console.log('Memory:', stats.memory_stats);
- *           console.log('Networks:', stats.networks);
- *           console.log('Block I/O:', stats.blkio_stats);
+ *           // Pre-calculated stats with _human formatting
+ *           console.log('CPU:', stats.cpu_percent + '%');
+ *           console.log('Memory:', stats.memory_usage_human, '/', stats.memory_limit_human, `(${stats.memory_percent}%)`);
+ *           console.log('Network:', stats.network_rx_human, '↓', stats.network_tx_human, '↑', `(${stats.network_total_human} total)`);
+ *           console.log('Block I/O:', stats.block_read_human, 'read', stats.block_write_human, 'write', `(${stats.block_total_human} total)`);
+ *           console.log('PIDs:', stats.pids);
+ *           // Raw byte values: memory_usage, network_rx, block_read, etc.
+ *           // Memory always binary (GiB/MiB), network/block uses user's byte_format preference
  *           // Stats update every ~1 second
  *         }
  *       });
@@ -497,12 +500,26 @@ router.get('/websocket/events', (req, res) => {
               status: 'running',
               operationId: 'stats-nginx-1234567890-abc123',
               stats: {
-                cpu_stats: { cpu_usage: { total_usage: 123456789 }, system_cpu_usage: 987654321 },
-                memory_stats: { usage: 134217728, limit: 4294967296 },
-                networks: { eth0: { rx_bytes: 1234, tx_bytes: 5678 } },
-                blkio_stats: { io_service_bytes_recursive: [] }
+                cpu_percent: 2.5,
+                memory_percent: 15.3,
+                memory_usage: 268435456,
+                memory_usage_human: '256 MiB',
+                memory_limit: 4294967296,
+                memory_limit_human: '4 GiB',
+                network_rx: 1258291,
+                network_rx_human: '1.2 MiB',
+                network_tx: 512000,
+                network_tx_human: '500 KiB',
+                network_total: 1770291,
+                network_total_human: '1.7 MiB',
+                block_read: 10485760,
+                block_read_human: '10 MiB',
+                block_write: 5242880,
+                block_write_human: '5 MiB',
+                block_total: 15728640,
+                block_total_human: '15 MiB',
+                pids: 10
               },
-              stream: 'stdout',
               timestamp: 1234567891123
             },
             'container-stats-completed': {

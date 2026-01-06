@@ -13,6 +13,123 @@ function stripAnsi(str) {
 }
 
 /**
+ * Format bytes to human-readable string with binary/decimal support
+ * @param {number} bytes - Bytes to format
+ * @param {string} byteFormat - 'binary' or 'decimal'
+ * @returns {string} Formatted string
+ */
+function formatBytes(bytes, byteFormat = 'binary') {
+  if (bytes === 0) return '0 B';
+
+  const isBinary = byteFormat === 'binary';
+  const k = isBinary ? 1024 : 1000;
+  const sizes = isBinary
+    ? ['B', 'KiB', 'MiB', 'GiB', 'TiB']
+    : ['B', 'KB', 'MB', 'GB', 'TB'];
+
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+/**
+ * Format memory bytes - always binary (GiB/MiB) for RAM
+ * @param {number} bytes - Bytes to format
+ * @returns {string} Formatted string
+ */
+function formatMemoryBytes(bytes) {
+  if (bytes === 0) return '0 B';
+
+  const k = 1024; // Always binary for memory
+  const sizes = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+/**
+ * Calculate and format Docker container stats
+ * @param {Object} raw - Raw stats from Docker API
+ * @param {Object} user - User object with byte_format preference
+ * @returns {Object} Calculated and formatted stats
+ */
+function calculateContainerStats(raw, user = null) {
+  const byteFormat = user?.byte_format || 'binary';
+
+  // CPU calculation
+  let cpuPercent = 0;
+  if (raw.cpu_stats && raw.precpu_stats) {
+    const cpuDelta = raw.cpu_stats.cpu_usage.total_usage - raw.precpu_stats.cpu_usage.total_usage;
+    const systemDelta = raw.cpu_stats.system_cpu_usage - raw.precpu_stats.system_cpu_usage;
+    const cpuCount = raw.cpu_stats.online_cpus || raw.cpu_stats.cpu_usage.percpu_usage?.length || 1;
+    if (systemDelta > 0 && cpuDelta > 0) {
+      cpuPercent = (cpuDelta / systemDelta) * cpuCount * 100;
+    }
+  }
+
+  // Memory calculation (always binary for RAM)
+  let memoryUsage = 0;
+  let memoryLimit = 0;
+  let memoryPercent = 0;
+  if (raw.memory_stats) {
+    memoryUsage = raw.memory_stats.usage - (raw.memory_stats.stats?.cache || 0);
+    memoryLimit = raw.memory_stats.limit;
+    if (memoryLimit > 0) {
+      memoryPercent = (memoryUsage / memoryLimit) * 100;
+    }
+  }
+
+  // Network calculation
+  let networkRx = 0;
+  let networkTx = 0;
+  if (raw.networks) {
+    for (const iface of Object.values(raw.networks)) {
+      networkRx += iface.rx_bytes || 0;
+      networkTx += iface.tx_bytes || 0;
+    }
+  }
+  const networkTotal = networkRx + networkTx;
+
+  // Block I/O calculation
+  let blockRead = 0;
+  let blockWrite = 0;
+  if (raw.blkio_stats?.io_service_bytes_recursive) {
+    for (const entry of raw.blkio_stats.io_service_bytes_recursive) {
+      if (entry.op === 'read' || entry.op === 'Read') {
+        blockRead += entry.value || 0;
+      } else if (entry.op === 'write' || entry.op === 'Write') {
+        blockWrite += entry.value || 0;
+      }
+    }
+  }
+  const blockTotal = blockRead + blockWrite;
+
+  // PIDs
+  const pids = raw.pids_stats?.current || 0;
+
+  return {
+    cpu_percent: parseFloat(cpuPercent.toFixed(2)),
+    memory_percent: parseFloat(memoryPercent.toFixed(2)),
+    memory_usage: memoryUsage,
+    memory_usage_human: formatMemoryBytes(memoryUsage),
+    memory_limit: memoryLimit,
+    memory_limit_human: formatMemoryBytes(memoryLimit),
+    network_rx: networkRx,
+    network_rx_human: formatBytes(networkRx, byteFormat),
+    network_tx: networkTx,
+    network_tx_human: formatBytes(networkTx, byteFormat),
+    network_total: networkTotal,
+    network_total_human: formatBytes(networkTotal, byteFormat),
+    block_read: blockRead,
+    block_read_human: formatBytes(blockRead, byteFormat),
+    block_write: blockWrite,
+    block_write_human: formatBytes(blockWrite, byteFormat),
+    block_total: blockTotal,
+    block_total_human: formatBytes(blockTotal, byteFormat),
+    pids
+  };
+}
+
+/**
  * Docker WebSocket Manager - Handles real-time Docker operations with streaming output
  * @class DockerWebSocketManager
  * @extends EventEmitter
@@ -207,8 +324,8 @@ class DockerWebSocketManager extends EventEmitter {
         // Join operation room
         socket.join(`operation-${operationId}`);
 
-        // Execute stats stream
-        await this.executeContainerStats(socket.id, operationId, name);
+        // Execute stats stream with user for byte_format preference
+        await this.executeContainerStats(socket.id, operationId, name, authResult.user);
 
       } catch (error) {
         console.error('Error in docker-stats-subscribe:', error);
@@ -1545,8 +1662,12 @@ class DockerWebSocketManager extends EventEmitter {
 
   /**
    * Execute container stats stream using Docker Socket API via Axios
+   * @param {string} socketId - Socket ID
+   * @param {string} operationId - Operation ID
+   * @param {string} containerName - Container name
+   * @param {Object} user - User object with byte_format preference
    */
-  async executeContainerStats(socketId, operationId, containerName) {
+  async executeContainerStats(socketId, operationId, containerName, user = null) {
     this.sendUpdate(null, operationId, 'started', {
       operation: 'container-stats',
       name: containerName
@@ -1601,11 +1722,11 @@ class DockerWebSocketManager extends EventEmitter {
         for (const line of lines) {
           if (line.trim()) {
             try {
-              const stats = JSON.parse(line);
-              // Send parsed stats directly
+              const rawStats = JSON.parse(line);
+              // Calculate and format stats
+              const stats = calculateContainerStats(rawStats, user);
               this.sendUpdate(null, operationId, 'running', {
-                stats,
-                stream: 'stdout'
+                stats
               });
             } catch (e) {
               // Skip malformed JSON
