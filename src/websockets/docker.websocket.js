@@ -765,17 +765,7 @@ class DockerWebSocketManager extends EventEmitter {
    */
   async executeCommandWithStream(operationId, command, args = [], operationType, params = {}, options = {}) {
     return new Promise((resolve, reject) => {
-      const process = spawn(command, args, {
-        ...options,
-        shell: false,
-        env: {
-          ...process.env,
-          ...options.env,
-          TERM: 'dumb',
-          NO_COLOR: '1',
-          FORCE_COLOR: '0'
-        }
-      });
+      const process = spawn(command, args, { ...options, shell: false });
 
       const startTime = Date.now();
 
