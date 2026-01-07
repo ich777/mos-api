@@ -1887,14 +1887,15 @@ class DisksService {
       // Load mounts once
       const mounts = await this._getMountInfo();
 
-      // Build set of base disks used in pools
+      // Build set of devices used in pools (both original device AND base disk)
       const poolDisks = new Set();
       for (const pool of pools) {
         // Collect data devices
         if (pool.data_devices) {
           for (const device of pool.data_devices) {
             if (device.device) {
-              // Get base disk (converts partition to whole disk)
+              // Add both the actual device (e.g., /dev/sdb3) AND the base disk (e.g., /dev/sdb)
+              poolDisks.add(device.device);
               poolDisks.add(this._getBaseDisk(device.device));
             }
           }
@@ -1903,7 +1904,8 @@ class DisksService {
         if (pool.parity_devices) {
           for (const device of pool.parity_devices) {
             if (device.device) {
-              // Get base disk (converts partition to whole disk)
+              // Add both the actual device AND the base disk
+              poolDisks.add(device.device);
               poolDisks.add(this._getBaseDisk(device.device));
             }
           }
@@ -1964,7 +1966,7 @@ class DisksService {
                 device: partition.device,
                 name: partition.device.replace('/dev/', ''),
                 size: partition.size,
-                sizeHuman: this.formatBytes(partition.size, user),
+                size_human: this.formatBytes(partition.size, user),
                 type: disk.type,
                 rotational: disk.rotational,
                 removable: disk.removable,
