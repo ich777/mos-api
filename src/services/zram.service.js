@@ -367,6 +367,14 @@ class ZramService {
       if (newConfig.zram_devices !== undefined && newConfig.zram_devices !== newConfig.devices.length) {
         throw new Error(`zram_devices (${newConfig.zram_devices}) must match devices array length (${newConfig.devices.length})`);
       }
+      
+      // Check for duplicate indices
+      const indices = newConfig.devices.map(d => d.index).filter(i => i !== undefined);
+      const uniqueIndices = new Set(indices);
+      if (indices.length !== uniqueIndices.size) {
+        throw new Error('Duplicate device indices are not allowed. Each device must have a unique index.');
+      }
+      
       // Validate and ensure id/uuid for each device
       for (const device of newConfig.devices) {
         this._validateDevice(device);
@@ -445,6 +453,17 @@ class ZramService {
           await execPromise(`cat /sys/class/zram-control/hot_add`);
         }
         await this._setupDevice(newDev);
+      }
+    }
+
+    // Phase 4: Remove excess kernel devices
+    const maxNeededIndex = Math.max(...newDevices.filter(d => d.enabled).map(d => d.index), -1);
+    const finalKernelDevices = await this.getKernelDeviceCount();
+    for (let i = finalKernelDevices - 1; i > maxNeededIndex; i--) {
+      try {
+        await execPromise(`echo ${i} > /sys/class/zram-control/hot_remove`);
+      } catch {
+        // Device might be in use or already removed
       }
     }
   }
