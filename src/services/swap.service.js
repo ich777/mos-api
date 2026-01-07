@@ -48,7 +48,6 @@ class SwapService {
         shrinker: true,
         max_pool_percent: 20,
         compressor: 'zstd',
-        zpool: 'zsmalloc',
         accept_threshold_percent: 90
       }
     };
@@ -379,13 +378,12 @@ class SwapService {
 
   /**
    * Configure zswap kernel parameters
-   * For compressor/zpool/shrinker changes, zswap must be disabled first, then re-enabled
+   * For compressor/shrinker changes, zswap must be disabled first, then re-enabled
    * @param {Object} config - Zswap configuration
    * @param {boolean} config.zswap - Enable/disable zswap
    * @param {boolean} config.shrinker - Enable shrinker
    * @param {number} config.max_pool_percent - Max pool percent
    * @param {string} config.compressor - Compression algorithm
-   * @param {string} config.zpool - Zpool allocator
    * @param {number} config.accept_threshold_percent - Accept threshold percent
    * @param {Object} previousConfig - Previous zswap configuration (for detecting changes)
    * @returns {Promise<void>}
@@ -408,7 +406,6 @@ class SwapService {
     // Check if critical parameters changed that require zswap restart
     const needsRestart = previousConfig && config.zswap && (
       (config.compressor && config.compressor !== previousConfig.compressor) ||
-      (config.zpool && config.zpool !== previousConfig.zpool) ||
       (config.shrinker !== undefined && config.shrinker !== previousConfig.shrinker)
     );
 
@@ -420,7 +417,7 @@ class SwapService {
       await new Promise(resolve => setTimeout(resolve, 100));
     }
 
-    // Configure parameters BEFORE enabling (compressor/zpool must be set while disabled)
+    // Configure parameters BEFORE enabling (compressor must be set while disabled)
     if (config.zswap || needsRestart) {
       // Set compressor (must be done while zswap is disabled for changes)
       if (config.compressor) {
@@ -430,15 +427,6 @@ class SwapService {
         } catch (error) {
           console.warn(`[Zswap] Could not set compressor: ${error.message}`);
         }
-      }
-
-      // Set zpool (must be done while zswap is disabled for changes)
-      const zpool = config.zpool || 'zsmalloc';
-      try {
-        await execPromise(`echo "${zpool}" > ${zswapPath}/zpool`);
-        console.log(`[Zswap] Zpool set to: ${zpool}`);
-      } catch (error) {
-        console.warn(`[Zswap] Could not set zpool: ${error.message}`);
       }
     }
 
@@ -511,7 +499,6 @@ class SwapService {
     // Merge config with defaults
     const currentConfig = currentSwapfile.config || {};
     const newConfig = { ...currentConfig, ...newSwapfile.config };
-    if (!newConfig.zpool) newConfig.zpool = 'zsmalloc';
 
     const pathChanged = newPath !== currentPath;
     const sizeChanged = newSize !== currentSize;
@@ -601,17 +588,15 @@ class SwapService {
       let zswapStatus = null;
       try {
         const zswapPath = '/sys/module/zswap/parameters';
-        const [enabled, compressor, zpool, maxPool] = await Promise.all([
+        const [enabled, compressor, maxPool] = await Promise.all([
           execPromise(`cat ${zswapPath}/enabled`).then(r => r.stdout.trim() === 'Y').catch(() => false),
           execPromise(`cat ${zswapPath}/compressor`).then(r => r.stdout.trim()).catch(() => 'unknown'),
-          execPromise(`cat ${zswapPath}/zpool`).then(r => r.stdout.trim()).catch(() => 'unknown'),
           execPromise(`cat ${zswapPath}/max_pool_percent`).then(r => parseInt(r.stdout.trim(), 10)).catch(() => 0)
         ]);
 
         zswapStatus = {
           enabled,
           compressor,
-          zpool,
           max_pool_percent: maxPool
         };
       } catch {
@@ -637,15 +622,6 @@ class SwapService {
     return ['lzo', 'lz4', 'lz4hc', 'zstd', 'deflate', '842'];
   }
 
-  /**
-   * Get available zswap zpool allocators
-   * GET /mos/zswap/zpools
-   * @returns {string[]} List of available zpool allocators
-   */
-  getZpools() {
-    // Static list of zpool allocators
-    return ['zbud', 'z3fold', 'zsmalloc'];
-  }
 }
 
 module.exports = new SwapService();

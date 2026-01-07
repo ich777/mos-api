@@ -417,10 +417,6 @@ const { checkRole } = require('../middleware/auth.middleware');
      *                   type: string
      *                   description: Compression algorithm (zstd, lz4, lzo, etc.)
      *                   example: "zstd"
-     *                 zpool:
-     *                   type: string
-     *                   description: Zpool allocator (zsmalloc, z3fold, zbud)
-     *                   example: "zsmalloc"
      *                 accept_threshold_percent:
      *                   type: integer
      *                   description: Accept threshold percentage
@@ -1370,10 +1366,6 @@ router.get('/settings/system', async (req, res) => {
  *                         type: string
  *                         description: Compression algorithm (default zstd)
  *                         example: "zstd"
- *                       zpool:
- *                         type: string
- *                         description: Zpool allocator (default zsmalloc)
- *                         example: "zsmalloc"
  *                       accept_threshold_percent:
  *                         type: integer
  *                         description: Accept threshold percentage (default 90)
@@ -5671,41 +5663,6 @@ router.get('/zswap/algorithms', (req, res) => {
 
 /**
  * @swagger
- * /mos/zswap/zpools:
- *   get:
- *     summary: Get available zswap zpool allocators
- *     description: Returns list of zpool allocators supported by the kernel for zswap
- *     tags: [MOS]
- *     security:
- *       - bearerAuth: []
- *     responses:
- *       200:
- *         description: List of available zpool allocators
- *         content:
- *           application/json:
- *             schema:
- *               type: array
- *               items:
- *                 type: string
- *               example: ["zbud", "z3fold", "zsmalloc"]
- *       401:
- *         description: Not authenticated
- *       500:
- *         description: Server error
- */
-
-// GET: Available zswap zpool allocators
-router.get('/zswap/zpools', (req, res) => {
-  try {
-    const zpools = swapService.getZpools();
-    res.json(zpools);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-/**
- * @swagger
  * /mos/zswap/status:
  *   get:
  *     summary: Get swap and zswap status
@@ -5742,8 +5699,6 @@ router.get('/zswap/zpools', (req, res) => {
  *                     enabled:
  *                       type: boolean
  *                     compressor:
- *                       type: string
- *                     zpool:
  *                       type: string
  *                     max_pool_percent:
  *                       type: integer
