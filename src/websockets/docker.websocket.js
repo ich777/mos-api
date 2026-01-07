@@ -19,7 +19,7 @@ function stripAnsi(str) {
  * @returns {string} Formatted string
  */
 function formatBytes(bytes, byteFormat = 'binary') {
-  if (bytes === 0) return '0 B';
+  if (!bytes || bytes <= 0 || !isFinite(bytes)) return '0 B';
 
   const isBinary = byteFormat === 'binary';
   const k = isBinary ? 1024 : 1000;
@@ -37,7 +37,7 @@ function formatBytes(bytes, byteFormat = 'binary') {
  * @returns {string} Formatted string
  */
 function formatMemoryBytes(bytes) {
-  if (bytes === 0) return '0 B';
+  if (!bytes || bytes <= 0 || !isFinite(bytes)) return '0 B';
 
   const k = 1024; // Always binary for memory
   const sizes = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
