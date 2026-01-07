@@ -3842,7 +3842,7 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
         extra_partition,
         command,
         output: stdout,
-        error: stderr || null,
+        error: null,
         timestamp: new Date().toISOString()
       };
 
