@@ -1,9 +1,12 @@
 const fs = require('fs').promises;
 const path = require('path');
+const net = require('net');
 const { exec } = require('child_process');
 const util = require('util');
 const execPromise = util.promisify(exec);
 const PoolsService = require('./pools.service');
+
+const MOS_NOTIFY_SOCKET = '/run/mos-notify.sock';
 
 /**
  * Swap Service - Manages swapfile and zswap configuration
@@ -11,6 +14,19 @@ const PoolsService = require('./pools.service');
 class SwapService {
   constructor() {
     this.configPath = '/boot/config/system.json';
+    this._busy = false;
+  }
+
+  /**
+   * Send notification via mos-notify socket
+   * @private
+   */
+  _notify(message, priority = 'normal') {
+    const client = net.createConnection(MOS_NOTIFY_SOCKET, () => {
+      client.write(JSON.stringify({ title: 'Swapfile', message, priority }));
+      client.end();
+    });
+    client.on('error', () => {});
   }
 
   // ============================================================
@@ -324,6 +340,7 @@ class SwapService {
     await execPromise(`swapon --priority ${priority} "${swapfilePath}"`);
 
     console.log(`[Swapfile] Swapfile ${swapfilePath} created and activated (${size}, priority=${priority})`);
+    this._notify(`Swapfile created and activated (${size})`);
   }
 
   /**
@@ -351,6 +368,7 @@ class SwapService {
     // Remove file
     console.log(`[Swapfile] Removing swapfile ${swapfilePath}`);
     await fs.unlink(swapfilePath);
+    this._notify('Swapfile removed');
 
     return true;
   }
@@ -463,6 +481,21 @@ class SwapService {
    * @returns {Promise<Object>} Updated swapfile config
    */
   async handleUpdate(currentSwapfile, newSwapfile) {
+    if (this._busy) throw new Error('A swapfile operation is already in progress');
+    this._busy = true;
+
+    try {
+      const result = await this._handleUpdateInternal(currentSwapfile, newSwapfile);
+      // Only reset _busy if not running in background
+      if (result.status !== 'creating') this._busy = false;
+      return result;
+    } catch (error) {
+      this._busy = false;
+      throw error;
+    }
+  }
+
+  async _handleUpdateInternal(currentSwapfile, newSwapfile) {
     const wasEnabled = currentSwapfile.enabled;
     const willBeEnabled = newSwapfile.enabled !== undefined ? newSwapfile.enabled : wasEnabled;
 
@@ -477,16 +510,9 @@ class SwapService {
 
     // Merge config with defaults
     const currentConfig = currentSwapfile.config || {};
-    const newConfig = { ...currentConfig };
-    if (newSwapfile.config) {
-      Object.assign(newConfig, newSwapfile.config);
-    }
-    // Ensure zpool default
-    if (!newConfig.zpool) {
-      newConfig.zpool = 'zsmalloc';
-    }
+    const newConfig = { ...currentConfig, ...newSwapfile.config };
+    if (!newConfig.zpool) newConfig.zpool = 'zsmalloc';
 
-    // Determine if swapfile needs to be recreated
     const pathChanged = newPath !== currentPath;
     const sizeChanged = newSize !== currentSize;
     const priorityChanged = newPriority !== currentPriority;
@@ -494,85 +520,61 @@ class SwapService {
 
     // Handle disable
     if (wasEnabled && !willBeEnabled) {
-      console.log('[Swapfile] Disabling swapfile');
-      if (currentPath) {
-        await this.removeSwapfile(currentPath);
-      }
-      // Disable zswap (pass current config for comparison)
+      if (currentPath) await this.removeSwapfile(currentPath);
       await this.configureZswap({ ...newConfig, zswap: false }, currentConfig);
-
-      return {
-        enabled: false,
-        path: newPath,
-        size: newSize,
-        priority: newPriority,
-        config: newConfig
-      };
+      return { enabled: false, path: newPath, size: newSize, priority: newPriority, config: newConfig };
     }
 
     // Handle enable or update
     if (willBeEnabled) {
-      if (!newPath) {
-        throw new Error('Swapfile path is required when enabling swapfile');
-      }
+      if (!newPath) throw new Error('Swapfile path is required when enabling swapfile');
 
-      // Validate new path
       const validation = await this.validateSwapfilePath(newPath, newSize);
-      if (!validation.valid) {
-        throw new Error(validation.error);
-      }
+      if (!validation.valid) throw new Error(validation.error);
 
-      // Check if swapfile needs to be created or recreated
       const swapfilePath = this.getSwapfilePath(newPath);
       const isActive = await this.isSwapfileActive(swapfilePath);
 
       if (!wasEnabled || needsRecreate) {
-        // Remove old swapfile if path changed
-        if (wasEnabled && currentPath && pathChanged) {
-          await this.removeSwapfile(currentPath);
-        }
+        if (wasEnabled && currentPath && pathChanged) await this.removeSwapfile(currentPath);
+        if (wasEnabled && !pathChanged && (sizeChanged || priorityChanged) && isActive) await this.removeSwapfile(newPath);
 
-        // Remove and recreate if size or priority changed
-        if (wasEnabled && !pathChanged && (sizeChanged || priorityChanged) && isActive) {
-          await this.removeSwapfile(newPath);
-        }
-
-        // Only create if not already active with correct settings
         if (!isActive || needsRecreate) {
-          await this.createSwapfile(newPath, newSize, validation.isBtrfs, newPriority);
+          // Run in background - don't await
+          this._createInBackground(newPath, newSize, validation.isBtrfs, newPriority, newConfig, currentConfig);
+          return { enabled: true, path: newPath, size: newSize, priority: newPriority, config: newConfig, status: 'creating' };
         }
       } else if (!isActive) {
-        // Swapfile was enabled but not active - try to reactivate
         try {
           await fs.access(swapfilePath);
           await execPromise(`swapon --priority ${newPriority} "${swapfilePath}"`);
-          console.log(`[Swapfile] Reactivated existing swapfile at ${swapfilePath}`);
+          this._notify('Swapfile reactivated');
         } catch {
-          // Swapfile doesn't exist, create it
-          await this.createSwapfile(newPath, newSize, validation.isBtrfs, newPriority);
+          this._createInBackground(newPath, newSize, validation.isBtrfs, newPriority, newConfig, currentConfig);
+          return { enabled: true, path: newPath, size: newSize, priority: newPriority, config: newConfig, status: 'creating' };
         }
       }
 
-      // Configure zswap (pass current config for comparison to handle restarts)
       await this.configureZswap(newConfig, currentConfig);
-
-      return {
-        enabled: true,
-        path: newPath,
-        size: newSize,
-        priority: newPriority,
-        config: newConfig
-      };
+      return { enabled: true, path: newPath, size: newSize, priority: newPriority, config: newConfig, status: 'ready' };
     }
 
-    // No change in enabled state and was disabled
-    return {
-      enabled: false,
-      path: newPath,
-      size: newSize,
-      priority: newPriority,
-      config: newConfig
-    };
+    return { enabled: false, path: newPath, size: newSize, priority: newPriority, config: newConfig };
+  }
+
+  /**
+   * Create swapfile in background with notification on completion
+   * @private
+   */
+  async _createInBackground(path, size, isBtrfs, priority, config, prevConfig) {
+    try {
+      await this.createSwapfile(path, size, isBtrfs, priority);
+      await this.configureZswap(config, prevConfig);
+    } catch (error) {
+      this._notify(`Creation failed: ${error.message}`, 'high');
+    } finally {
+      this._busy = false;
+    }
   }
 
   /**

@@ -5704,4 +5704,63 @@ router.get('/zswap/zpools', (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /mos/zswap/status:
+ *   get:
+ *     summary: Get swap and zswap status
+ *     description: Returns current swap status including active swaps, zswap configuration, and any pending operations
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Swap status retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 swaps:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       filename:
+ *                         type: string
+ *                       type:
+ *                         type: string
+ *                       size:
+ *                         type: integer
+ *                       used:
+ *                         type: integer
+ *                       priority:
+ *                         type: integer
+ *                 zswap:
+ *                   type: object
+ *                   properties:
+ *                     enabled:
+ *                       type: boolean
+ *                     compressor:
+ *                       type: string
+ *                     zpool:
+ *                       type: string
+ *                     max_pool_percent:
+ *                       type: integer
+ *       401:
+ *         description: Not authenticated
+ *       500:
+ *         description: Server error
+ */
+
+// GET: Swap and zswap status
+router.get('/zswap/status', async (req, res) => {
+  try {
+    const status = await swapService.getStatus();
+    res.json(status);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 module.exports = router;
