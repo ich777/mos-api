@@ -367,14 +367,14 @@ class ZramService {
       if (newConfig.zram_devices !== undefined && newConfig.zram_devices !== newConfig.devices.length) {
         throw new Error(`zram_devices (${newConfig.zram_devices}) must match devices array length (${newConfig.devices.length})`);
       }
-      
+
       // Check for duplicate indices
       const indices = newConfig.devices.map(d => d.index).filter(i => i !== undefined);
       const uniqueIndices = new Set(indices);
       if (indices.length !== uniqueIndices.size) {
         throw new Error('Duplicate device indices are not allowed. Each device must have a unique index.');
       }
-      
+
       // Validate and ensure id/uuid for each device
       for (const device of newConfig.devices) {
         this._validateDevice(device);

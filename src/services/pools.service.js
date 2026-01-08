@@ -1520,6 +1520,7 @@ class PoolsService {
     try {
       // Validate inputs
       if (!name) throw new Error('Pool name is required');
+      PoolHelpers.validatePoolName(name);
 
       // Auto-generate passphrase if needed
       if (options.config?.encrypted) {
@@ -2782,6 +2783,7 @@ class PoolsService {
     try {
       // Validate inputs
       if (!name) throw new Error('Pool name is required');
+      PoolHelpers.validatePoolName(name);
       if (!device) throw new Error('Device path is required');
 
       // Auto-generate passphrase if needed
@@ -5548,6 +5550,7 @@ class PoolsService {
     try {
       // Validate inputs
       if (!name) throw new Error('Pool name is required');
+      PoolHelpers.validatePoolName(name);
       if (!Array.isArray(devices) || devices.length === 0) {
         throw new Error('At least one data device is required for a MergerFS pool');
       }
@@ -6022,6 +6025,7 @@ class PoolsService {
     try {
       // Validate inputs
       if (!name) throw new Error('Pool name is required');
+      PoolHelpers.validatePoolName(name);
       if (!Array.isArray(devices) || devices.length === 0) {
         throw new Error('At least one data device is required for a NonRAID pool');
       }

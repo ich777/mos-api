@@ -73,6 +73,12 @@ class PoolHelpers {
       throw new Error('Pool name can only contain letters, numbers, underscores, and hyphens');
     }
 
+    // Reserved pool names that are not allowed
+    const reservedNames = ['remotes'];
+    if (reservedNames.includes(name.toLowerCase())) {
+      throw new Error(`Pool name '${name}' is reserved and cannot be used`);
+    }
+
     return true;
   }
 
