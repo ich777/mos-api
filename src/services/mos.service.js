@@ -1921,10 +1921,6 @@ class MosService {
           nfsValue = services.nfs.enabled;
         }
         current.services.nfs.enabled = services.nfs.enabled;
-        // Add exports if necessary
-        if (Array.isArray(services.nfs.exports)) {
-          current.services.nfs.exports = services.nfs.exports;
-        }
       }
 
       // Handle nut service
@@ -2020,9 +2016,9 @@ class MosService {
       }
       if (nfsChanged) {
         if (nfsValue === false) {
-          await execPromise('/etc/init.d/umountnfs.sh stop');
+          await execPromise('/etc/init.d/nfs-kernel-server stop');
         } else if (nfsValue === true) {
-          await execPromise('/etc/init.d/mountnfs.sh start');
+          await execPromise('/etc/init.d/nfs-kernel-server start');
         }
       }
       if (nutChanged) {
