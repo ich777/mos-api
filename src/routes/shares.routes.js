@@ -206,10 +206,10 @@ const sharesService = require('../services/shares.service');
  *           nullable: true
  *           description: Anonymous UID mapping
  *           example: 65534
- *         anonpid:
+ *         anongid:
  *           type: integer
  *           nullable: true
- *           description: Anonymous PID mapping
+ *           description: Anonymous GID mapping
  *           example: 65534
  *         write_operations:
  *           type: string
@@ -222,10 +222,9 @@ const sharesService = require('../services/shares.service');
  *           enum: [root_squash, no_root_squash, all_squash]
  *           example: "root_squash"
  *         secure:
- *           type: string
- *           description: Security mode
- *           enum: ["true", "false"]
- *           example: "true"
+ *           type: boolean
+ *           description: Use secure ports (1024 and below)
+ *           example: true
  *         policies:
  *           type: array
  *           items:
@@ -300,10 +299,10 @@ const sharesService = require('../services/shares.service');
  *           nullable: true
  *           description: Anonymous UID mapping for squashed users
  *           example: 65534
- *         anonpid:
+ *         anongid:
  *           type: integer
  *           nullable: true
- *           description: Anonymous PID mapping for squashed users
+ *           description: Anonymous GID mapping for squashed users
  *           example: 65534
  *         write_operations:
  *           type: string
@@ -318,11 +317,10 @@ const sharesService = require('../services/shares.service');
  *           default: "root_squash"
  *           example: "root_squash"
  *         secure:
- *           type: string
+ *           type: boolean
  *           description: Use secure ports (1024 and below)
- *           enum: ["true", "false"]
- *           default: "true"
- *           example: "true"
+ *           default: true
+ *           example: true
  *         createDirectory:
  *           type: boolean
  *           description: Create share directory if it doesn't exist
@@ -406,10 +404,10 @@ const sharesService = require('../services/shares.service');
  *           nullable: true
  *           description: Anonymous UID mapping for squashed users
  *           example: 65534
- *         anonpid:
+ *         anongid:
  *           type: integer
  *           nullable: true
- *           description: Anonymous PID mapping for squashed users
+ *           description: Anonymous GID mapping for squashed users
  *           example: 65534
  *         write_operations:
  *           type: string
@@ -422,10 +420,9 @@ const sharesService = require('../services/shares.service');
  *           enum: [root_squash, no_root_squash, all_squash]
  *           example: "root_squash"
  *         secure:
- *           type: string
+ *           type: boolean
  *           description: Use secure ports (1024 and below)
- *           enum: ["true", "false"]
- *           example: "true"
+ *           example: true
  *         targetDevices:
  *           type: array
  *           items:
@@ -671,10 +668,10 @@ router.get('/smb', checkRole(['admin']), async (req, res) => {
  *                 enabled: true
  *                 read_only: false
  *                 anonuid: null
- *                 anonpid: null
+ *                 anongid: null
  *                 write_operations: "sync"
  *                 mapping: "root_squash"
- *                 secure: "true"
+ *                 secure: true
  *               - id: "1640995200000def456"
  *                 name: "documents"
  *                 path: "/mnt/storage-pool/docs"
@@ -682,10 +679,10 @@ router.get('/smb', checkRole(['admin']), async (req, res) => {
  *                 enabled: true
  *                 read_only: true
  *                 anonuid: 65534
- *                 anonpid: 65534
+ *                 anongid: 65534
  *                 write_operations: "sync"
  *                 mapping: "all_squash"
- *                 secure: "true"
+ *                 secure: true
  *       401:
  *         description: Not authenticated
  *         content:
@@ -1150,10 +1147,10 @@ router.post('/smb', checkRole(['admin']), async (req, res) => {
  *                 enabled: true
  *                 read_only: false
  *                 anonuid: null
- *                 anonpid: null
+ *                 anongid: null
  *                 write_operations: "sync"
  *                 mapping: "root_squash"
- *                 secure: "true"
+ *                 secure: true
  *             absolute_path_share:
  *               summary: NFS share with absolute path (no pool)
  *               value:
@@ -1164,10 +1161,10 @@ router.post('/smb', checkRole(['admin']), async (req, res) => {
  *                 enabled: true
  *                 read_only: false
  *                 anonuid: null
- *                 anonpid: null
+ *                 anongid: null
  *                 write_operations: "sync"
  *                 mapping: "root_squash"
- *                 secure: "true"
+ *                 secure: true
  *             mergerfs_share_with_slots:
  *               summary: MergerFS share with specific disk slots
  *               value:
@@ -1179,10 +1176,10 @@ router.post('/smb', checkRole(['admin']), async (req, res) => {
  *                 enabled: true
  *                 read_only: false
  *                 anonuid: 65534
- *                 anonpid: 65534
+ *                 anongid: 65534
  *                 write_operations: "sync"
  *                 mapping: "all_squash"
- *                 secure: "true"
+ *                 secure: true
  *                 createDirectories: true
  *                 managePathRules: true
  *             public_share:
@@ -1196,7 +1193,7 @@ router.post('/smb', checkRole(['admin']), async (req, res) => {
  *                 read_only: true
  *                 mapping: "all_squash"
  *                 anonuid: 65534
- *                 anonpid: 65534
+ *                 anongid: 65534
  *     responses:
  *       201:
  *         description: NFS share created successfully
@@ -1221,10 +1218,10 @@ router.post('/nfs', checkRole(['admin']), async (req, res) => {
       enabled = true,
       read_only = false,
       anonuid = null,
-      anonpid = null,
+      anongid = null,
       write_operations = "sync",
       mapping = "root_squash",
-      secure = "true",
+      secure = true,
       createDirectory = true,
       targetDevices = null,
       createDirectories = true,
@@ -1298,10 +1295,10 @@ router.post('/nfs', checkRole(['admin']), async (req, res) => {
       });
     }
 
-    if (secure && !['true', 'false'].includes(secure)) {
+    if (secure !== undefined && typeof secure !== 'boolean') {
       return res.status(400).json({
         success: false,
-        error: 'secure must be either "true" or "false"'
+        error: 'secure must be a boolean'
       });
     }
 
@@ -1318,7 +1315,7 @@ router.post('/nfs', checkRole(['admin']), async (req, res) => {
       enabled,
       read_only,
       anonuid,
-      anonpid,
+      anongid,
       write_operations,
       mapping,
       secure,
@@ -2082,7 +2079,7 @@ router.get('/nfs/:shareId', checkRole(['admin']), async (req, res) => {
  *             read_only: true
  *             mapping: "all_squash"
  *             anonuid: 65534
- *             anonpid: 65534
+ *             anongid: 65534
  *     responses:
  *       200:
  *         description: NFS share updated successfully
@@ -2133,10 +2130,10 @@ router.put('/nfs/:shareId', checkRole(['admin']), async (req, res) => {
       });
     }
 
-    if (updates.secure && !['true', 'false'].includes(updates.secure)) {
+    if (updates.secure !== undefined && typeof updates.secure !== 'boolean') {
       return res.status(400).json({
         success: false,
-        error: 'secure must be either "true" or "false"'
+        error: 'secure must be a boolean'
       });
     }
 

@@ -32,8 +32,8 @@ class SharesService {
    */
   async _restartNfsd() {
     try {
-      // Devuan/SysV init - Restart mountnfs (re-generated exports automatically)
-      await execAsync('/etc/init.d/mountnfs.sh generate');
+      // Devuan/SysV init - Regenerate exports and reload NFS server
+      await execAsync('/etc/init.d/nfs-kernel-server restart');
       return true;
     } catch (error) {
       console.error(`Error restarting NFS daemon: ${error.message}`);
@@ -388,14 +388,14 @@ class SharesService {
    */
   _createNfsShareConfig(shareName, sharePath, options = {}) {
     const {
-      source = "10.0.0.0/24",
+      source = "192.168.1.0/24",
       enabled = true,
       read_only = false,
       anonuid = null,
-      anonpid = null,
+      anongid = null,
       write_operations = "sync",
       mapping = "root_squash",
-      secure = "true",
+      secure = true,
       target_devices = null
     } = options;
 
@@ -407,7 +407,7 @@ class SharesService {
       enabled,
       read_only,
       anonuid,
-      anonpid,
+      anongid,
       write_operations,
       mapping,
       secure
