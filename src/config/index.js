@@ -195,7 +195,7 @@ class Config {
   }
 
   get jwtExpiryDays() {
-    return parseInt(process.env.JWT_EXPIRY_DAYS) || 1;
+    return parseInt(process.env.JWT_EXPIRY_DAYS) || 7;
   }
 
   get jwtExpiryString() {
