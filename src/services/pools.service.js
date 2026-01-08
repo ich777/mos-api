@@ -3249,6 +3249,23 @@ class PoolsService {
         }
       }
 
+      // Check active swap files on pool
+      try {
+        const { stdout } = await execPromise('swapon --show=NAME --noheadings 2>/dev/null || true');
+        const swapFiles = stdout.trim().split('\n').filter(s => s);
+        for (const swapFile of swapFiles) {
+          if (await isPathOnPool(swapFile)) {
+            dependencies.push({
+              service: 'Swap',
+              type: 'swapfile',
+              path: swapFile,
+              description: 'Active swap file'
+            });
+          }
+        }
+      } catch (error) {
+        console.warn('Could not check swap files:', error.message);
+      }
 
       return {
         hasDependencies: dependencies.length > 0,
@@ -3284,12 +3301,11 @@ class PoolsService {
 
         if (dependencyCheck.hasDependencies) {
           const serviceList = dependencyCheck.dependencies.map(dep =>
-            `- ${dep.service} (${dep.description}: ${dep.path})`
-          ).join('\n');
+            `${dep.service} (${dep.path})`
+          ).join(', ');
 
           throw new Error(
-            `Cannot unmount pool "${pool.name}" because it is being used by active services:\n\n${serviceList}\n\n` +
-            `Please stop the affected services first, or use force=true to override this check.`
+            `Cannot unmount pool "${pool.name}": in use by ${serviceList}. Stop services first or use force=true.`
           );
         }
       }
@@ -3343,12 +3359,11 @@ class PoolsService {
 
         if (dependencyCheck.hasDependencies) {
           const serviceList = dependencyCheck.dependencies.map(dep =>
-            `- ${dep.service} (${dep.description}: ${dep.path})`
-          ).join('\n');
+            `${dep.service} (${dep.path})`
+          ).join(', ');
 
           throw new Error(
-            `Cannot delete pool "${pool.name}" because it is being used by active services:\n\n${serviceList}\n\n` +
-            `Please stop the affected services first, or use force=true to override this check.`
+            `Cannot delete pool "${pool.name}": in use by ${serviceList}. Stop services first or use force=true.`
           );
         }
       }
