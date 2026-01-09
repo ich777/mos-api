@@ -1,9 +1,17 @@
 const si = require('systeminformation');
-const { exec } = require('child_process');
+const { exec, spawn } = require('child_process');
 const util = require('util');
 const execPromise = util.promisify(exec);
 const fs = require('fs').promises;
 const path = require('path');
+const net = require('net');
+
+// MOS notify socket path
+const MOS_NOTIFY_SOCKET = '/var/run/mos-notify.sock';
+
+// Preclear log directory
+const PRECLEAR_LOG_DIR = '/var/log/preclear';
+const PRECLEAR_LOG_MAX_SIZE = 5 * 1024 * 1024; // 5MB
 
 class DisksService {
   constructor() {
@@ -19,6 +27,10 @@ class DisksService {
     // Temperature cache (separate from power status)
     this.temperatureCache = new Map(); // device -> { temperature, timestamp }
     this.temperatureCacheTTL = 12000;
+
+    // Preclear tracking
+    this.preclearRunning = new Map(); // device -> { algorithm, currentPass, totalPasses, startedAt }
+    this.preclearProcesses = new Map(); // device -> { process, aborted }
   }
 
   // ============================================================
@@ -1678,7 +1690,8 @@ class DisksService {
             usbInfo: powerStatus.usbInfo,
             partitions: [],
             performance: null,
-            standbySkipped: true
+            standbySkipped: true,
+            preclearRunning: this.isPreclearRunning(device)
           });
           continue;
         }
@@ -1706,7 +1719,8 @@ class DisksService {
           usbInfo: powerStatus.usbInfo,
           partitions,
           performance,
-          standbySkipped: false
+          standbySkipped: false,
+          preclearRunning: this.isPreclearRunning(device)
         });
       }
 
@@ -1732,7 +1746,8 @@ class DisksService {
             algorithm: ramdisk.algorithm,
             filesystem: ramdisk.filesystem,
             uuid: ramdisk.uuid
-          }
+          },
+          preclearRunning: false // ZRAM devices cannot have preClear
         });
       }
 
@@ -2370,21 +2385,592 @@ class DisksService {
     return { results };
   }
 
+  // ============================================================
+  // PRECLEAR OPERATIONS
+  // ============================================================
+
   /**
-   * Disk formatieren
+   * Send notification via mos-notify socket
+   * @private
    */
-  async formatDevice(device, filesystem, options = {}) {
-    const { partition = true, wipeExisting = true } = options;
+  async _sendNotification(title, message, priority = 'normal', delayMs = 1000) {
+    return new Promise((resolve) => {
+      const client = net.createConnection(MOS_NOTIFY_SOCKET, () => {
+        const payload = JSON.stringify({ title, message, priority });
+        client.write(payload);
+        client.end();
+        // Add delay after sending to ensure proper ordering
+        setTimeout(() => resolve(true), delayMs);
+      });
+      client.on('error', () => {
+        // Ignore notification errors - non-critical
+        setTimeout(() => resolve(false), delayMs);
+      });
+    });
+  }
+
+  /**
+   * Check if preClear is running on a device
+   * @param {string} device - Device path or name
+   * @returns {boolean}
+   */
+  isPreclearRunning(device) {
+    const devicePath = device.startsWith('/dev/') ? device : `/dev/${device}`;
+    return this.preclearRunning.has(devicePath);
+  }
+
+  /**
+   * Get preClear status for a device
+   * @param {string} device - Device path or name
+   * @returns {Object|null}
+   */
+  getPreclearStatus(device) {
+    const devicePath = device.startsWith('/dev/') ? device : `/dev/${device}`;
+    return this.preclearRunning.get(devicePath) || null;
+  }
+
+  /**
+   * Abort preClear operation on a device
+   * @param {string} device - Device path or name
+   * @returns {Object} Result
+   */
+  async abortPreClear(device) {
+    const devicePath = device.startsWith('/dev/') ? device : `/dev/${device}`;
+    const deviceName = devicePath.replace('/dev/', '');
+
+    if (!this.preclearRunning.has(devicePath)) {
+      throw new Error(`No preClear operation running on ${devicePath}`);
+    }
+
+    const processInfo = this.preclearProcesses.get(devicePath);
+    if (processInfo && processInfo.process) {
+      processInfo.aborted = true;
+      processInfo.process.kill('SIGTERM');
+
+      // Wait a bit and force kill if still running
+      setTimeout(() => {
+        if (processInfo.process && !processInfo.process.killed) {
+          processInfo.process.kill('SIGKILL');
+        }
+      }, 2000);
+    }
+
+    // Clean up
+    this.preclearRunning.delete(devicePath);
+    this.preclearProcesses.delete(devicePath);
+
+    // Send notification
+    await this._sendNotification(
+      'Preclear',
+      `Preclear aborted on ${deviceName}`,
+      'normal'
+    );
+
+    return {
+      success: true,
+      message: `Preclear operation on ${devicePath} aborted`,
+      device: devicePath
+    };
+  }
+
+  /**
+   * Execute a single wipe pass on a device
+   * @private
+   * @param {string} devicePath - Device path
+   * @param {string} algorithm - 'zero', 'ff', or 'random'
+   * @returns {Promise<boolean>} Success
+   */
+  async _executeWipePass(devicePath, algorithm) {
+    return new Promise((resolve, reject) => {
+      let ddProcess;
+      const processInfo = this.preclearProcesses.get(devicePath);
+
+      if (processInfo && processInfo.aborted) {
+        return reject(new Error('Operation aborted'));
+      }
+
+      // Build dd command based on algorithm
+      if (algorithm === 'zero') {
+        // Write zeros
+        ddProcess = spawn('dd', [
+          'if=/dev/zero',
+          `of=${devicePath}`,
+          'bs=1M',
+          'status=none'
+        ], { stdio: ['ignore', 'ignore', 'pipe'] });
+      } else if (algorithm === 'ff') {
+        // Write 0xFF (all ones) using tr to convert zeros to 0xFF
+        ddProcess = spawn('sh', [
+          '-c',
+          `tr '\\0' '\\377' < /dev/zero | dd of=${devicePath} bs=1M status=none`
+        ], { stdio: ['ignore', 'ignore', 'pipe'] });
+      } else if (algorithm === 'random') {
+        // Write random data
+        ddProcess = spawn('dd', [
+          'if=/dev/urandom',
+          `of=${devicePath}`,
+          'bs=1M',
+          'status=none'
+        ], { stdio: ['ignore', 'ignore', 'pipe'] });
+      } else {
+        return reject(new Error(`Unknown algorithm: ${algorithm}`));
+      }
+
+      // Store process for abort capability
+      if (processInfo) {
+        processInfo.process = ddProcess;
+      }
+
+      let stderrData = '';
+      ddProcess.stderr.on('data', (data) => {
+        stderrData += data.toString();
+      });
+
+      ddProcess.on('close', (code) => {
+        // dd returns 0 on success, but also returns non-zero when disk is full (expected)
+        // Check if it was aborted
+        if (processInfo && processInfo.aborted) {
+          return reject(new Error('Operation aborted'));
+        }
+
+        // dd exits with code 1 when it reaches end of disk (no space left), which is expected
+        if (code === 0 || stderrData.includes('No space left')) {
+          resolve(true);
+        } else {
+          reject(new Error(`dd failed with code ${code}: ${stderrData}`));
+        }
+      });
+
+      ddProcess.on('error', (err) => {
+        reject(new Error(`Failed to start dd: ${err.message}`));
+      });
+    });
+  }
+
+  /**
+   * Execute read check to verify all sectors are zero
+   * @private
+   * @param {string} devicePath - Device path
+   * @param {boolean} enableLog - Whether to log bad sectors
+   * @returns {Promise<Object>} Result with success and badSectors count
+   */
+  async _executeReadCheck(devicePath, enableLog) {
+    const deviceName = devicePath.replace('/dev/', '');
+    let logFile = null;
+    let logSize = 0;
+    let logTruncated = false;
+    const badOffsets = [];
+
+    // Create log directory and file if logging enabled
+    if (enableLog) {
+      try {
+        await fs.mkdir(PRECLEAR_LOG_DIR, { recursive: true });
+        const logPath = path.join(PRECLEAR_LOG_DIR, `${deviceName}.log`);
+        logFile = await fs.open(logPath, 'w');
+        await logFile.write(`# Preclear ReadCheck Log for ${devicePath}\n`);
+        await logFile.write(`# Started: ${new Date().toISOString()}\n`);
+        await logFile.write(`# Non-zero byte offsets:\n`);
+        logSize = 100;
+      } catch (err) {
+        console.error(`Failed to create preclear log: ${err.message}`);
+        logFile = null;
+      }
+    }
+
+    const processInfo = this.preclearProcesses.get(devicePath);
+
+    return new Promise((resolve, reject) => {
+      // Use cmp to compare device with /dev/zero - this is MUCH faster
+      // cmp -l outputs: byte_offset decimal_value_in_file decimal_value_expected
+      // We limit output to prevent massive logs
+      const cmpProcess = spawn('sh', [
+        '-c',
+        `cmp -l ${devicePath} /dev/zero 2>/dev/null | head -n 10000`
+      ], { stdio: ['ignore', 'pipe', 'pipe'] });
+
+      // Store process for abort capability
+      if (processInfo) {
+        processInfo.process = cmpProcess;
+      }
+
+      let outputData = '';
+
+      cmpProcess.stdout.on('data', (data) => {
+        outputData += data.toString();
+      });
+
+      cmpProcess.on('close', async (code) => {
+        // Check if aborted
+        if (processInfo && processInfo.aborted) {
+          if (logFile) await logFile.close();
+          return reject(new Error('Operation aborted'));
+        }
+
+        // Parse output - each line is: offset byte1 byte2
+        const lines = outputData.trim().split('\n').filter(l => l.trim());
+        const badCount = lines.length;
+
+        // Log bad offsets if logging enabled
+        if (logFile && badCount > 0) {
+          for (const line of lines) {
+            const parts = line.trim().split(/\s+/);
+            if (parts[0]) {
+              const offset = parts[0];
+              if (!logTruncated) {
+                const logEntry = `${offset}\n`;
+                if (logSize + logEntry.length < PRECLEAR_LOG_MAX_SIZE) {
+                  await logFile.write(logEntry);
+                  logSize += logEntry.length;
+                } else {
+                  logTruncated = true;
+                  await logFile.write(`\n# Log file size limit (5MB) exceeded. Further offsets not recorded.\n`);
+                }
+              }
+            }
+          }
+        }
+
+        // Finalize log
+        if (logFile) {
+          await logFile.write(`\n# Completed: ${new Date().toISOString()}\n`);
+          await logFile.write(`# Total non-zero bytes found: ${badCount}${badCount >= 10000 ? '+' : ''}\n`);
+          await logFile.close();
+        }
+
+        // code 0 = identical, code 1 = different, code 2 = error
+        // If we got output, there are differences
+        resolve({
+          success: badCount === 0,
+          badBlocks: badCount,
+          logTruncated
+        });
+      });
+
+      cmpProcess.on('error', async (err) => {
+        if (logFile) await logFile.close();
+        reject(new Error(`ReadCheck failed: ${err.message}`));
+      });
+    });
+  }
+
+  /**
+   * Execute preClear operation on a device
+   * @param {string} device - Device path or name
+   * @param {Object} options - Preclear options
+   * @returns {Promise<Object>} Result
+   */
+  async preClearDisk(device, options = {}) {
+    const { wipes = 1, algorithm = 'zero', readCheck = false, log = false } = options;
+    const devicePath = device.startsWith('/dev/') ? device : `/dev/${device}`;
+    const deviceName = devicePath.replace('/dev/', '');
+
+    // Validate
+    if (this.preclearRunning.has(devicePath)) {
+      throw new Error(`Preclear already running on ${devicePath}`);
+    }
+
+    const validAlgorithms = ['zero', 'ff', 'random', 'one-zero'];
+    if (!validAlgorithms.includes(algorithm)) {
+      throw new Error(`Invalid algorithm. Must be one of: ${validAlgorithms.join(', ')}`);
+    }
+
+    const effectiveWipes = Math.min(Math.max(1, wipes), 4); // 1-4
+
+    // one-zero requires even number of wipes
+    if (algorithm === 'one-zero' && effectiveWipes % 2 !== 0) {
+      throw new Error('Algorithm one-zero requires an even number of wipes (2 or 4)');
+    }
+
+    // readCheck only valid for zero or one-zero (ends with zero)
+    if (readCheck && algorithm !== 'zero' && algorithm !== 'one-zero') {
+      throw new Error('readCheck is only available for algorithms zero and one-zero');
+    }
+
+    // Check if system disk
+    const isSystem = await this._isSystemDisk(devicePath);
+    if (isSystem) {
+      throw new Error('Cannot preClear system disk');
+    }
+
+    // Algorithm display names for notifications
+    const algorithmNames = {
+      'zero': 'All Zeros',
+      'ff': 'All Ones',
+      'random': 'Random',
+      'one-zero': 'One-Zero'
+    };
+    const algorithmDisplayName = algorithmNames[algorithm] || algorithm;
+
+    // Initialize tracking
+    this.preclearRunning.set(devicePath, {
+      algorithm,
+      currentPass: 0,
+      totalPasses: effectiveWipes,
+      readCheck,
+      startedAt: new Date().toISOString()
+    });
+    this.preclearProcesses.set(devicePath, { process: null, aborted: false });
+
+    // Send start notification
+    await this._sendNotification(
+      'Preclear',
+      `Preclear started on ${deviceName} (${algorithmDisplayName}, ${effectiveWipes} pass${effectiveWipes > 1 ? 'es' : ''})`,
+      'normal'
+    );
+
+    // Run wipe passes
+    try {
+      for (let pass = 1; pass <= effectiveWipes; pass++) {
+        // Update status
+        const status = this.preclearRunning.get(devicePath);
+        if (status) {
+          status.currentPass = pass;
+        }
+
+        // Determine algorithm for this pass
+        let passAlgorithm = algorithm;
+        let passAlgorithmDisplay = algorithmDisplayName;
+        if (algorithm === 'one-zero') {
+          // Odd passes: ff (All Ones), Even passes: zero (All Zeros)
+          passAlgorithm = (pass % 2 === 1) ? 'ff' : 'zero';
+          passAlgorithmDisplay = (pass % 2 === 1) ? 'All Ones' : 'All Zeros';
+        }
+
+        // Send pass start notification
+        await this._sendNotification(
+          'Preclear',
+          `Pass ${pass}/${effectiveWipes} started on ${deviceName} (${passAlgorithmDisplay})`,
+          'normal'
+        );
+
+        // Execute wipe
+        await this._executeWipePass(devicePath, passAlgorithm);
+
+        // Send pass complete notification
+        await this._sendNotification(
+          'Preclear',
+          `Pass ${pass}/${effectiveWipes} completed on ${deviceName}`,
+          'normal'
+        );
+      }
+
+      // Execute read check if requested
+      let readCheckResult = null;
+      if (readCheck) {
+        await this._sendNotification(
+          'Preclear',
+          `ReadCheck started on ${deviceName}`,
+          'normal'
+        );
+
+        readCheckResult = await this._executeReadCheck(devicePath, log);
+
+        if (readCheckResult.success) {
+          await this._sendNotification(
+            'Preclear',
+            `ReadCheck completed on ${deviceName}: OK`,
+            'normal'
+          );
+        } else {
+          await this._sendNotification(
+            'Preclear',
+            `ReadCheck failed on ${deviceName}: ${readCheckResult.badSectors} bad sector(s)`,
+            'alert'
+          );
+
+          // Clean up and throw error
+          this.preclearRunning.delete(devicePath);
+          this.preclearProcesses.delete(devicePath);
+
+          throw new Error(`ReadCheck failed: ${readCheckResult.badSectors} bad sector(s) found`);
+        }
+      }
+
+      // Clean up
+      this.preclearRunning.delete(devicePath);
+      this.preclearProcesses.delete(devicePath);
+
+      // Note: Final notification is sent by _runPreClearAndFormat after format completes
+      // If preClearDisk is called standalone, no completion notification is sent here
+
+      return {
+        success: true,
+        device: devicePath,
+        algorithm,
+        passes: effectiveWipes,
+        readCheck: readCheckResult
+      };
+
+    } catch (error) {
+      // Clean up on error
+      this.preclearRunning.delete(devicePath);
+      this.preclearProcesses.delete(devicePath);
+
+      // Check if it was an abort
+      const processInfo = this.preclearProcesses.get(devicePath);
+      if (processInfo && processInfo.aborted) {
+        throw new Error('Preclear operation was aborted');
+      }
+
+      // Send error notification
+      await this._sendNotification(
+        'Preclear',
+        `Preclear failed on ${deviceName}: ${error.message}`,
+        'alert'
+      );
+
+      throw error;
+    }
+  }
+
+  /**
+   * Run preClear and format in sequence (async helper)
+   * @private
+   */
+  async _runPreClearAndFormat(devicePath, filesystem, options) {
+    const { partition, wipeExisting, preClear } = options;
+    const deviceName = devicePath.replace('/dev/', '');
 
     try {
-      const devicePath = device.startsWith('/dev/') ? device : `/dev/${device}`;
+      // Run preClear
+      await this.preClearDisk(devicePath, preClear);
 
-      // Prüfe ob System-Disk
+      // preClear successful - now format (no notification here, only at the end)
+      // Wipe existing data (wipefs)
+      if (wipeExisting) {
+        await execPromise(`wipefs -a ${devicePath}`);
+      }
+
+      // Create partition if requested
+      if (partition) {
+        await execPromise(`parted -s ${devicePath} mklabel gpt`);
+        await execPromise(`parted -s ${devicePath} mkpart primary 1MiB 100%`);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+
+        try {
+          await execPromise(`partprobe ${devicePath}`);
+        } catch (error) {
+          console.warn(`partprobe failed: ${error.message}`);
+        }
+
+        await new Promise(resolve => setTimeout(resolve, 1500));
+
+        // Determine partition path
+        let partitionPath;
+        if (deviceName.includes('nvme') || deviceName.includes('mmc')) {
+          partitionPath = `${devicePath}p1`;
+        } else {
+          partitionPath = `${devicePath}1`;
+        }
+
+        // Verify partition exists
+        let partitionExists = false;
+        for (let retry = 0; retry < 5; retry++) {
+          try {
+            await fs.access(partitionPath);
+            partitionExists = true;
+            break;
+          } catch (error) {
+            if (retry < 4) {
+              await new Promise(resolve => setTimeout(resolve, 500 * (retry + 1)));
+            }
+          }
+        }
+
+        if (!partitionExists) {
+          throw new Error(`Partition ${partitionPath} was not created`);
+        }
+
+        // Format partition
+        let forceOption = '';
+        if (filesystem === 'btrfs' || filesystem === 'xfs') {
+          forceOption = ' -f';
+        } else if (filesystem === 'ext4') {
+          forceOption = ' -F';
+        }
+        await execPromise(`mkfs.${filesystem}${forceOption} ${partitionPath}`);
+      } else {
+        // Format entire device
+        let forceOption = '';
+        if (filesystem === 'btrfs' || filesystem === 'xfs') {
+          forceOption = ' -f';
+        } else if (filesystem === 'ext4') {
+          forceOption = ' -F';
+        }
+        await execPromise(`mkfs.${filesystem}${forceOption} ${devicePath}`);
+      }
+
+      // Send success notification
+      await this._sendNotification(
+        'Preclear',
+        `Preclear finished, disk ${devicePath} ready`,
+        'normal'
+      );
+
+    } catch (error) {
+      // Only send notification for format errors, not preClear errors
+      // (preClearDisk already sends its own error notification)
+      if (!error.message.includes('Preclear') && !error.message.includes('ReadCheck') && !error.message.includes('aborted')) {
+        await this._sendNotification(
+          'Preclear',
+          `Format failed on ${devicePath}: ${error.message}`,
+          'alert'
+        );
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Disk formatieren
+   * @param {string} device - Device path or name
+   * @param {string} filesystem - Filesystem type
+   * @param {Object} options - Format options
+   * @param {boolean} options.partition - Create partition table (default: true)
+   * @param {boolean} options.wipeExisting - Wipe existing signatures (default: true)
+   * @param {Object} options.preClear - Preclear options (optional)
+   * @param {number} options.preClear.wipes - Number of wipe passes (1-4)
+   * @param {string} options.preClear.algorithm - Algorithm: zero, ff, random, one-zero
+   * @param {boolean} options.preClear.readCheck - Verify all sectors are zero after wipe
+   * @param {boolean} options.preClear.log - Log bad sectors to file
+   */
+  async formatDevice(device, filesystem, options = {}) {
+    const { partition = true, wipeExisting = true, preClear = null } = options;
+    const devicePath = device.startsWith('/dev/') ? device : `/dev/${device}`;
+    const deviceName = devicePath.replace('/dev/', '');
+
+    try {
+      // Check if device is system disk
       const isSystem = await this._isSystemDisk(devicePath);
       if (isSystem) {
         throw new Error('Cannot format system disk');
       }
 
+      // Check if preClear is requested and has wipes > 0
+      if (preClear && preClear.wipes && preClear.wipes > 0) {
+        // Validate preClear options
+        const { wipes = 1, algorithm = 'zero', readCheck = false, log = false } = preClear;
+
+        // Start preClear async and return immediately
+        // The preClear will handle formatting after completion
+        this._runPreClearAndFormat(devicePath, filesystem, {
+          partition,
+          wipeExisting,
+          preClear: { wipes, algorithm, readCheck, log }
+        }).catch(err => {
+          console.error(`Preclear/Format failed for ${devicePath}: ${err.message}`);
+        });
+
+        return {
+          success: true,
+          message: `Preclear started on ${deviceName}. Format will proceed after completion.`,
+          device: device,
+          filesystem: filesystem,
+          preclearStarted: true
+        };
+      }
+
+      // No preClear - proceed with normal formatting
       // Wipe existing data
       if (wipeExisting) {
         await execPromise(`wipefs -a ${devicePath}`);

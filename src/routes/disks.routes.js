@@ -164,6 +164,10 @@ const { checkRole, authenticateToken } = require('../middleware/auth.middleware'
  *         standbySkipped:
  *           type: boolean
  *           description: Whether disk was skipped due to standby
+ *         preclearRunning:
+ *           type: boolean
+ *           description: Whether a preClear operation is currently running on this disk
+ *           example: false
  *     DiskUsage:
  *       type: object
  *       properties:
@@ -297,9 +301,53 @@ const { checkRole, authenticateToken } = require('../middleware/auth.middleware'
  *           example: true
  *         wipeExisting:
  *           type: boolean
- *           description: Wipe existing data
+ *           description: Wipe existing data (wipefs)
  *           default: true
  *           example: true
+ *         preClear:
+ *           type: object
+ *           nullable: true
+ *           description: PreClear options for secure disk wiping before format. Operation runs async.
+ *           properties:
+ *             wipes:
+ *               type: integer
+ *               minimum: 1
+ *               maximum: 4
+ *               description: Number of wipe passes (1-4). If 0 or not set, preClear is skipped.
+ *               example: 2
+ *             algorithm:
+ *               type: string
+ *               enum: [zero, ff, random, one-zero]
+ *               description: |
+ *                 Wipe algorithm:
+ *                 - zero: Write all zeros (0x00)
+ *                 - ff: Write all ones (0xFF)
+ *                 - random: Write random data
+ *                 - one-zero: Alternate ff/zero passes (requires even wipes count)
+ *               default: "zero"
+ *               example: "zero"
+ *             readCheck:
+ *               type: boolean
+ *               description: Verify all sectors are zero after wipe. Only valid for zero or one-zero algorithms.
+ *               default: false
+ *               example: false
+ *             log:
+ *               type: boolean
+ *               description: Log bad sectors to /var/log/preclear/{device} (max 5MB). Only used with readCheck.
+ *               default: false
+ *               example: false
+ *     PreClearAbortResult:
+ *       type: object
+ *       properties:
+ *         success:
+ *           type: boolean
+ *           example: true
+ *         message:
+ *           type: string
+ *           example: "PreClear operation on /dev/sdb aborted"
+ *         device:
+ *           type: string
+ *           example: "/dev/sdb"
  *     FilesystemInfo:
  *       type: object
  *       properties:
@@ -926,7 +974,8 @@ router.post('/format', checkRole(['admin']), async (req, res) => {
       device,
       filesystem,
       partition = true,
-      wipeExisting = true
+      wipeExisting = true,
+      preClear = null
     } = req.body;
 
     if (!device || typeof device !== 'string') {
@@ -938,12 +987,77 @@ router.post('/format', checkRole(['admin']), async (req, res) => {
 
     const result = await disksService.formatDevice(device, filesystem, {
       partition,
-      wipeExisting
+      wipeExisting,
+      preClear
     });
 
     res.json(result);
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /disks/{device}/preclear/abort:
+ *   post:
+ *     summary: Abort preClear operation
+ *     description: Abort a running preClear operation on a device (admin only). The disk will be left in an undefined state.
+ *     tags: [Disks]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: device
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Device name (e.g., sda, nvme0n1)
+ *         example: "sdb"
+ *     responses:
+ *       200:
+ *         description: PreClear operation aborted successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/PreClearAbortResult'
+ *       400:
+ *         description: No preClear operation running on device
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Error aborting preClear operation
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+
+// Abort preClear operation (admin only)
+router.post('/:device/preclear/abort', checkRole(['admin']), async (req, res) => {
+  try {
+    const result = await disksService.abortPreClear(req.params.device);
+    res.json(result);
+  } catch (error) {
+    if (error.message.includes('No preClear operation running')) {
+      res.status(400).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
   }
 });
 

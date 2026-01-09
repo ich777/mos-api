@@ -23,7 +23,7 @@ class SwapService {
    */
   _notify(message, priority = 'normal') {
     const client = net.createConnection(MOS_NOTIFY_SOCKET, () => {
-      client.write(JSON.stringify({ title: 'Swapfile', message, priority }));
+      client.write(JSON.stringify({ title: 'Swap', message, priority }));
       client.end();
     });
     client.on('error', () => {});
@@ -554,11 +554,12 @@ class SwapService {
    * @private
    */
   async _createInBackground(path, size, isBtrfs, priority, config, prevConfig) {
+    this._notify('Swapfile creation started');
     try {
       await this.createSwapfile(path, size, isBtrfs, priority);
       await this.configureZswap(config, prevConfig);
     } catch (error) {
-      this._notify(`Creation failed: ${error.message}`, 'high');
+      this._notify(`Creation failed: ${error.message}`, 'alert');
     } finally {
       this._busy = false;
     }
