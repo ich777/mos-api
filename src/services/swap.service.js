@@ -230,6 +230,12 @@ class SwapService {
       result.isBtrfs = fsInfo.filesystem === 'btrfs';
       result.mountPoint = poolInfo.mountPoint;
 
+      // Check for MergerFS - swapfiles are not supported on MergerFS pools
+      if (fsInfo.filesystem === 'fuse.mergerfs' || fsInfo.filesystem === 'mergerfs') {
+        result.error = `Swapfiles are not supported on MergerFS pools. Use a direct disk path under /var/mergerfs/${poolInfo.poolName}/diskN/ instead.`;
+        return result;
+      }
+
       // If BTRFS, check for RAID profile
       if (result.isBtrfs) {
         const raidInfo = await this.checkBtrfsRaidProfile(poolInfo.mountPoint);
