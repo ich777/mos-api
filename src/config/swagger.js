@@ -94,6 +94,10 @@ const options = {
         description: 'MOS Hub Repository Management'
       },
       {
+        name: 'MOS Plugins',
+        description: 'MOS Plugin Management'
+      },
+      {
         name: 'Terminal',
         description: 'Terminal Management'
       },
