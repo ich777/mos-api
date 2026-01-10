@@ -477,10 +477,15 @@ class MosService {
               // Remove 'mos-external.' prefix and get value
               const externalPath = sensor.source.substring('mos-external.'.length);
               const rawValue = this._getValueByPath(externalSensors, externalPath);
-              value = this._transformValue(rawValue, sensor);
+              if (rawValue !== undefined) {
+                value = this._transformValue(rawValue, sensor);
+              } else {
+                // Path not found in external file
+                value = '-';
+              }
             } else {
               // External file not found
-              value = 'N/A';
+              value = '-';
             }
           } else if (rawSensors) {
             const rawValue = this._getValueByPath(rawSensors, sensor.source);
