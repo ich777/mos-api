@@ -15,6 +15,7 @@ class MosService {
     this.settingsPath = '/boot/config/docker.json';
     this.dashboardPath = '/boot/config/dashboard.json';
     this.sensorsConfigPath = '/boot/config/system/sensors.json';
+    this.sensorsExternalPath = '/var/mos/sensors-external.json';
     this.tokensPath = '/boot/config/system/tokens.json';
 
     // Sensors config cache
@@ -89,6 +90,42 @@ class MosService {
       unit: true,
       actions: true
     };
+  }
+
+  /**
+   * Load external sensors from file if it exists
+   * @returns {Promise<Object|null>} External sensors data or null
+   * @private
+   */
+  async _loadExternalSensors() {
+    try {
+      const data = await fs.readFile(this.sensorsExternalPath, 'utf8');
+      const parsed = JSON.parse(data);
+      if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+        return parsed;
+      }
+      return null;
+    } catch (error) {
+      // File doesn't exist or invalid - that's fine
+      return null;
+    }
+  }
+
+  /**
+   * Check if any configured sensor uses external source
+   * @param {Object} groupedConfig - Sensor configuration
+   * @returns {boolean} True if any sensor uses mos-external source
+   * @private
+   */
+  _hasExternalSensorSources(groupedConfig) {
+    const validTypes = this._getValidSensorTypes();
+    for (const type of validTypes) {
+      const sensors = groupedConfig[type] || [];
+      if (sensors.some(s => s.source && s.source.startsWith('mos-external.'))) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
@@ -294,6 +331,21 @@ class MosService {
    * @private
    */
   async _validateSensorSource(source) {
+    // Check if source is external
+    if (source.startsWith('mos-external.')) {
+      const externalSensors = await this._loadExternalSensors();
+      if (!externalSensors) {
+        throw new Error(`Invalid source: external sensors file not found`);
+      }
+      const externalPath = source.substring('mos-external.'.length);
+      const value = this._getValueByPath(externalSensors, externalPath);
+      if (value === undefined) {
+        throw new Error(`Invalid source: "${source}" not found in external sensor data`);
+      }
+      return;
+    }
+
+    // Validate against system sensors
     let rawSensors;
     try {
       rawSensors = await systemService.getSensors();
@@ -404,6 +456,12 @@ class MosService {
       rawSensors = null;
     }
 
+    // Load external sensors only if needed (any sensor uses mos-external.* source)
+    let externalSensors = null;
+    if (this._hasExternalSensorSources(groupedConfig)) {
+      externalSensors = await this._loadExternalSensors();
+    }
+
     // Build grouped response with values
     const result = {};
     for (const type of validTypes) {
@@ -413,7 +471,15 @@ class MosService {
         .sort((a, b) => a.index - b.index)
         .map(sensor => {
           let value = null;
-          if (rawSensors) {
+          // Check if source is external
+          if (sensor.source && sensor.source.startsWith('mos-external.')) {
+            if (externalSensors) {
+              // Remove 'mos-external.' prefix and get value
+              const externalPath = sensor.source.substring('mos-external.'.length);
+              const rawValue = this._getValueByPath(externalSensors, externalPath);
+              value = this._transformValue(rawValue, sensor);
+            }
+          } else if (rawSensors) {
             const rawValue = this._getValueByPath(rawSensors, sensor.source);
             value = this._transformValue(rawValue, sensor);
           }
@@ -511,7 +577,19 @@ class MosService {
       return result;
     };
 
-    return cleanEmpty(unmapped);
+    const result = cleanEmpty(unmapped);
+
+    // Add external sensors if file exists
+    const externalSensors = await this._loadExternalSensors();
+    if (externalSensors) {
+      // Filter out already mapped external sources
+      const filteredExternal = filterMapped(externalSensors, 'mos-external');
+      if (Object.keys(filteredExternal).length > 0) {
+        result['mos-external'] = filteredExternal;
+      }
+    }
+
+    return result;
   }
 
   /**
