@@ -1,7 +1,7 @@
 const fs = require('fs').promises;
 const path = require('path');
 
-const PLUGINS_DIR = '/var/www/plugins';
+const PLUGINS_DIR = '/var/www/mos-plugins';
 
 /**
  * Get list of all installed plugins
