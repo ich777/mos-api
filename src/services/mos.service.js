@@ -15,7 +15,7 @@ class MosService {
     this.settingsPath = '/boot/config/docker.json';
     this.dashboardPath = '/boot/config/dashboard.json';
     this.sensorsConfigPath = '/boot/config/system/sensors.json';
-    this.sensorsExternalPath = '/var/mos/sensors-external.json';
+    this.sensorsExternalPath = '/var/mos/external-sensors.json';
     this.tokensPath = '/boot/config/system/tokens.json';
 
     // Sensors config cache
