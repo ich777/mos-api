@@ -5191,6 +5191,14 @@ router.post('/tokens', checkRole(['admin']), async (req, res) => {
     if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
       return res.status(400).json({ error: 'Request body must be an object with token fields (github, dockerhub, etc.).' });
     }
+
+    // Validate dockerhub format: must be "username:token" if provided
+    if (req.body.dockerhub && req.body.dockerhub !== null) {
+      if (!req.body.dockerhub.includes(':')) {
+        return res.status(400).json({ error: 'Docker Hub token must be in format "username:token"' });
+      }
+    }
+
     const result = await mosService.updateTokens(req.body);
     res.json(result);
   } catch (error) {
