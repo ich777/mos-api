@@ -22,7 +22,7 @@ class SystemService {
     }
 
     try {
-      const [dockerAvailable, lxcAvailable, vmAvailable] = await Promise.all([
+      const [dockerAvailable, lxcAvailable, vmAvailable, zramAvailable] = await Promise.all([
         // Check if docker binary exists and is executable
         execAsync('which docker 2>/dev/null')
           .then(() => true)
@@ -36,13 +36,19 @@ class SystemService {
         // Check if virsh (libvirt) is available
         execAsync('which virsh 2>/dev/null')
           .then(() => true)
+          .catch(() => false),
+
+        // Check if zram devices exist
+        execAsync('ls /sys/block/zram* 2>/dev/null')
+          .then(() => true)
           .catch(() => false)
       ]);
 
       this.servicesAvailable = {
         docker: dockerAvailable,
         lxc: lxcAvailable,
-        vm: vmAvailable
+        vm: vmAvailable,
+        zram: zramAvailable
       };
 
       return this.servicesAvailable;
@@ -51,7 +57,8 @@ class SystemService {
       this.servicesAvailable = {
         docker: false,
         lxc: false,
-        vm: false
+        vm: false,
+        zram: false
       };
       return this.servicesAvailable;
     }
@@ -1163,7 +1170,49 @@ class SystemService {
   }
 
   /**
-   * Get memory breakdown by services (Docker, LXC, VMs, System)
+   * Get ZRAM memory usage
+   * Reads mm_stat from all zram devices to get actual memory used
+   * @returns {Promise<Object>} Object with bytes and device count
+   */
+  async getZramMemory() {
+    const fs = require('fs').promises;
+
+    try {
+      // Find all zram devices
+      const { stdout } = await execAsync('ls -d /sys/block/zram* 2>/dev/null');
+      const devices = stdout.trim().split('\n').filter(d => d);
+
+      if (devices.length === 0) {
+        return { bytes: 0, devices: 0 };
+      }
+
+      let totalMemory = 0;
+
+      for (const devicePath of devices) {
+        try {
+          // mm_stat format: orig_data_size compr_data_size mem_used_total mem_limit mem_used_max same_pages pages_compacted huge_pages huge_pages_since
+          // We want mem_used_total (index 2) - actual memory used by zram
+          const mmStatPath = `${devicePath}/mm_stat`;
+          const content = await fs.readFile(mmStatPath, 'utf8');
+          const parts = content.trim().split(/\s+/);
+
+          if (parts.length >= 3) {
+            const memUsedTotal = parseInt(parts[2]) || 0;
+            totalMemory += memUsedTotal;
+          }
+        } catch (err) {
+          console.warn(`Could not read memory for ZRAM device ${devicePath}: ${err.message}`);
+        }
+      }
+
+      return { bytes: totalMemory, devices: devices.length };
+    } catch (error) {
+      return { bytes: 0, devices: 0 };
+    }
+  }
+
+  /**
+   * Get memory breakdown by services (Docker, LXC, VMs, ZRAM, System)
    * @returns {Promise<Object>} Memory breakdown by service type
    */
   async getMemoryServicesBreakdown() {
@@ -1191,15 +1240,22 @@ class SystemService {
       fetchPromises.push(Promise.resolve({ bytes: 0, vms: 0 }));
     }
 
+    if (servicesAvailable.zram) {
+      fetchPromises.push(this.getZramMemory());
+    } else {
+      fetchPromises.push(Promise.resolve({ bytes: 0, devices: 0 }));
+    }
+
     // Fetch data in parallel
-    const [totalMem, docker, lxc, vms] = await Promise.all(fetchPromises);
+    const [totalMem, docker, lxc, vms, zram] = await Promise.all(fetchPromises);
 
     // Calculate actually used (without caches) to match the 'used' field in response
     const actuallyUsed = totalMem.total - totalMem.available;
 
     // System memory = actuallyUsed minus all services
     // Note: Docker/LXC report full usage including their caches, so system might be small or 0
-    const systemMemory = actuallyUsed - docker.bytes - lxc.bytes - vms.bytes;
+    // ZRAM uses RAM for compressed swap storage, so we subtract it from system memory
+    const systemMemory = actuallyUsed - docker.bytes - lxc.bytes - vms.bytes - zram.bytes;
 
     // Calculate percentages based on total memory
     // Round to ensure the sum equals 100%
@@ -1207,7 +1263,8 @@ class SystemService {
       { key: 'system', bytes: Math.max(0, systemMemory) },
       { key: 'docker', bytes: docker.bytes },
       { key: 'lxc', bytes: lxc.bytes },
-      { key: 'vms', bytes: vms.bytes }
+      { key: 'vms', bytes: vms.bytes },
+      { key: 'zram', bytes: zram.bytes }
     ];
 
     // Calculate exact percentages

@@ -1046,13 +1046,28 @@ class VmService {
 
       // Auto-create disks that don't exist
       if (config.disks && config.disks.length > 0) {
-        for (const disk of config.disks) {
-          if (disk.source && disk.size) {
+        for (let i = 0; i < config.disks.length; i++) {
+          const disk = config.disks[i];
+          if (disk.source) {
             // Check if disk file exists
+            let diskExists = false;
             try {
               await fs.access(disk.source);
+              diskExists = true;
             } catch (e) {
-              // Disk doesn't exist, create it
+              // Disk doesn't exist
+            }
+
+            if (!diskExists) {
+              if (!disk.size) {
+                throw new Error(`Disk ${i + 1} (${disk.source}): File does not exist and no size specified for creation`);
+              }
+              // Validate that size has a unit (G, GB, GiB, M, MB, MiB, T, TB, TiB)
+              const sizeStr = String(disk.size).trim();
+              if (/^\d+(\.\d+)?$/.test(sizeStr)) {
+                throw new Error(`Disk ${i + 1} (${disk.source}): Size "${disk.size}" must include a unit (e.g., 30G, 50GB, 100GiB)`);
+              }
+              // Create the disk
               await this.createDisk(disk.source, disk.size, disk.format || 'qcow2');
             }
           }

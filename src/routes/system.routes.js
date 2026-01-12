@@ -78,11 +78,11 @@ const mosService = require('../services/mos.service');
  *           example: "30.8 GiB"
  *         breakdown:
  *           type: object
- *           description: Memory breakdown by service type (Docker, LXC, VMs, System). Percentages are calculated relative to total memory. Sum of all breakdown percentages equals percentage.actuallyUsed.
+ *           description: Memory breakdown by service type (Docker, LXC, VMs, ZRAM, System). Percentages are calculated relative to total memory. Sum of all breakdown percentages equals percentage.actuallyUsed.
  *           properties:
  *             system:
  *               type: object
- *               description: Host system memory usage (excluding Docker/LXC/VM memory)
+ *               description: Host system memory usage (excluding Docker/LXC/VM/ZRAM memory)
  *               properties:
  *                 bytes:
  *                   type: integer
@@ -136,6 +136,20 @@ const mosService = require('../services/mos.service');
  *                   type: integer
  *                   description: Percentage of total memory
  *                   example: 0
+ *             zram:
+ *               type: object
+ *               description: ZRAM compressed swap memory usage (actual RAM used for compressed storage)
+ *               properties:
+ *                 bytes:
+ *                   type: integer
+ *                   example: 536870912
+ *                 bytes_human:
+ *                   type: string
+ *                   example: "512.0 MiB"
+ *                 percentage:
+ *                   type: integer
+ *                   description: Percentage of total memory
+ *                   example: 1
  *         dirty:
  *           type: object
  *           properties:
@@ -515,7 +529,7 @@ router.get('/detailed', checkRole(['admin']), async (req, res) => {
  * /system/load:
  *   get:
  *     summary: Get system load, temperature, memory and network utilization
- *     description: Retrieve current system load, temperature information including per-core metrics, detailed memory usage with installed/reserved memory and services breakdown (Docker/LXC/VMs), and network utilization for all interfaces (available to all authenticated users)
+ *     description: Retrieve current system load, temperature information including per-core metrics, detailed memory usage with installed/reserved memory and services breakdown (Docker/LXC/VMs/ZRAM), and network utilization for all interfaces (available to all authenticated users)
  *     tags: [System]
  *     security:
  *       - bearerAuth: []
