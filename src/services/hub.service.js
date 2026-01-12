@@ -253,8 +253,22 @@ class HubService {
       // Create owner directory if needed
       await fs.mkdir(path.dirname(fullPath), { recursive: true });
 
+      // Try to get GitHub token for private repos
+      let cloneUrl = url;
+      if (url.includes('github.com') || url.includes('github.')) {
+        try {
+          const mosService = require('./mos.service');
+          const tokens = await mosService.getTokens();
+          if (tokens.github) {
+            cloneUrl = url.replace(/^https:\/\//, `https://${tokens.github}@`);
+          }
+        } catch {
+          // No token available, use original URL
+        }
+      }
+
       // Clone with depth 1, no interactive prompts
-      const cmd = `GIT_TERMINAL_PROMPT=0 git clone --depth 1 "${url}" "${fullPath}" 2>&1`;
+      const cmd = `GIT_TERMINAL_PROMPT=0 git clone --depth 1 "${cloneUrl}" "${fullPath}" 2>&1`;
       await execPromise(cmd, { timeout: 120000 });
 
       return { success: true, folder: folderPath };

@@ -1,6 +1,45 @@
 const { spawn } = require('child_process');
 const EventEmitter = require('events');
 const axios = require('axios');
+const fs = require('fs').promises;
+const path = require('path');
+const os = require('os');
+
+/**
+ * Create temp Docker config with registry auth if tokens available
+ * @returns {Promise<{configDir: string|null, cleanup: Function}>}
+ */
+async function createDockerAuthConfig() {
+  try {
+    const mosService = require('../services/mos.service');
+    const tokens = await mosService.getTokens();
+    if (!tokens.dockerhub && !tokens.github) {
+      return { configDir: null, cleanup: () => {} };
+    }
+
+    const auths = {};
+    if (tokens.dockerhub) {
+      auths['https://index.docker.io/v1/'] = { auth: Buffer.from(tokens.dockerhub).toString('base64') };
+    }
+    if (tokens.github) {
+      auths['ghcr.io'] = { auth: Buffer.from(`_:${tokens.github}`).toString('base64') };
+    }
+
+    const configDir = '/var/mos/docker-auth';
+    const configFile = path.join(configDir, 'config.json');
+    await fs.mkdir(configDir, { recursive: true });
+    await fs.writeFile(configFile, JSON.stringify({ auths }));
+
+    return {
+      configDir,
+      cleanup: async () => {
+        try { await fs.unlink(configFile); } catch {}
+      }
+    };
+  } catch {
+    return { configDir: null, cleanup: () => {} };
+  }
+}
 
 /**
  * Strip ANSI escape codes from string
@@ -762,16 +801,29 @@ class DockerWebSocketManager extends EventEmitter {
 
   /**
    * Execute a command with streaming output
+   * Automatically adds Docker auth for docker/docker-compose commands if tokens available
    */
   async executeCommandWithStream(operationId, command, args = [], operationType, params = {}, options = {}) {
+    // Add Docker auth for docker/docker-compose commands
+    let authCleanup = () => {};
+    let spawnOptions = { ...options, shell: false };
+    
+    if (command === 'docker-compose' || command === 'docker') {
+      const { configDir, cleanup } = await createDockerAuthConfig();
+      authCleanup = cleanup;
+      if (configDir) {
+        spawnOptions.env = { ...process.env, ...options.env, DOCKER_CONFIG: configDir };
+      }
+    }
+
     return new Promise((resolve, reject) => {
-      const process = spawn(command, args, { ...options, shell: false });
+      const proc = spawn(command, args, spawnOptions);
 
       const startTime = Date.now();
 
       // Store process for potential cancellation
       this.activeOperations.set(operationId, {
-        process,
+        process: proc,
         type: operationType,
         operation: operationType,
         params,
@@ -782,7 +834,7 @@ class DockerWebSocketManager extends EventEmitter {
       let stderr = '';
 
       // Stream stdout
-      process.stdout.on('data', (data) => {
+      proc.stdout.on('data', (data) => {
         const output = stripAnsi(data.toString());
         stdout += output;
 
@@ -794,7 +846,7 @@ class DockerWebSocketManager extends EventEmitter {
       });
 
       // Stream stderr (Docker often uses stderr for progress)
-      process.stderr.on('data', (data) => {
+      proc.stderr.on('data', (data) => {
         const output = stripAnsi(data.toString());
         stderr += output;
 
@@ -806,7 +858,8 @@ class DockerWebSocketManager extends EventEmitter {
       });
 
       // Handle process completion
-      process.on('close', (code) => {
+      proc.on('close', async (code) => {
+        await authCleanup();
         // Remove from active operations for operations that manage themselves
         // Don't auto-delete for: upgrade-group, compose-* (they manage their own lifecycle)
         const managedOperations = [
@@ -856,7 +909,8 @@ class DockerWebSocketManager extends EventEmitter {
       });
 
       // Handle process errors
-      process.on('error', (error) => {
+      proc.on('error', async (error) => {
+        await authCleanup();
         // Remove from active operations for operations that manage themselves
         const managedOperations = [
           'upgrade',

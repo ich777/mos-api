@@ -5099,10 +5099,10 @@ router.delete('/sensors/:id', checkRole(['admin']), async (req, res) => {
  *                 dockerhub:
  *                   type: string
  *                   nullable: true
- *                   description: Decrypted Docker Hub token or null if not set
+ *                   description: Decrypted Docker Hub credentials (format username:token) or null if not set
  *             example:
  *               github: "ghp_1234567890abcdef"
- *               dockerhub: null
+ *               dockerhub: "myuser:dckr_pat_xyz123"
  *       401:
  *         description: Not authenticated
  *       403:
@@ -5129,7 +5129,7 @@ router.delete('/sensors/:id', checkRole(['admin']), async (req, res) => {
  *               dockerhub:
  *                 type: string
  *                 nullable: true
- *                 description: Docker Hub token to save (will be encrypted)
+ *                 description: Docker Hub credentials (format username:token) to save (will be encrypted). Used for pulling private images from Docker Hub.
  *           examples:
  *             update_github_only:
  *               summary: Update only GitHub token
@@ -5139,7 +5139,7 @@ router.delete('/sensors/:id', checkRole(['admin']), async (req, res) => {
  *               summary: Update both tokens
  *               value:
  *                 github: "ghp_1234567890abcdef"
- *                 dockerhub: "dckr_pat_xyz123"
+ *                 dockerhub: "myuser:dckr_pat_xyz123"
  *             remove_token:
  *               summary: Remove a token
  *               value:

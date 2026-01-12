@@ -2,11 +2,69 @@ const fs = require('fs').promises;
 const { exec } = require('child_process');
 const util = require('util');
 const path = require('path');
+const os = require('os');
 const axios = require('axios');
 const dockerService = require('./docker.service');
 const mosService = require('./mos.service');
 
 const execPromise = util.promisify(exec);
+
+/**
+ * Create temp Docker config with registry auth if tokens available
+ * @returns {Promise<{configDir: string|null, cleanup: Function}>}
+ */
+async function createDockerAuthConfig() {
+  try {
+    const tokens = await mosService.getTokens();
+    if (!tokens.dockerhub && !tokens.github) {
+      return { configDir: null, cleanup: () => {} };
+    }
+
+    const auths = {};
+
+    // DockerHub: token format is "username:token"
+    if (tokens.dockerhub) {
+      const auth = Buffer.from(tokens.dockerhub).toString('base64');
+      auths['https://index.docker.io/v1/'] = { auth };
+    }
+
+    // GHCR uses GitHub token: "USERNAME:token" (USERNAME can be anything for PAT)
+    if (tokens.github) {
+      const auth = Buffer.from(`_:${tokens.github}`).toString('base64');
+      auths['ghcr.io'] = { auth };
+    }
+
+    const configDir = '/var/mos/docker-auth';
+    const configFile = path.join(configDir, 'config.json');
+    await fs.mkdir(configDir, { recursive: true });
+    await fs.writeFile(configFile, JSON.stringify({ auths }));
+
+    return {
+      configDir,
+      cleanup: async () => {
+        try { await fs.unlink(configFile); } catch {}
+      }
+    };
+  } catch {
+    return { configDir: null, cleanup: () => {} };
+  }
+}
+
+/**
+ * Execute command with Docker auth if tokens available
+ */
+async function execWithAuth(command, options = {}) {
+  const { configDir, cleanup } = await createDockerAuthConfig();
+  try {
+    const execOpts = { ...options };
+    if (configDir) {
+      execOpts.env = { ...process.env, ...options.env, DOCKER_CONFIG: configDir };
+    }
+    return await execPromise(command, execOpts);
+  } finally {
+    await cleanup();
+  }
+}
 
 class DockerComposeService {
 
@@ -543,7 +601,7 @@ class DockerComposeService {
   async _deployStack(stackName) {
     try {
       const workingPath = await this._getWorkingPath(stackName);
-      const { stdout, stderr } = await execPromise('docker-compose -f compose.yaml -f mos.override.yaml up -d', {
+      const { stdout, stderr } = await execWithAuth('docker-compose -f compose.yaml -f mos.override.yaml up -d', {
         cwd: workingPath
       });
       return { stdout: stdout || '', stderr: stderr || '' };
@@ -1348,8 +1406,8 @@ class DockerComposeService {
         await this._copyStackToWorking(name);
       }
 
-      // Pull images from working directory
-      const { stdout, stderr } = await execPromise('docker-compose -f compose.yaml -f mos.override.yaml pull', {
+      // Pull images from working directory (with auth if tokens available)
+      const { stdout, stderr } = await execWithAuth('docker-compose -f compose.yaml -f mos.override.yaml pull', {
         cwd: workingPath
       });
 
