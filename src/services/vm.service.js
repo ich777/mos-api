@@ -642,7 +642,7 @@ class VmService {
     <acpi/>
     <apic/>`;
 
-    if (platform === 'q35') {
+    if (platform === 'q35' || platform.startsWith('pc-q35')) {
       xml += `
     <smm state='on'/>`;
     }
@@ -1327,8 +1327,16 @@ class VmService {
       const memoryHuman = this.formatBytes(memoryBytes, user);
 
       // Parse machine type and platform
-      const machineType = this._extractXmlAttr(xml, 'type[^>]*machine', 'machine') || '';
-      const platform = machineType.includes('q35') ? 'q35' : 'i440fx';
+      const machineType = this._extractXmlAttr(xml, 'type', 'machine') || '';
+      // Preserve specific machine type (e.g., pc-q35-9.2) or normalize to alias
+      let platform;
+      if (machineType === 'pc' || machineType.startsWith('pc-i440fx')) {
+        platform = machineType === 'pc' ? 'i440fx' : machineType;
+      } else if (machineType === 'q35' || machineType.startsWith('pc-q35')) {
+        platform = machineType === 'q35' ? 'q35' : machineType;
+      } else {
+        platform = 'q35'; // Default
+      }
 
       // Determine BIOS type
       let bios = 'seabios';
