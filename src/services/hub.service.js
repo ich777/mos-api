@@ -510,6 +510,14 @@ class HubService {
     // Get git timestamps
     const { created_at, updated_at } = await this._getGitTimestamps(jsonPath, repoPath);
 
+    // Extract architectures (array or null)
+    let architectures = null;
+    if (Array.isArray(template.architectures) && template.architectures.length > 0) {
+      architectures = template.architectures;
+    } else if (typeof template.architecture === 'string') {
+      architectures = [template.architecture];
+    }
+
     return {
       name: template.name || '',
       maintainer: maintainerInfo.maintainer || template.author || '',
@@ -522,8 +530,8 @@ class HubService {
       website: template.homepage || '',
       icon: template.icon || '',
       repository: template.repository || '',
-      settings: template.settings || false,
       driver: template.driver || false,
+      architectures,
       created_at,
       updated_at,
       stack_images: [],
@@ -566,6 +574,14 @@ class HubService {
     // Get git timestamps
     const { created_at, updated_at } = await this._getGitTimestamps(templatePath, repoPath);
 
+    // Extract architectures (array or null)
+    let architectures = null;
+    if (Array.isArray(template.architectures) && template.architectures.length > 0) {
+      architectures = template.architectures;
+    } else if (typeof template.architecture === 'string') {
+      architectures = [template.architecture];
+    }
+
     return {
       name: template.name || '',
       maintainer: maintainerInfo.maintainer || '',
@@ -578,6 +594,7 @@ class HubService {
       website: template.website || '',
       icon: template.icon || '',
       repository: template.repository || '',
+      architectures,
       created_at,
       updated_at,
       stack_images: Object.keys(stackImages).length > 0 ? [stackImages] : [],

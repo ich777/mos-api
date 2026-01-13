@@ -1,5 +1,15 @@
 const fs = require('fs').promises;
 const path = require('path');
+const { exec } = require('child_process');
+const util = require('util');
+const execPromise = util.promisify(exec);
+const net = require('net');
+const crypto = require('crypto');
+
+const MOS_NOTIFY_SOCKET = '/var/run/mos-notify.sock';
+const PLUGINS_CACHE_DIR = '/var/mos/mos-plugins';
+const PLUGINS_CONFIG_DIR = '/boot/optional/plugins';
+const MAX_SOURCE_SIZE = 10 * 1024 * 1024; // 10MB
 
 const PLUGINS_DIR = '/var/www/mos-plugins';
 
@@ -17,6 +27,22 @@ async function getPlugins() {
     return { results: [], count: 0 };
   }
 
+  // Load versions.json for update_available check
+  let versionsMap = {};
+  let versionsExists = false;
+  try {
+    const versionsPath = path.join(PLUGINS_CACHE_DIR, 'versions.json');
+    const versionsContent = await fs.readFile(versionsPath, 'utf8');
+    const versions = JSON.parse(versionsContent);
+    versionsExists = true;
+    // Create map for quick lookup
+    for (const v of versions) {
+      versionsMap[v.plugin] = v.update_available;
+    }
+  } catch {
+    // versions.json doesn't exist
+  }
+
   // Read all subdirectories
   const entries = await fs.readdir(PLUGINS_DIR, { withFileTypes: true });
   const pluginDirs = entries.filter(entry => entry.isDirectory());
@@ -27,6 +53,19 @@ async function getPlugins() {
     try {
       const manifestContent = await fs.readFile(manifestPath, 'utf8');
       const manifest = JSON.parse(manifestContent);
+
+      // Add update_available status
+      let updateAvailable = 'unknown';
+      if (versionsExists) {
+        const pluginName = manifest.name || dir.name;
+        if (pluginName in versionsMap) {
+          updateAvailable = versionsMap[pluginName];
+        } else {
+          updateAvailable = false; // Not in versions = no update info
+        }
+      }
+      manifest.update_available = updateAvailable;
+
       plugins.push(manifest);
     } catch (err) {
       // Skip plugins without valid manifest.json
@@ -37,6 +76,1389 @@ async function getPlugins() {
   return { results: plugins, count: plugins.length };
 }
 
+/**
+ * Execute a query command from /usr/bin/plugins
+ * @param {string} command - Command name (must be in /usr/bin/plugins)
+ * @param {string[]} args - Command arguments
+ * @param {Object} options - Execution options
+ * @param {number} options.timeout - Timeout in seconds (default 10, max 60)
+ * @param {boolean} options.parse_json - Parse output as JSON
+ * @returns {Promise<Object>} Execution result
+ */
+async function executeQuery(command, args = [], options = {}) {
+  const PLUGINS_BIN_DIR = '/usr/bin/plugins';
+  const { timeout = 10, parse_json = false } = options;
+
+  // Validate command
+  if (!command || typeof command !== 'string') {
+    throw new Error('Command is required');
+  }
+
+  // Only allow command names, no paths
+  const commandName = path.basename(command);
+  if (commandName !== command || command.includes('/')) {
+    throw new Error('Only command names allowed, not paths');
+  }
+
+  // Build full path to command
+  const commandPath = path.join(PLUGINS_BIN_DIR, commandName);
+
+  // Verify command exists (works with symlinks)
+  try {
+    await fs.access(commandPath, fs.constants.X_OK);
+  } catch {
+    throw new Error(`Command not found or not executable: ${commandName}`);
+  }
+
+  // Validate and sanitize arguments
+  const sanitizedArgs = [];
+  for (const arg of args) {
+    if (typeof arg !== 'string') continue;
+    // Block shell metacharacters in arguments
+    if (/[;&|`$(){}\[\]<>\n\r]/.test(arg)) {
+      throw new Error('Invalid characters in arguments');
+    }
+    sanitizedArgs.push(arg);
+  }
+
+  // Build command string with proper escaping
+  const escapedArgs = sanitizedArgs.map(a => `"${a.replace(/"/g, '\\"')}"`).join(' ');
+  const fullCommand = `${commandPath} ${escapedArgs}`.trim();
+
+  // Timeout in ms (min 0.1s, max 60s)
+  const timeoutMs = Math.min(Math.max(timeout, 0.1), 60) * 1000;
+
+  const startTime = Date.now();
+
+  return new Promise((resolve) => {
+    const execOptions = {
+      timeout: timeoutMs,
+      maxBuffer: 10 * 1024 * 1024, // 10MB
+      shell: '/bin/bash'
+    };
+
+    exec(fullCommand, execOptions, (error, stdout, stderr) => {
+      const duration_ms = Date.now() - startTime;
+      let output = stdout || '';
+      let exit_code = 0;
+      let success = true;
+      let timed_out = false;
+
+      if (error) {
+        exit_code = error.code || 1;
+        success = false;
+        if (error.killed) {
+          // Timeout: return whatever output we got, not the error
+          timed_out = true;
+          // Keep stdout if we have it, otherwise show timeout message
+          if (!output) {
+            output = stderr || 'Command timed out';
+          }
+        } else {
+          output = stderr || error.message;
+        }
+      }
+
+      // Parse as JSON if requested
+      if (parse_json && output) {
+        output = _tryParseJson(output);
+      }
+
+      resolve({
+        success,
+        output,
+        exit_code,
+        duration_ms,
+        timed_out
+      });
+    });
+  });
+}
+
+/**
+ * Extract architecture from .deb filename
+ * @private
+ */
+function _extractArchFromDeb(filename) {
+  // Pattern: name_version_arch.deb
+  const match = filename.match(/_([a-z0-9]+)\.deb$/i);
+  if (match) {
+    const arch = match[1].toLowerCase();
+    // Common architectures (no i386 - deprecated)
+    if (['amd64', 'arm64', 'armhf', 'all', 'x86_64', 'aarch64'].includes(arch)) {
+      return arch;
+    }
+  }
+  return null;
+}
+
+/**
+ * Get system architecture
+ * @private
+ */
+function _getSystemArch() {
+  const arch = process.arch;
+  // Map Node.js arch to Debian arch
+  const archMap = {
+    'x64': 'amd64',
+    'arm64': 'arm64',
+    'arm': 'armhf'
+  };
+  return archMap[arch] || arch;
+}
+
+/**
+ * Filter .deb assets by system architecture
+ * @private
+ */
+function _filterDebByArch(assets) {
+  const systemArch = _getSystemArch();
+  const debAssets = assets.filter(a => a.name.endsWith('.deb') && !a.name.endsWith('.md5'));
+
+  // First try to find exact arch match
+  let filtered = debAssets.filter(a => {
+    const arch = _extractArchFromDeb(a.name);
+    return arch === systemArch;
+  });
+
+  // If no exact match, try 'all' architecture
+  if (filtered.length === 0) {
+    filtered = debAssets.filter(a => {
+      const arch = _extractArchFromDeb(a.name);
+      return arch === 'all';
+    });
+  }
+
+  return filtered;
+}
+
+/**
+ * Try to parse JSON, auto-fix if malformed (missing brackets)
+ * @private
+ */
+function _tryParseJson(str) {
+  if (typeof str !== 'string') return str;
+  const trimmed = str.trim();
+  if (!trimmed) return str;
+
+  // Try direct parse first
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    // Try to fix common issues
+  }
+
+  // Detect if it looks like JSON
+  const startsWithArray = trimmed.startsWith('[');
+  const startsWithObject = trimmed.startsWith('{');
+
+  if (!startsWithArray && !startsWithObject) {
+    return str; // Not JSON-like, return as-is
+  }
+
+  // Try adding missing closing brackets
+  const fixes = startsWithArray
+    ? [']', '"}]', '"}]', '}]', '"]}']
+    : ['}', '"}', '"}}', '}}'];
+
+  for (const fix of fixes) {
+    try {
+      return JSON.parse(trimmed + fix);
+    } catch {
+      // Try next fix
+    }
+  }
+
+  // Return original string if nothing works
+  return str;
+}
+
+/**
+ * Send notification via mos-notify socket
+ * @private
+ */
+async function _sendNotification(title, message, priority = 'normal') {
+  return new Promise((resolve) => {
+    const client = net.createConnection(MOS_NOTIFY_SOCKET, () => {
+      const payload = JSON.stringify({ title, message, priority });
+      client.write(payload);
+      client.end();
+      resolve(true);
+    });
+    client.on('error', () => {
+      resolve(false);
+    });
+  });
+}
+
+/**
+ * Get GitHub token if available
+ * @private
+ */
+async function _getGitHubToken() {
+  try {
+    const mosService = require('./mos.service');
+    const tokens = await mosService.getTokens();
+    return tokens.github || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Verify MD5 checksum of a file
+ * @private
+ */
+async function _verifyMd5(filePath, md5Path) {
+  const fileBuffer = await fs.readFile(filePath);
+  const actualMd5 = crypto.createHash('md5').update(fileBuffer).digest('hex');
+
+  const md5Content = await fs.readFile(md5Path, 'utf8');
+  // MD5 file format: "hash  filename" or just "hash"
+  const expectedMd5 = md5Content.trim().split(/\s+/)[0].toLowerCase();
+
+  return actualMd5.toLowerCase() === expectedMd5;
+}
+
+/**
+ * Fetch GitHub releases for a repository
+ * @param {string} repository - GitHub repository URL
+ * @param {boolean} forceRefresh - Force refresh cache
+ * @returns {Promise<Object>} Releases data with tags
+ */
+async function getReleases(repository, forceRefresh = false) {
+  if (!repository || typeof repository !== 'string') {
+    throw new Error('Repository URL is required');
+  }
+
+  // Parse GitHub URL to get owner/repo
+  const match = repository.match(/github\.com\/([^/]+)\/([^/]+?)(\.git)?$/);
+  if (!match) {
+    throw new Error('Invalid GitHub repository URL');
+  }
+
+  const owner = match[1];
+  const repo = match[2];
+  const pluginName = repo.replace(/^mos-/, ''); // Remove mos- prefix if present
+  const cacheDir = path.join(PLUGINS_CACHE_DIR, pluginName);
+  const cachePath = path.join(cacheDir, 'releases.json');
+
+  // Check cache if not forcing refresh
+  if (!forceRefresh) {
+    try {
+      const cacheData = await fs.readFile(cachePath, 'utf8');
+      const cache = JSON.parse(cacheData);
+      // Cache valid for 5 minutes
+      if (cache.timestamp && Date.now() - cache.timestamp < 300000) {
+        return cache;
+      }
+    } catch {
+      // Cache doesn't exist or invalid
+    }
+  }
+
+  // Fetch from GitHub API
+  const token = await _getGitHubToken();
+  const headers = {
+    'Accept': 'application/vnd.github.v3+json',
+    'User-Agent': 'MOS-API'
+  };
+  if (token) {
+    headers['Authorization'] = `token ${token}`;
+  }
+
+  const apiUrl = `https://api.github.com/repos/${owner}/${repo}/releases?per_page=50`;
+
+  const response = await fetch(apiUrl, { headers });
+  if (!response.ok) {
+    if (response.status === 404) {
+      throw new Error('Repository not found');
+    }
+    if (response.status === 403) {
+      throw new Error('Rate limit exceeded or authentication required');
+    }
+    throw new Error(`GitHub API error: ${response.status}`);
+  }
+
+  const releases = await response.json();
+
+  // Extract relevant data - first release is latest
+  const releaseList = releases.map((r, index) => {
+    // Extract architectures from .deb files
+    const debAssets = r.assets.filter(a => a.name.endsWith('.deb') && !a.name.endsWith('.md5'));
+    const archs = debAssets
+      .map(a => _extractArchFromDeb(a.name))
+      .filter(a => a !== null);
+    const architectures = archs.length > 0 ? [...new Set(archs)] : null;
+
+    return {
+      tag: r.tag_name,
+      name: r.name || r.tag_name,
+      published_at: r.published_at,
+      prerelease: r.prerelease,
+      latest: index === 0,
+      architectures,
+      assets: r.assets.map(a => ({
+        name: a.name,
+        size: a.size,
+        download_url: a.browser_download_url,
+        api_url: a.url  // For authenticated downloads
+      }))
+    };
+  });
+
+  const result = {
+    repository,
+    owner,
+    repo,
+    timestamp: Date.now(),
+    releases: releaseList
+  };
+
+  // Cache the result
+  await fs.mkdir(cacheDir, { recursive: true });
+  await fs.writeFile(cachePath, JSON.stringify(result, null, 2), 'utf8');
+
+  return result;
+}
+
+/**
+ * Read and validate a Hub plugin template
+ * @param {string} templatePath - Absolute path to Hub template JSON
+ * @returns {Promise<Object>} Template data
+ * @private
+ */
+async function _readHubTemplate(templatePath) {
+  const reposPath = '/var/mos/hub/repositories';
+
+  if (!templatePath || typeof templatePath !== 'string') {
+    throw new Error('Template path is required');
+  }
+
+  // Security: ensure path is within repositories
+  if (!templatePath.startsWith(reposPath)) {
+    throw new Error('Invalid template path');
+  }
+
+  try {
+    const data = await fs.readFile(templatePath, 'utf8');
+    return JSON.parse(data);
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      throw new Error('Template not found');
+    }
+    throw new Error(`Failed to read template: ${error.message}`);
+  }
+}
+
+/**
+ * Install a plugin from Hub template
+ * @param {string} templatePath - Absolute path to Hub template JSON
+ * @param {string} tag - Release tag to install
+ * @returns {Promise<Object>} Installation result
+ */
+async function installPlugin(templatePath, tag) {
+  if (!templatePath || typeof templatePath !== 'string') {
+    throw new Error('Template path is required');
+  }
+  if (!tag || typeof tag !== 'string') {
+    throw new Error('Tag is required');
+  }
+
+  // Read Hub template
+  const hubTemplate = await _readHubTemplate(templatePath);
+
+  if (!hubTemplate.repository) {
+    throw new Error('Template missing repository field');
+  }
+
+  const repository = hubTemplate.repository;
+
+  // Extract metadata from Hub template
+  const hubDriver = hubTemplate.driver === true;
+  const hubDonate = hubTemplate.donate || null;
+  const hubSupport = hubTemplate.support || null;
+  const hubHomepage = hubTemplate.homepage || null;
+  const hubDisplayName = hubTemplate.name || null;
+  const hubDescription = hubTemplate.description || null;
+  const hubIcon = hubTemplate.icon || null;
+  const hubAuthor = hubTemplate.author || null;
+  const hubSettings = hubTemplate.settings === true;
+
+  // Parse GitHub URL
+  const match = repository.match(/github\.com\/([^/]+)\/([^/]+?)(\.git)?$/);
+  if (!match) {
+    throw new Error('Invalid GitHub repository URL in template');
+  }
+
+  const owner = match[1];
+  const repo = match[2];
+  const pluginName = repo.replace(/^mos-/, '');
+
+  let tempDir = null;
+  let cacheDir = null;
+  let pluginBaseDir = null;
+  let pluginTagDir = null;
+
+  try {
+    const token = await _getGitHubToken();
+    const headers = {
+      'Accept': 'application/vnd.github.v3+json',
+      'User-Agent': 'MOS-API'
+    };
+    if (token) {
+      headers['Authorization'] = `token ${token}`;
+    }
+
+    // Get release info for the specific tag
+    const releaseUrl = `https://api.github.com/repos/${owner}/${repo}/releases/tags/${tag}`;
+    const releaseRes = await fetch(releaseUrl, { headers });
+    if (!releaseRes.ok) {
+      throw new Error(`Release ${tag} not found`);
+    }
+    const release = await releaseRes.json();
+
+    // Find .deb for system architecture
+    const debAssets = _filterDebByArch(release.assets);
+    const systemArch = _getSystemArch();
+
+    if (debAssets.length === 0) {
+      throw new Error(`No .deb file found for architecture: ${systemArch}`);
+    }
+    if (debAssets.length > 1) {
+      throw new Error(`Multiple .deb files found for architecture ${systemArch} - only one per architecture supported`);
+    }
+    const debAsset = debAssets[0];
+
+    // Find matching .md5 file
+    const md5Asset = release.assets.find(a => a.name === debAsset.name + '.md5');
+
+    // Create temp and cache directories
+    tempDir = path.join('/tmp', `plugin-install-${Date.now()}`);
+    cacheDir = path.join(PLUGINS_CACHE_DIR, pluginName, tag);
+    await fs.mkdir(tempDir, { recursive: true });
+    await fs.mkdir(cacheDir, { recursive: true });
+    // Download .deb file via API URL (works for public and private repos)
+    const debPath = path.join(cacheDir, debAsset.name);
+    const downloadHeaders = {
+      'Accept': 'application/octet-stream',
+      'User-Agent': 'MOS-API',
+      'X-GitHub-Api-Version': '2022-11-28'
+    };
+    if (token) {
+      downloadHeaders['Authorization'] = `token ${token}`;
+    }
+    const debRes = await fetch(debAsset.url, { headers: downloadHeaders, redirect: 'follow' });
+    if (!debRes.ok) throw new Error(`Failed to download .deb file: ${debRes.status}`);
+    const debBuffer = Buffer.from(await debRes.arrayBuffer());
+    await fs.writeFile(debPath, debBuffer);
+
+    // Download .deb.md5 if exists
+    let md5Path = null;
+    if (md5Asset) {
+      md5Path = path.join(cacheDir, md5Asset.name);
+      const md5Res = await fetch(md5Asset.url, { headers: downloadHeaders, redirect: 'follow' });
+      if (md5Res.ok) {
+        const md5Buffer = Buffer.from(await md5Res.arrayBuffer());
+        await fs.writeFile(md5Path, md5Buffer);
+      }
+    }
+
+    // Download source tarball
+    const tarballUrl = `https://api.github.com/repos/${owner}/${repo}/tarball/${tag}`;
+    const tarballRes = await fetch(tarballUrl, { headers, redirect: 'follow' });
+    if (!tarballRes.ok) throw new Error('Failed to download source');
+
+    // Check size before downloading fully
+    const contentLength = tarballRes.headers.get('content-length');
+    if (contentLength && parseInt(contentLength) > MAX_SOURCE_SIZE) {
+      throw new Error(`Source size exceeds 10MB limit (${Math.round(parseInt(contentLength) / 1024 / 1024)}MB)`);
+    }
+
+    const tarballBuffer = Buffer.from(await tarballRes.arrayBuffer());
+    if (tarballBuffer.length > MAX_SOURCE_SIZE) {
+      throw new Error(`Source size exceeds 10MB limit (${Math.round(tarballBuffer.length / 1024 / 1024)}MB)`);
+    }
+
+    const tarballPath = path.join(tempDir, 'source.tar.gz');
+    await fs.writeFile(tarballPath, tarballBuffer);
+
+    // Extract source
+    await execPromise(`tar -xzf "${tarballPath}" -C "${tempDir}"`);
+
+    // Find extracted directory (GitHub adds owner-repo-hash prefix)
+    const entries = await fs.readdir(tempDir);
+    const sourceDir = entries.find(e => e !== 'source.tar.gz');
+    if (!sourceDir) throw new Error('Failed to extract source');
+
+    const extractedPath = path.join(tempDir, sourceDir);
+
+    // Read plugin.config.js to get plugin name
+    const configPath = path.join(extractedPath, 'page', 'plugin.config.js');
+    let configContent;
+    try {
+      configContent = await fs.readFile(configPath, 'utf8');
+    } catch {
+      throw new Error('plugin.config.js not found in source');
+    }
+
+    // Parse name and version from plugin.config.js
+    const nameMatch = configContent.match(/name:\s*['"]([^'"]+)['"]/);
+    if (!nameMatch) {
+      throw new Error('Could not parse plugin name from plugin.config.js');
+    }
+    const configName = nameMatch[1];
+
+    const versionMatch = configContent.match(/version:\s*['"]([^'"]+)['"]/);
+    const configVersion = versionMatch ? versionMatch[1] : tag;
+
+    const displayNameMatch = configContent.match(/displayName:\s*['"]([^'"]+)['"]/);
+    const configDisplayName = displayNameMatch ? displayNameMatch[1] : hubDisplayName;
+
+    // Use Hub template values for driver, donate, support, homepage (not from plugin.config.js)
+    // Send notification with displayName
+    const notifyName = configDisplayName || hubDisplayName || configName;
+    await _sendNotification('Plugin', `Installing ${notifyName} Version: ${tag}`, 'normal');
+
+    // Create target directories
+    pluginBaseDir = path.join(PLUGINS_CONFIG_DIR, configName);
+    pluginTagDir = path.join(pluginBaseDir, tag);
+    await fs.mkdir(pluginTagDir, { recursive: true });
+
+    // Copy settings.json to base dir (if exists)
+    const settingsSource = path.join(extractedPath, 'settings.json');
+    try {
+      await fs.access(settingsSource);
+      await fs.copyFile(settingsSource, path.join(pluginBaseDir, 'settings.json'));
+    } catch {
+      // settings.json doesn't exist, skip
+    }
+
+    // Copy staticfiles directory to base dir (if exists)
+    const staticfilesSource = path.join(extractedPath, 'staticfiles');
+    try {
+      await fs.access(staticfilesSource);
+      const staticfilesDest = path.join(pluginBaseDir, 'staticfiles');
+      // Remove existing staticfiles and copy new ones
+      await fs.rm(staticfilesDest, { recursive: true, force: true }).catch(() => {});
+      await execPromise(`cp -r "${staticfilesSource}" "${staticfilesDest}"`);
+    } catch {
+      // staticfiles doesn't exist, skip
+    }
+
+    // Copy functions to tag dir (if exists)
+    const functionsSource = path.join(extractedPath, 'functions');
+    try {
+      await fs.access(functionsSource);
+      await fs.copyFile(functionsSource, path.join(pluginTagDir, 'functions'));
+    } catch {
+      // functions doesn't exist, skip
+    }
+
+    // Copy plugin.config.js to tag dir
+    await fs.copyFile(configPath, path.join(pluginTagDir, 'plugin.config.js'));
+
+    // Create template.json in base dir with repository info and Hub template values
+    const templateInfo = {
+      name: configName,
+      displayName: configDisplayName,
+      description: hubDescription,
+      version: configVersion,
+      tag,
+      repository,
+      driver: hubDriver,
+      settings: hubSettings,
+      icon: hubIcon,
+      author: hubAuthor,
+      donate: hubDonate,
+      support: hubSupport,
+      homepage: hubHomepage,
+      installed_at: new Date().toISOString()
+    };
+    await fs.writeFile(path.join(pluginBaseDir, 'template.json'), JSON.stringify(templateInfo, null, 2), 'utf8');
+
+    // Copy .deb and .deb.md5 to tag dir
+    const targetDebPath = path.join(pluginTagDir, debAsset.name);
+    await fs.copyFile(debPath, targetDebPath);
+    if (md5Path) {
+      await fs.copyFile(md5Path, path.join(pluginTagDir, md5Asset.name));
+      // Verify MD5 checksum
+      const md5Valid = await _verifyMd5(debPath, md5Path);
+      if (!md5Valid) {
+        throw new Error('MD5 checksum verification failed');
+      }
+    }
+
+    // Install .deb package
+    await execPromise(`dpkg -i "${targetDebPath}"`, { timeout: 120000 });
+
+    // Cleanup temp directory
+    await fs.rm(tempDir, { recursive: true, force: true });
+
+    // Execute install function from functions file if it exists
+    const functionsPath = path.join(pluginTagDir, 'functions');
+    try {
+      await fs.access(functionsPath);
+      // Source the functions file and run the install function
+      await execPromise(`bash -c 'source "${functionsPath}" && if type install &>/dev/null; then install; fi'`, {
+        cwd: pluginTagDir,
+        timeout: 600000 // 10min timeout for install
+      });
+    } catch (installError) {
+      // functions doesn't exist - skip silently
+      if (installError.code !== 'ENOENT') {
+        // install function failed - send notification but continue
+        await _sendNotification('Plugin', `Install function failed for ${notifyName}: ${installError.message}`, 'alert');
+      }
+    }
+
+    await _sendNotification('Plugin', `${notifyName} Version: ${tag} installed successfully`, 'normal');
+
+    // Cleanup cache directory (files already copied to plugin dir)
+    if (cacheDir) await fs.rm(cacheDir, { recursive: true, force: true }).catch(() => {});
+
+    return {
+      success: true,
+      plugin: configName,
+      tag,
+      installed_to: pluginTagDir,
+      files: {
+        deb: debAsset.name,
+        md5: md5Asset?.name || null,
+        config: 'plugin.config.js'
+      }
+    };
+
+  } catch (error) {
+    // Cleanup on error
+    if (tempDir) await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    if (cacheDir) await fs.rm(cacheDir, { recursive: true, force: true }).catch(() => {});
+    // Remove plugin directories if they were created
+    if (pluginTagDir) {
+      await fs.rm(pluginTagDir, { recursive: true, force: true }).catch(() => {});
+      // Remove base dir if empty
+      if (pluginBaseDir) {
+        try {
+          const entries = await fs.readdir(pluginBaseDir);
+          if (entries.length === 0) {
+            await fs.rm(pluginBaseDir, { recursive: true, force: true });
+          }
+        } catch {
+          // Ignore
+        }
+      }
+    }
+    await _sendNotification('Plugin', `Installation failed: ${error.message}`, 'alert');
+    throw error;
+  }
+}
+
+/**
+ * Get plugin settings
+ * @param {string} pluginName - Plugin name
+ * @returns {Promise<Object>} Settings object
+ */
+async function getPluginSettings(pluginName) {
+  if (!pluginName || typeof pluginName !== 'string') {
+    throw new Error('Plugin name is required');
+  }
+
+  // Sanitize plugin name (no path traversal)
+  const safeName = path.basename(pluginName);
+  if (safeName !== pluginName || pluginName.includes('..')) {
+    throw new Error('Invalid plugin name');
+  }
+
+  const settingsPath = path.join(PLUGINS_CONFIG_DIR, safeName, 'settings.json');
+
+  try {
+    const data = await fs.readFile(settingsPath, 'utf8');
+    return JSON.parse(data);
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      throw new Error(`Settings not found for plugin: ${pluginName}`);
+    }
+    throw new Error(`Error reading settings: ${error.message}`);
+  }
+}
+
+/**
+ * Set plugin settings
+ * @param {string} pluginName - Plugin name
+ * @param {Object} settings - Settings object to save
+ * @returns {Promise<Object>} Saved settings
+ */
+async function setPluginSettings(pluginName, settings) {
+  if (!pluginName || typeof pluginName !== 'string') {
+    throw new Error('Plugin name is required');
+  }
+  if (!settings || typeof settings !== 'object') {
+    throw new Error('Settings object is required');
+  }
+
+  // Sanitize plugin name (no path traversal)
+  const safeName = path.basename(pluginName);
+  if (safeName !== pluginName || pluginName.includes('..')) {
+    throw new Error('Invalid plugin name');
+  }
+
+  const pluginDir = path.join(PLUGINS_CONFIG_DIR, safeName);
+  const settingsPath = path.join(pluginDir, 'settings.json');
+
+  // Check if plugin directory exists
+  try {
+    await fs.access(pluginDir);
+  } catch {
+    throw new Error(`Plugin not found: ${pluginName}`);
+  }
+
+  // Write settings
+  await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
+
+  return settings;
+}
+
+/**
+ * Check for plugin updates
+ * Compares installed plugins with latest available versions
+ * @returns {Promise<Array>} Update check results
+ */
+async function checkUpdates() {
+  const results = [];
+  const versionsPath = path.join(PLUGINS_CACHE_DIR, 'versions.json');
+
+  // Read all plugin directories from /boot/optional/plugins
+  try {
+    await fs.access(PLUGINS_CONFIG_DIR);
+  } catch {
+    await fs.mkdir(PLUGINS_CACHE_DIR, { recursive: true });
+    await fs.writeFile(versionsPath, '[]', 'utf8');
+    return [];
+  }
+
+  const entries = await fs.readdir(PLUGINS_CONFIG_DIR, { withFileTypes: true });
+  const pluginDirs = entries.filter(e => e.isDirectory());
+
+  for (const dir of pluginDirs) {
+    const pluginName = dir.name;
+    const templatePath = path.join(PLUGINS_CONFIG_DIR, pluginName, 'template.json');
+
+    try {
+      const templateData = await fs.readFile(templatePath, 'utf8');
+      const template = JSON.parse(templateData);
+
+      if (!template.repository) continue;
+
+      // Get latest release from GitHub
+      let available = null;
+      try {
+        const releases = await getReleases(template.repository, true);
+        if (releases.releases && releases.releases.length > 0) {
+          const latest = releases.releases.find(r => r.latest);
+          if (latest) {
+            available = latest.tag;
+          }
+        }
+      } catch {
+        // Could not fetch releases
+      }
+
+      const installed = template.tag || 'unknown';
+      results.push({
+        plugin: pluginName,
+        installed,
+        available,
+        repository: template.repository,
+        update_available: available && installed !== available
+      });
+
+    } catch {
+      // Skip plugins without valid template.json
+    }
+  }
+
+  // Save to versions.json
+  await fs.mkdir(PLUGINS_CACHE_DIR, { recursive: true });
+  await fs.writeFile(versionsPath, JSON.stringify(results, null, 2), 'utf8');
+
+  return results;
+}
+
+/**
+ * Update one or all plugins
+ * @param {string} pluginName - Optional plugin name, if empty updates all
+ * @returns {Promise<Object>} Update results
+ */
+async function updatePlugins(pluginName = null) {
+  const versionsPath = path.join(PLUGINS_CACHE_DIR, 'versions.json');
+
+  // Check if versions.json exists
+  try {
+    await fs.access(versionsPath);
+  } catch {
+    throw new Error('No update check performed yet. Run updatecheck first.');
+  }
+
+  const versionsData = await fs.readFile(versionsPath, 'utf8');
+  const versions = JSON.parse(versionsData);
+
+  if (!Array.isArray(versions) || versions.length === 0) {
+    throw new Error('No plugins found in versions.json');
+  }
+
+  // Filter plugins to update
+  let pluginsToUpdate = versions.filter(p => p.update_available);
+
+  if (pluginName) {
+    pluginsToUpdate = pluginsToUpdate.filter(p => p.plugin === pluginName);
+    if (pluginsToUpdate.length === 0) {
+      const found = versions.find(p => p.plugin === pluginName);
+      if (!found) {
+        throw new Error(`Plugin not found: ${pluginName}`);
+      }
+      throw new Error(`No update available for: ${pluginName}`);
+    }
+  }
+
+  if (pluginsToUpdate.length === 0) {
+    return { updated: [], message: 'No updates available' };
+  }
+
+  const results = [];
+
+  for (const plugin of pluginsToUpdate) {
+    try {
+      const templatePath = path.join(PLUGINS_CONFIG_DIR, plugin.plugin, 'template.json');
+      const templateData = await fs.readFile(templatePath, 'utf8');
+      const template = JSON.parse(templateData);
+      const oldTag = template.tag;
+      const newTag = plugin.available;
+      const notifyName = template.displayName || plugin.plugin;
+
+      await _sendNotification('Plugin', `Updating ${notifyName} to Version: ${plugin.available}`, 'normal');
+
+      // Get GitHub headers
+      const token = await _getGitHubToken();
+      const headers = {
+        'Accept': 'application/vnd.github.v3+json',
+        'User-Agent': 'MOS-API'
+      };
+      if (token) {
+        headers['Authorization'] = `token ${token}`;
+      }
+
+      // Parse repository
+      const match = plugin.repository.match(/github\.com\/([^/]+)\/([^/]+?)(\.git)?$/);
+      if (!match) throw new Error('Invalid repository URL');
+      const owner = match[1];
+      const repo = match[2];
+
+      // Get release info
+      const releaseUrl = `https://api.github.com/repos/${owner}/${repo}/releases/tags/${newTag}`;
+      const releaseRes = await fetch(releaseUrl, { headers });
+      if (!releaseRes.ok) throw new Error(`Release ${newTag} not found`);
+      const release = await releaseRes.json();
+
+      // Find .deb for system architecture
+      const debAssets = _filterDebByArch(release.assets);
+      const systemArch = _getSystemArch();
+      if (debAssets.length === 0) throw new Error(`No .deb file found for architecture: ${systemArch}`);
+      if (debAssets.length > 1) throw new Error(`Multiple .deb files for ${systemArch} - only one per architecture supported`);
+      const debAsset = debAssets[0];
+
+      // Find matching .md5 file
+      const md5Asset = release.assets.find(a => a.name === debAsset.name + '.md5');
+
+      // Create directories
+      const tempDir = path.join('/tmp', `plugin-update-${Date.now()}`);
+      const cacheDir = path.join(PLUGINS_CACHE_DIR, plugin.plugin, newTag);
+      await fs.mkdir(tempDir, { recursive: true });
+      await fs.mkdir(cacheDir, { recursive: true });
+
+      try {
+        // Download .deb via API URL
+        const debPath = path.join(cacheDir, debAsset.name);
+        const downloadHeaders = {
+          'Accept': 'application/octet-stream',
+          'User-Agent': 'MOS-API',
+          'X-GitHub-Api-Version': '2022-11-28'
+        };
+        if (token) {
+          downloadHeaders['Authorization'] = `token ${token}`;
+        }
+        const debRes = await fetch(debAsset.url, { headers: downloadHeaders, redirect: 'follow' });
+        if (!debRes.ok) throw new Error(`Failed to download .deb: ${debRes.status}`);
+        await fs.writeFile(debPath, Buffer.from(await debRes.arrayBuffer()));
+
+        // Download and verify MD5
+        if (md5Asset) {
+          const md5Path = path.join(cacheDir, md5Asset.name);
+          const md5Res = await fetch(md5Asset.url, { headers: downloadHeaders, redirect: 'follow' });
+          if (md5Res.ok) {
+            await fs.writeFile(md5Path, Buffer.from(await md5Res.arrayBuffer()));
+            const md5Valid = await _verifyMd5(debPath, md5Path);
+            if (!md5Valid) throw new Error('MD5 checksum verification failed');
+          }
+        }
+
+        // Download and extract source
+        const tarballUrl = `https://api.github.com/repos/${owner}/${repo}/tarball/${newTag}`;
+        const tarballRes = await fetch(tarballUrl, { headers, redirect: 'follow' });
+        if (!tarballRes.ok) throw new Error('Failed to download source');
+        const tarballBuffer = Buffer.from(await tarballRes.arrayBuffer());
+        if (tarballBuffer.length > MAX_SOURCE_SIZE) throw new Error('Source exceeds 10MB limit');
+
+        const tarballPath = path.join(tempDir, 'source.tar.gz');
+        await fs.writeFile(tarballPath, tarballBuffer);
+        await execPromise(`tar -xzf "${tarballPath}" -C "${tempDir}"`);
+
+        const entries = await fs.readdir(tempDir);
+        const sourceDir = entries.find(e => e !== 'source.tar.gz');
+        if (!sourceDir) throw new Error('Failed to extract source');
+        const extractedPath = path.join(tempDir, sourceDir);
+
+        // Read plugin.config.js
+        const configPath = path.join(extractedPath, 'page', 'plugin.config.js');
+        const configContent = await fs.readFile(configPath, 'utf8');
+        const versionMatch = configContent.match(/version:\s*['"]([^'"]+)['"]/);
+        const configVersion = versionMatch ? versionMatch[1] : newTag;
+
+        const displayNameMatch = configContent.match(/displayName:\s*['"]([^'"]+)['"]/);
+        const configDisplayName = displayNameMatch ? displayNameMatch[1] : null;
+
+        const driverMatch = configContent.match(/driver:\s*(true|false)/);
+        const configDriver = driverMatch ? driverMatch[1] === 'true' : false;
+
+        const donateMatch = configContent.match(/donate:\s*['"]([^'"]+)['"]/);
+        const configDonate = donateMatch ? donateMatch[1] : null;
+
+        const supportMatch = configContent.match(/support:\s*['"]([^'"]+)['"]/);
+        const configSupport = supportMatch ? supportMatch[1] : null;
+
+        const homepageMatch = configContent.match(/homepage:\s*['"]([^'"]+)['"]/);
+        const configHomepage = homepageMatch ? homepageMatch[1] : null;
+
+        // Remove old tag directory
+        const oldTagDir = path.join(PLUGINS_CONFIG_DIR, plugin.plugin, oldTag);
+        await fs.rm(oldTagDir, { recursive: true, force: true }).catch(() => {});
+
+        // Create new tag directory
+        const newTagDir = path.join(PLUGINS_CONFIG_DIR, plugin.plugin, newTag);
+        await fs.mkdir(newTagDir, { recursive: true });
+
+        // Copy files (NOT staticfiles and settings.json)
+        // Copy functions
+        const functionsSource = path.join(extractedPath, 'functions');
+        try {
+          await fs.access(functionsSource);
+          await fs.copyFile(functionsSource, path.join(newTagDir, 'functions'));
+        } catch { }
+
+        // Copy plugin.config.js
+        await fs.copyFile(configPath, path.join(newTagDir, 'plugin.config.js'));
+
+        // Copy .deb
+        await fs.copyFile(debPath, path.join(newTagDir, debAsset.name));
+        if (md5Asset) {
+          await fs.copyFile(path.join(cacheDir, md5Asset.name), path.join(newTagDir, md5Asset.name));
+        }
+
+        // Update template.json
+        template.version = configVersion;
+        template.displayName = configDisplayName;
+        template.driver = configDriver;
+        template.donate = configDonate;
+        template.support = configSupport;
+        template.homepage = configHomepage;
+        template.tag = newTag;
+        template.updated_at = new Date().toISOString();
+        await fs.writeFile(path.join(PLUGINS_CONFIG_DIR, plugin.plugin, 'template.json'), JSON.stringify(template, null, 2), 'utf8');
+
+        // Install .deb
+        await execPromise(`dpkg -i "${path.join(newTagDir, debAsset.name)}"`, { timeout: 300000 });
+
+        // Execute on-update function
+        const functionsPath = path.join(newTagDir, 'functions');
+        try {
+          await fs.access(functionsPath);
+          await execPromise(`bash -c 'source "${functionsPath}" && if type on-update &>/dev/null; then on-update; fi'`, {
+            cwd: newTagDir,
+            timeout: 600000
+          });
+        } catch (updateError) {
+          if (updateError.code !== 'ENOENT') {
+            await _sendNotification('Plugin', `on-update failed for ${notifyName}: ${updateError.message}`, 'alert');
+          }
+        }
+
+        // Cleanup temp and cache directories
+        await fs.rm(tempDir, { recursive: true, force: true });
+        await fs.rm(cacheDir, { recursive: true, force: true }).catch(() => {});
+
+        await _sendNotification('Plugin', `${notifyName} updated to Version: ${newTag}`, 'normal');
+        results.push({ plugin: plugin.plugin, from: oldTag, to: newTag, success: true });
+
+      } catch (err) {
+        await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+        await fs.rm(cacheDir, { recursive: true, force: true }).catch(() => {});
+        await _sendNotification('Plugin', `Update failed for ${notifyName}: ${err.message}`, 'alert');
+        results.push({ plugin: plugin.plugin, success: false, error: err.message });
+      }
+
+    } catch (err) {
+      results.push({ plugin: plugin.plugin, success: false, error: err.message });
+    }
+  }
+
+  // Refresh versions.json
+  await checkUpdates();
+
+  return { updated: results };
+}
+
+/**
+ * Uninstall a plugin
+ * @param {string} pluginName - Plugin name to uninstall
+ * @returns {Promise<Object>} Uninstall result
+ */
+async function uninstallPlugin(pluginName) {
+  if (!pluginName || typeof pluginName !== 'string') {
+    throw new Error('Plugin name is required');
+  }
+
+  // Sanitize plugin name
+  const safeName = path.basename(pluginName);
+  if (safeName !== pluginName || pluginName.includes('..')) {
+    throw new Error('Invalid plugin name');
+  }
+
+  const pluginConfigDir = path.join(PLUGINS_CONFIG_DIR, safeName);
+  const pluginWebDir = path.join(PLUGINS_DIR, safeName);
+
+  // Check if plugin exists in either location
+  let configExists = false;
+  let webExists = false;
+  try {
+    await fs.access(pluginConfigDir);
+    configExists = true;
+  } catch { }
+  try {
+    await fs.access(pluginWebDir);
+    webExists = true;
+  } catch { }
+
+  if (!configExists && !webExists) {
+    throw new Error(`Plugin not found: ${pluginName}`);
+  }
+
+  // Check if this is a driver plugin by reading template.json
+  let isDriver = false;
+  let displayName = pluginName;
+  if (configExists) {
+    try {
+      const templatePath = path.join(pluginConfigDir, 'template.json');
+      const templateData = await fs.readFile(templatePath, 'utf8');
+      const template = JSON.parse(templateData);
+      isDriver = template.driver === true;
+      displayName = template.displayName || pluginName;
+    } catch { }
+  }
+
+  try {
+    // Find the .deb package name from any tag directory (only if config dir exists)
+    let debPackageName = null;
+    if (configExists) {
+      const entries = await fs.readdir(pluginConfigDir);
+      for (const entry of entries) {
+        const entryPath = path.join(pluginConfigDir, entry);
+        const stat = await fs.stat(entryPath);
+        if (stat.isDirectory()) {
+          const files = await fs.readdir(entryPath);
+          const debFile = files.find(f => f.endsWith('.deb') && !f.endsWith('.md5'));
+          if (debFile) {
+            // Extract package name from .deb filename (format: name_version_arch.deb)
+            const match = debFile.match(/^([^_]+)/);
+            if (match) {
+              debPackageName = match[1].replace(/-/g, '_');
+            }
+            break;
+          }
+        }
+      }
+    }
+
+    // Uninstall .deb package if found
+    if (debPackageName) {
+      try {
+        await execPromise(`dpkg -r "${debPackageName}"`, { timeout: 120000 });
+      } catch (dpkgError) {
+        // dpkg might fail if package wasn't installed or has different name
+        // Try alternative package name format
+        try {
+          await execPromise(`dpkg -r "${debPackageName.replace(/_/g, '-')}"`, { timeout: 120000 });
+        } catch {
+          // Package might not be installed via dpkg, continue with cleanup
+        }
+      }
+    }
+
+    // Delete plugin directories (if they exist)
+    if (configExists) {
+      await fs.rm(pluginConfigDir, { recursive: true, force: true });
+    }
+    if (webExists) {
+      await fs.rm(pluginWebDir, { recursive: true, force: true });
+    }
+
+    // Delete driver directory if this is a driver plugin
+    let driverDir = null;
+    if (isDriver) {
+      driverDir = path.join('/boot/optional/drivers', safeName);
+      try {
+        await fs.access(driverDir);
+        await fs.rm(driverDir, { recursive: true, force: true });
+      } catch {
+        driverDir = null; // Directory doesn't exist
+      }
+    }
+
+    // Clean up cache
+    const cacheDir = path.join(PLUGINS_CACHE_DIR, safeName);
+    await fs.rm(cacheDir, { recursive: true, force: true }).catch(() => {});
+
+    return {
+      success: true,
+      plugin: pluginName,
+      reboot_required: isDriver,
+      removed: {
+        config: configExists ? pluginConfigDir : null,
+        web: webExists ? pluginWebDir : null,
+        driver: driverDir
+      }
+    };
+
+  } catch (error) {
+    throw error;
+  }
+}
+
+// Blocked functions that cannot be executed via executeFunction
+const BLOCKED_FUNCTIONS = ['install', 'uninstall', 'mos-start', 'plugin-update', 'mos-osupdate'];
+
+/**
+ * Execute a function from a plugin's functions file
+ * @param {string} pluginName - Plugin name
+ * @param {string} functionName - Function to execute
+ * @param {string} displayName - Optional display name for notifications
+ * @param {boolean} restart - Optional flag to show reboot message on success
+ * @returns {Promise<void>}
+ */
+async function executeFunction(pluginName, functionName, displayName = null, restart = false) {
+  if (!pluginName || typeof pluginName !== 'string') {
+    throw new Error('Plugin name is required');
+  }
+  if (!functionName || typeof functionName !== 'string') {
+    throw new Error('Function name is required');
+  }
+
+  // Sanitize inputs
+  const safeName = path.basename(pluginName);
+  if (safeName !== pluginName || pluginName.includes('..')) {
+    throw new Error('Invalid plugin name');
+  }
+
+  const safeFunctionName = functionName.replace(/[^a-zA-Z0-9_-]/g, '');
+  if (safeFunctionName !== functionName) {
+    throw new Error('Invalid function name');
+  }
+
+  // Check for blocked functions
+  if (BLOCKED_FUNCTIONS.includes(functionName)) {
+    throw new Error(`Function '${functionName}' is not allowed to be executed`);
+  }
+
+  const pluginConfigDir = path.join(PLUGINS_CONFIG_DIR, safeName);
+
+  // Find the current tag directory
+  let tagDir = null;
+  try {
+    const templatePath = path.join(pluginConfigDir, 'template.json');
+    const templateData = await fs.readFile(templatePath, 'utf8');
+    const template = JSON.parse(templateData);
+    tagDir = path.join(pluginConfigDir, template.tag);
+  } catch {
+    throw new Error(`Plugin not found: ${pluginName}`);
+  }
+
+  // Check if functions file exists
+  const functionsPath = path.join(tagDir, 'functions');
+  try {
+    await fs.access(functionsPath);
+  } catch {
+    throw new Error(`No functions file found for plugin: ${pluginName}`);
+  }
+
+  const notifyName = displayName || functionName;
+
+  await _sendNotification('Plugin', `Executing ${notifyName}`, 'normal');
+
+  try {
+    await execPromise(`bash -c 'source "${functionsPath}" && if type ${safeFunctionName} &>/dev/null; then ${safeFunctionName}; else echo "Function not found" >&2; exit 1; fi'`, {
+      cwd: tagDir,
+      timeout: 600000 // 10min timeout
+    });
+
+    const successMsg = restart
+      ? `${notifyName} completed successfully, please reboot your server`
+      : `${notifyName} completed successfully`;
+    await _sendNotification('Plugin', successMsg, restart ? 'warning' : 'normal');
+
+  } catch (error) {
+    await _sendNotification('Plugin', `${notifyName} failed: ${error.message}`, 'alert');
+    throw error;
+  }
+}
+
+/**
+ * Get installed driver package for a driver plugin
+ * @param {string} pluginName - Plugin name
+ * @returns {Promise<Object>} Driver package info
+ */
+async function getDriverPackage(pluginName) {
+  if (!pluginName || typeof pluginName !== 'string') {
+    throw new Error('Plugin name is required');
+  }
+
+  // Sanitize plugin name
+  const safeName = path.basename(pluginName);
+  if (safeName !== pluginName || pluginName.includes('..')) {
+    throw new Error('Invalid plugin name');
+  }
+
+  const pluginConfigDir = path.join(PLUGINS_CONFIG_DIR, safeName);
+
+  // Read template.json to check if this is a driver
+  let template;
+  try {
+    const templatePath = path.join(pluginConfigDir, 'template.json');
+    const templateData = await fs.readFile(templatePath, 'utf8');
+    template = JSON.parse(templateData);
+  } catch {
+    throw new Error(`Plugin not found: ${pluginName}`);
+  }
+
+  if (template.driver !== true) {
+    throw new Error(`Plugin '${pluginName}' is not a driver plugin`);
+  }
+
+  // Get current kernel version
+  const { stdout: kernelVersion } = await execPromise('uname -r');
+  const kernel = kernelVersion.trim();
+
+  // Look for .deb files in driver directory
+  const driverDir = path.join('/boot/optional/drivers', safeName, kernel);
+
+  try {
+    await fs.access(driverDir);
+  } catch {
+    throw new Error(`No driver directory found for kernel ${kernel}`);
+  }
+
+  const files = await fs.readdir(driverDir);
+  const debFiles = files.filter(f => f.endsWith('.deb') && !f.endsWith('.md5'));
+
+  if (debFiles.length === 0) {
+    throw new Error(`No driver package found for kernel ${kernel}`);
+  }
+
+  // Return first .deb found (typically there's only one)
+  const packageName = debFiles[0];
+  const packagePath = path.join(driverDir, packageName);
+
+  return {
+    plugin: pluginName,
+    kernel,
+    package: packageName,
+    path: packagePath,
+    directory: driverDir
+  };
+}
+
+/**
+ * Get plugin settings
+ * @param {string} pluginName - Plugin name
+ * @returns {Promise<Object>} Settings object
+ */
+async function getPluginSettings(pluginName) {
+  if (!pluginName || typeof pluginName !== 'string') {
+    throw new Error('Plugin name is required');
+  }
+
+  // Sanitize plugin name (no path traversal)
+  const safeName = path.basename(pluginName);
+  if (safeName !== pluginName || pluginName.includes('..')) {
+    throw new Error('Invalid plugin name');
+  }
+
+  const settingsPath = path.join(PLUGINS_CONFIG_DIR, safeName, 'settings.json');
+
+  try {
+    const data = await fs.readFile(settingsPath, 'utf8');
+    return JSON.parse(data);
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      throw new Error(`Settings not found for plugin: ${pluginName}`);
+    }
+    throw new Error(`Error reading settings: ${error.message}`);
+  }
+}
+
+/**
+ * Set plugin settings
+ * @param {string} pluginName - Plugin name
+ * @param {Object} settings - Settings object to save
+ * @returns {Promise<Object>} Saved settings
+ */
+async function setPluginSettings(pluginName, settings) {
+  if (!pluginName || typeof pluginName !== 'string') {
+    throw new Error('Plugin name is required');
+  }
+  if (!settings || typeof settings !== 'object') {
+    throw new Error('Settings object is required');
+  }
+
+  // Sanitize plugin name (no path traversal)
+  const safeName = path.basename(pluginName);
+  if (safeName !== pluginName || pluginName.includes('..')) {
+    throw new Error('Invalid plugin name');
+  }
+
+  const pluginDir = path.join(PLUGINS_CONFIG_DIR, safeName);
+  const settingsPath = path.join(pluginDir, 'settings.json');
+
+  // Check if plugin directory exists
+  try {
+    await fs.access(pluginDir);
+  } catch {
+    throw new Error(`Plugin not found: ${pluginName}`);
+  }
+
+  // Write settings
+  await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
+
+  return settings;
+}
+
 module.exports = {
-  getPlugins
+  getPlugins,
+  executeQuery,
+  getReleases,
+  installPlugin,
+  uninstallPlugin,
+  executeFunction,
+  getDriverPackage,
+  getPluginSettings,
+  setPluginSettings,
+  checkUpdates,
+  updatePlugins
 };
