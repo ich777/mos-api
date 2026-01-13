@@ -194,7 +194,11 @@ class ZramService {
 
     // Unload module
     console.log('[ZRAM] Unloading zram module');
-    await execPromise('modprobe -r zram');
+    try {
+      await execPromise('modprobe -r zram');
+    } catch (error) {
+      throw new Error(`Failed to unload ZRAM module: ${error.message}. Module may still be in use.`);
+    }
     console.log('[ZRAM] Module unloaded successfully');
   }
 
@@ -584,6 +588,13 @@ class ZramService {
     if (devices.length === 0) {
       throw new Error('No ZRAM devices configured');
     }
+
+    // Compact indices to remove gaps (e.g., after device deletion)
+    // Sort by current index to maintain relative order, then reassign sequential indices
+    devices.sort((a, b) => a.index - b.index);
+    devices.forEach((device, i) => {
+      device.index = i;
+    });
 
     const moduleLoaded = await this.isModuleLoaded();
     if (!moduleLoaded) {
