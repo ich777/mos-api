@@ -494,6 +494,48 @@ class HubService {
   }
 
   /**
+   * Processes a single plugin template JSON
+   * @param {string} jsonPath - Path to plugin JSON
+   * @param {Object} maintainerInfo - Maintainer info
+   * @param {string} repoPath - Path to git repository root
+   * @returns {Promise<Object|null>} Template object or null
+   */
+  async _processPluginTemplate(jsonPath, maintainerInfo, repoPath) {
+    const template = await this._readJsonFile(jsonPath);
+    if (!template) return null;
+
+    // Validate category is an array (plugins may not have category, default to empty)
+    const category = Array.isArray(template.category) ? template.category : [];
+
+    // Get git timestamps
+    const { created_at, updated_at } = await this._getGitTimestamps(jsonPath, repoPath);
+
+    return {
+      name: template.name || '',
+      maintainer: maintainerInfo.maintainer || template.author || '',
+      maintainer_donate: maintainerInfo.donation || '',
+      donate: template.donate || '',
+      support: template.support || '',
+      type: 'plugin',
+      category,
+      description: template.description || '',
+      website: template.homepage || '',
+      icon: template.icon || '',
+      repository: template.repository || '',
+      settings: template.settings || false,
+      driver: template.driver || false,
+      created_at,
+      updated_at,
+      stack_images: [],
+      files: {
+        template: jsonPath,
+        yaml: null,
+        env: null
+      }
+    };
+  }
+
+  /**
    * Processes a single compose template
    * @param {string} templateDir - Path to compose template directory
    * @param {Object} maintainerInfo - Maintainer info
@@ -625,13 +667,29 @@ class HubService {
             if (template) templates.push(template);
           }
         }
+
+        // Process plugin templates
+        const pluginsPath = path.join(repoPath, 'plugins');
+        if (await this._exists(pluginsPath)) {
+          const pluginFiles = await fs.readdir(pluginsPath);
+          for (const file of pluginFiles) {
+            if (file.endsWith('.json')) {
+              const template = await this._processPluginTemplate(
+                path.join(pluginsPath, file),
+                maintainerInfo,
+                repoPath
+              );
+              if (template) templates.push(template);
+            }
+          }
+        }
       }
     }
 
     // Filter results
     let filtered = templates;
 
-    // Filter by type (docker/compose)
+    // Filter by type (docker/compose/plugin)
     if (typeLower) {
       filtered = filtered.filter(t => t.type === typeLower);
     }
@@ -814,6 +872,34 @@ class HubService {
     }
 
     return result;
+  }
+
+  /**
+   * Gets a plugin template by its file path
+   * @param {string} templatePath - Absolute path to plugin JSON
+   * @returns {Promise<Object>} The template content
+   */
+  async getPluginTemplate(templatePath) {
+    if (!templatePath) {
+      throw new Error('Template path is required');
+    }
+
+    // Security: ensure path is within repositories
+    const reposPath = '/var/mos/hub/repositories';
+    if (!templatePath.startsWith(reposPath)) {
+      throw new Error('Invalid template path');
+    }
+
+    if (!await this._exists(templatePath)) {
+      throw new Error('Template not found');
+    }
+
+    const template = await this._readJsonFile(templatePath);
+    if (!template) {
+      throw new Error('Failed to read template');
+    }
+
+    return template;
   }
 }
 

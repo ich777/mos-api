@@ -250,7 +250,7 @@ router.post('/update', async (req, res) => {
  *         name: type
  *         schema:
  *           type: string
- *           enum: [docker, compose]
+ *           enum: [docker, compose, plugin]
  *         description: Filter by type
  *       - in: query
  *         name: sort
@@ -296,7 +296,7 @@ router.post('/update', async (req, res) => {
  *                         type: string
  *                       type:
  *                         type: string
- *                         enum: [docker, compose]
+ *                         enum: [docker, compose, plugin]
  *                       category:
  *                         type: array
  *                       description:
@@ -452,6 +452,76 @@ router.post('/compose/template', async (req, res) => {
   try {
     const { template, yaml, env } = req.body;
     const content = await hubService.getComposeFiles(template, yaml, env);
+    res.json(content);
+  } catch (error) {
+    if (error.message.includes('required') || error.message.includes('Invalid')) {
+      res.status(400).json({ error: error.message });
+    } else if (error.message.includes('not found')) {
+      res.status(404).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
+/**
+ * @swagger
+ * /mos/hub/plugin/template:
+ *   post:
+ *     summary: Get plugin template content
+ *     description: Returns the raw content of a plugin template JSON
+ *     tags: [MOS Hub]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - template
+ *             properties:
+ *               template:
+ *                 type: string
+ *                 description: Absolute path to plugin template JSON
+ *     responses:
+ *       200:
+ *         description: Plugin template content
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 name:
+ *                   type: string
+ *                 description:
+ *                   type: string
+ *                 repository:
+ *                   type: string
+ *                 settings:
+ *                   type: boolean
+ *                 driver:
+ *                   type: boolean
+ *                 icon:
+ *                   type: string
+ *                 author:
+ *                   type: string
+ *                 homepage:
+ *                   type: string
+ *                 support:
+ *                   type: string
+ *       400:
+ *         description: Invalid or missing path
+ *       404:
+ *         description: Template not found
+ *       500:
+ *         description: Server error
+ */
+router.post('/plugin/template', async (req, res) => {
+  try {
+    const { template } = req.body;
+    const content = await hubService.getPluginTemplate(template);
     res.json(content);
   } catch (error) {
     if (error.message.includes('required') || error.message.includes('Invalid')) {
