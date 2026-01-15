@@ -495,6 +495,16 @@ async function installPlugin(templatePath, tag) {
   const repo = match[2];
   const pluginName = repo.replace(/^mos-/, '');
 
+  // Check if plugin is already installed
+  const existingPluginDir = path.join(PLUGINS_CONFIG_DIR, pluginName);
+  try {
+    await fs.access(existingPluginDir);
+    throw new Error(`Plugin '${pluginName}' is already installed. Please remove it first if you plan to use a different version.`);
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
+    // Plugin not installed, continue
+  }
+
   let tempDir = null;
   let cacheDir = null;
   let pluginBaseDir = null;
@@ -1183,6 +1193,31 @@ async function uninstallPlugin(pluginName) {
             }
             break;
           }
+        }
+      }
+    }
+
+    // Execute uninstall function from functions file if it exists (before removing files)
+    if (configExists) {
+      const entries = await fs.readdir(pluginConfigDir);
+      for (const entry of entries) {
+        const entryPath = path.join(pluginConfigDir, entry);
+        const stat = await fs.stat(entryPath);
+        if (stat.isDirectory()) {
+          const functionsPath = path.join(entryPath, 'functions');
+          try {
+            await fs.access(functionsPath);
+            await execPromise(`bash -c 'source "${functionsPath}" && if type uninstall &>/dev/null; then uninstall; fi'`, {
+              cwd: entryPath,
+              timeout: 600000 // 10min timeout for uninstall
+            });
+          } catch (uninstallError) {
+            if (uninstallError.code !== 'ENOENT') {
+              // uninstall function failed - send notification but continue
+              await _sendNotification('Plugin', `Uninstall function failed for ${displayName}: ${uninstallError.message}`, 'alert');
+            }
+          }
+          break; // Only one tag directory expected
         }
       }
     }
