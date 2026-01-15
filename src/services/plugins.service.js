@@ -1087,17 +1087,17 @@ async function updatePlugins(pluginName = null) {
         // Install .deb
         await execPromise(`dpkg -i "${path.join(newTagDir, debAsset.name)}"`, { timeout: 300000 });
 
-        // Execute on-update function
+        // Execute plugin-update function
         const functionsPath = path.join(newTagDir, 'functions');
         try {
           await fs.access(functionsPath);
-          await execPromise(`bash -c 'source "${functionsPath}" && if type on-update &>/dev/null; then on-update; fi'`, {
+          await execPromise(`bash -c 'source "${functionsPath}" && if type plugin_update &>/dev/null; then plugin_update; fi'`, {
             cwd: newTagDir,
             timeout: 600000
           });
         } catch (updateError) {
           if (updateError.code !== 'ENOENT') {
-            await _sendNotification('Plugin', `on-update failed for ${notifyName}: ${updateError.message}`, 'alert');
+            await _sendNotification('Plugin', `plugin-update failed for ${notifyName}: ${updateError.message}`, 'alert');
           }
         }
 
@@ -1278,7 +1278,7 @@ async function uninstallPlugin(pluginName) {
 }
 
 // Blocked functions that cannot be executed via executeFunction
-const BLOCKED_FUNCTIONS = ['install', 'uninstall', 'mos-start', 'plugin-update', 'mos-osupdate'];
+const BLOCKED_FUNCTIONS = ['install', 'uninstall', 'mos_start', 'plugin_update', 'mos_osupdate'];
 
 /**
  * Execute a function from a plugin's functions file
