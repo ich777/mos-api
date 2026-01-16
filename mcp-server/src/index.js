@@ -13,7 +13,9 @@ import { tools, handleToolCall } from './tools/index.js';
 
 // Configuration from environment variables
 const config = {
-  baseUrl: process.env.MOS_API_URL || 'http://localhost:3000',
+  // On MOS server: http://127.0.0.1:3000 (default)
+  // External access: http://MOSIP (without /api/v1, added by client)
+  baseUrl: process.env.MOS_API_URL || 'http://127.0.0.1:3000',
   token: process.env.MOS_API_TOKEN || '',
   username: process.env.MOS_USERNAME || '',
   password: process.env.MOS_PASSWORD || '',
