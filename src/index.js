@@ -277,12 +277,12 @@ async function startServer() {
       this.poolsService = new PoolsService(eventEmitter);
     }
 
-    async listPools(filters = {}) {
-      return await this.poolsService.listPools(filters);
+    async listPools(filters = {}, user = null) {
+      return await this.poolsService.listPools(filters, user);
     }
 
-    async getPoolById(id) {
-      const pools = await this.listPools();
+    async getPoolById(id, user = null) {
+      const pools = await this.listPools({}, user);
       return pools.find(p => p.id === id);
     }
 

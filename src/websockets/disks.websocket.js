@@ -140,6 +140,33 @@ class DisksWebSocketManager {
       }
     });
 
+    // Update user preferences (e.g., byte_format changed)
+    socket.on('update-preferences', async (data) => {
+      try {
+        const { byte_format } = data || {};
+
+        if (byte_format && (byte_format === 'binary' || byte_format === 'decimal')) {
+          // Update socket.user
+          if (socket.user) {
+            socket.user.byte_format = byte_format;
+          }
+
+          // Update clientSubscriptions
+          const sub = this.clientSubscriptions.get(socket.id);
+          if (sub && sub.user) {
+            sub.user.byte_format = byte_format;
+            this.clientSubscriptions.set(socket.id, sub);
+          }
+
+          socket.emit('preferences-updated', { byte_format });
+          console.log(`Disks client ${socket.id} updated byte_format to: ${byte_format}`);
+        }
+      } catch (error) {
+        console.error('Error in update-preferences:', error);
+        socket.emit('error', { message: 'Failed to update preferences' });
+      }
+    });
+
     // Handle disconnect
     socket.on('disconnect', () => {
       console.log(`Disks WebSocket client disconnected: ${socket.id}`);
@@ -397,22 +424,42 @@ class DisksWebSocketManager {
 
   /**
    * Authenticate user with caching
+   * Note: byte_format is always loaded fresh from database to reflect user preference changes
    */
   async authenticateUser(token) {
     if (!token) {
       return { success: false, message: 'Authentication token is required' };
     }
 
-    // Check cache first
+    const jwt = require('jsonwebtoken');
+    const { getBootToken } = require('../middleware/auth.middleware');
+    const userService = require('../services/user.service');
+
+    // Check cache first for basic auth validation
     const cached = this.authCache.get(token);
     if (cached && (Date.now() - cached.timestamp) < this.authCacheDuration) {
+      // For cached results, refresh byte_format from database for regular users
+      if (cached.data.success && cached.data.user && !cached.data.user.isBootToken && cached.data.user.id !== 'boot') {
+        try {
+          const users = await userService.loadUsers();
+          const currentUser = users.find(u => u.id === cached.data.user.id);
+          if (currentUser) {
+            return {
+              ...cached.data,
+              user: {
+                ...cached.data.user,
+                byte_format: currentUser.byte_format
+              }
+            };
+          }
+        } catch (e) {
+          // If refresh fails, return cached data as fallback
+        }
+      }
       return cached.data;
     }
 
     try {
-      const jwt = require('jsonwebtoken');
-      const { getBootToken } = require('../middleware/auth.middleware');
-      const userService = require('../services/user.service');
 
       // Check if it's the boot token
       const bootToken = await getBootToken();

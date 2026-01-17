@@ -807,7 +807,7 @@ class DockerWebSocketManager extends EventEmitter {
     // Add Docker auth for docker/docker-compose commands
     let authCleanup = () => {};
     let spawnOptions = { ...options, shell: false };
-    
+
     if (command === 'docker-compose' || command === 'docker') {
       const { configDir, cleanup } = await createDockerAuthConfig();
       authCleanup = cleanup;

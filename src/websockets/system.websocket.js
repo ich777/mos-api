@@ -129,6 +129,48 @@ class SystemLoadWebSocketManager {
       }
     });
 
+    // Update user preferences (e.g., byte_format changed)
+    socket.on('update-preferences', async (data) => {
+      try {
+        const { byte_format } = data || {};
+
+        if (byte_format && (byte_format === 'binary' || byte_format === 'decimal')) {
+          // Update socket.user
+          if (socket.user) {
+            socket.user.byte_format = byte_format;
+          }
+
+          // Update clientPoolsPreferences
+          const prefs = this.clientPoolsPreferences.get(socket.id);
+          if (prefs && prefs.user) {
+            prefs.user.byte_format = byte_format;
+            this.clientPoolsPreferences.set(socket.id, prefs);
+          }
+
+          // Clear user-specific caches to force refresh with new format
+          for (const [key] of this.dataCache) {
+            if (key.startsWith('memory-data-') || key.startsWith('network-data-')) {
+              this.dataCache.delete(key);
+            }
+          }
+
+          // Send immediate update with new format
+          await this.sendSystemLoadUpdate(socket, true, false);
+
+          // Also send pools update with new format
+          if (this.poolsService) {
+            await this.sendInitialPoolsData(socket);
+          }
+
+          socket.emit('preferences-updated', { byte_format });
+          console.log(`Client ${socket.id} updated byte_format to: ${byte_format}`);
+        }
+      } catch (error) {
+        console.error('Error in update-preferences:', error);
+        socket.emit('error', { message: 'Failed to update preferences' });
+      }
+    });
+
     // Handle disconnect
     socket.on('disconnect', () => {
       console.log(`Client disconnected: ${socket.id}`);
@@ -339,8 +381,8 @@ class SystemLoadWebSocketManager {
       const prefs = this.clientPoolsPreferences.get(socket.id);
       const user = prefs?.user || socket.user;
 
-      // Get all pools
-      const pools = await this.poolsService.listPools();
+      // Get all pools with user's byte format preference
+      const pools = await this.poolsService.listPools({}, user);
 
       // Add performance and temperature data to each disk and pool total
       const poolsWithData = await Promise.all(pools.map(async pool => {
@@ -621,8 +663,11 @@ class SystemLoadWebSocketManager {
     if (!room) return;
 
     try {
-      // Get all pools once
-      const pools = await this.poolsService.listPools();
+      // Get first user from room for byte format (all clients get same pool size format)
+      const firstUser = this.getFirstConnectedUser();
+
+      // Get all pools with user's byte format preference
+      const pools = await this.poolsService.listPools({}, firstUser);
 
       // Send to each client
       for (const socketId of room) {
@@ -924,7 +969,9 @@ class SystemLoadWebSocketManager {
    * Get Memory data with caching
    */
   async getMemoryDataWithCache(forceRefresh = false, user = null) {
-    const cacheKey = 'memory-data';
+    // Include byte_format in cache key to avoid serving wrong format
+    const byteFormat = user?.byte_format || 'binary';
+    const cacheKey = `memory-data-${byteFormat}`;
     const cached = this.dataCache.get(cacheKey);
 
     // Return cached data if valid and not forcing refresh
@@ -953,7 +1000,9 @@ class SystemLoadWebSocketManager {
    * Get Network data with caching
    */
   async getNetworkDataWithCache(forceRefresh = false, user = null) {
-    const cacheKey = 'network-data';
+    // Include byte_format in cache key to avoid serving wrong format
+    const byteFormat = user?.byte_format || 'binary';
+    const cacheKey = `network-data-${byteFormat}`;
     const cached = this.dataCache.get(cacheKey);
 
     // Return cached data if valid and not forcing refresh
@@ -1218,14 +1267,19 @@ class SystemLoadWebSocketManager {
         this.dataCache.delete('cpu-data');
         this.dataCache.delete('cpu-load-data');
         this.dataCache.delete('cpu-temp-data');
-        this.dataCache.delete('memory-data');
+        // Clear all byte_format-specific memory and network caches
+        for (const [key] of this.dataCache) {
+          if (key.startsWith('memory-data-') || key.startsWith('network-data-')) {
+            this.dataCache.delete(key);
+          }
+        }
         this.dataCache.delete('memory-services-data');
-        this.dataCache.delete('network-data');
-        // Force immediate updates
+        // Force immediate updates with first user's byte format
+        const user = this.getFirstConnectedUser();
         const [cpuData, memoryData, networkData] = await Promise.all([
-          this.getCombinedCpuData(),
-          this.getMemoryDataWithCache(true),
-          this.getNetworkDataWithCache(true)
+          this.getCombinedCpuData(user),
+          this.getMemoryDataWithCache(true, user),
+          this.getNetworkDataWithCache(true, user)
         ]);
         // Send combined update
         const combinedData = { ...cpuData, ...memoryData, ...networkData };
@@ -1332,23 +1386,43 @@ class SystemLoadWebSocketManager {
 
   /**
    * Authenticate user with caching
+   * Note: byte_format is always loaded fresh from database to reflect user preference changes
    */
   async authenticateUser(token) {
     if (!token) {
       return { success: false, message: 'Authentication token is required' };
     }
 
-    // Check cache first
+    const jwt = require('jsonwebtoken');
+    const { getBootToken } = require('../middleware/auth.middleware');
+    const userService = require('../services/user.service');
+
+    // Check cache first for basic auth validation
     const cached = this.authCache.get(token);
     if (cached && (Date.now() - cached.timestamp) < this.authCacheDuration) {
+      // For cached results, refresh byte_format from database for regular users
+      if (cached.data.success && cached.data.user && !cached.data.user.isBootToken && cached.data.user.id !== 'boot') {
+        try {
+          const users = await userService.loadUsers();
+          const currentUser = users.find(u => u.id === cached.data.user.id);
+          if (currentUser) {
+            // Return cached data with fresh byte_format
+            return {
+              ...cached.data,
+              user: {
+                ...cached.data.user,
+                byte_format: currentUser.byte_format
+              }
+            };
+          }
+        } catch (e) {
+          // If refresh fails, return cached data as fallback
+        }
+      }
       return cached.data;
     }
 
     try {
-      const jwt = require('jsonwebtoken');
-      const { getBootToken } = require('../middleware/auth.middleware');
-      const userService = require('../services/user.service');
-
       // Check if it's the boot token
       const bootToken = await getBootToken();
       if (bootToken && token === bootToken) {

@@ -111,6 +111,44 @@ class PoolWebSocketManager {
       }
     });
 
+    // Update user preferences (e.g., byte_format changed)
+    socket.on('update-preferences', async (data) => {
+      try {
+        const { byte_format } = data || {};
+
+        if (byte_format && (byte_format === 'binary' || byte_format === 'decimal')) {
+          // Update socket.user
+          if (socket.user) {
+            socket.user.byte_format = byte_format;
+          }
+
+          // Update clientPreferences
+          const prefs = this.clientPreferences.get(socket.id);
+          if (prefs && prefs.user) {
+            prefs.user.byte_format = byte_format;
+            this.clientPreferences.set(socket.id, prefs);
+          }
+
+          // Clear all pools caches to force refresh with new format
+          for (const [key] of this.dataCache) {
+            if (key.startsWith('pools-data-') || key.startsWith('pools-last-hash-')) {
+              this.dataCache.delete(key);
+            }
+          }
+
+          // Send immediate update with new format
+          const filters = prefs?.filters || {};
+          await this.sendPoolsUpdate(socket, true, filters);
+
+          socket.emit('preferences-updated', { byte_format });
+          console.log(`Client ${socket.id} updated byte_format to: ${byte_format}`);
+        }
+      } catch (error) {
+        console.error('Error in update-preferences:', error);
+        socket.emit('error', { message: 'Failed to update preferences' });
+      }
+    });
+
     // Handle disconnect
     socket.on('disconnect', () => {
       console.log(`Client disconnected: ${socket.id}`);
@@ -192,9 +230,11 @@ class PoolWebSocketManager {
    * Send pools update to socket or room
    * Uses same data structure as REST API GET /pools
    */
-  async sendPoolsUpdate(socket, forceRefresh = false, filters = {}) {
+  async sendPoolsUpdate(socket, forceRefresh = false, filters = {}, user = null) {
     try {
-      const poolsData = await this.getPoolsDataWithCache(forceRefresh, filters);
+      // Get user from socket if not provided
+      const effectiveUser = user || socket?.user || this.getFirstConnectedUser();
+      const poolsData = await this.getPoolsDataWithCache(forceRefresh, filters, effectiveUser);
 
       // Generate hash of current data for change detection
       const currentHash = this.generateDataHash(poolsData);
@@ -236,11 +276,26 @@ class PoolWebSocketManager {
   }
 
   /**
+   * Get first connected user from pools room for byte format preference
+   */
+  getFirstConnectedUser() {
+    const room = this.io.adapter.rooms.get('pools');
+    if (!room || room.size === 0) return null;
+
+    const iterator = room.keys();
+    const firstSocketId = iterator.next().value;
+    const prefs = this.clientPreferences.get(firstSocketId);
+    return prefs?.user || null;
+  }
+
+  /**
    * Get pools data with caching (includes complete disk details)
    * Reuses the pools service method to maintain consistency with REST API
    */
-  async getPoolsDataWithCache(forceRefresh = false, filters = {}) {
-    const cacheKey = `pools-data-${JSON.stringify(filters)}`;
+  async getPoolsDataWithCache(forceRefresh = false, filters = {}, user = null) {
+    // Include byte_format in cache key to avoid serving wrong format
+    const byteFormat = user?.byte_format || 'binary';
+    const cacheKey = `pools-data-${JSON.stringify(filters)}-${byteFormat}`;
     const cached = this.dataCache.get(cacheKey);
 
     // Return cached data if valid and not forcing refresh
@@ -250,7 +305,7 @@ class PoolWebSocketManager {
 
     try {
       // Use pools service with same filtering as REST API GET /pools
-      const pools = await this.poolsService.listPools(filters);
+      const pools = await this.poolsService.listPools(filters, user);
 
       // Cache the result
       this.dataCache.set(cacheKey, {
@@ -396,8 +451,11 @@ class PoolWebSocketManager {
     if (!room) return;
 
     try {
-      // Get all pools once
-      const pools = await this.poolsService.listPools({});
+      // Get first user for byte format preference
+      const firstUser = this.getFirstConnectedUser();
+
+      // Get all pools with user's byte format preference
+      const pools = await this.poolsService.listPools({}, firstUser);
 
       // Calculate performance for each pool
       const poolsPerformance = [];
@@ -406,16 +464,7 @@ class PoolWebSocketManager {
         const poolDevices = this.extractPoolDevices(pool);
 
         if (poolDevices.length > 0) {
-          // Get first client's user for formatting (they should all use same format ideally)
-          let user = null;
-          for (const [, prefs] of this.clientPreferences) {
-            if (prefs.includePerformance && prefs.user) {
-              user = prefs.user;
-              break;
-            }
-          }
-
-          const throughput = this.disksService.getPoolThroughput(poolDevices, user);
+          const throughput = this.disksService.getPoolThroughput(poolDevices, firstUser);
 
           poolsPerformance.push({
             poolId: pool.id || pool.name,
@@ -574,7 +623,8 @@ class PoolWebSocketManager {
         user: {
           id: currentUser.id,
           username: currentUser.username,
-          role: currentUser.role
+          role: currentUser.role,
+          byte_format: currentUser.byte_format
         }
       };
 
