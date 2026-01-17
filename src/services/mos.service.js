@@ -1723,8 +1723,8 @@ class MosService {
       ],
       services: {
         ssh: { enabled: true },
-        samba: { enabled: false },
-        nmbd: { enabled: false },
+        samba: { enabled: false, workgroup: 'WORKGROUP' },
+        samba_discovery: { enabled: false },
         nfs: { enabled: false },
         remote_mounting: { enabled: false },
         nut: { enabled: false },
@@ -1767,6 +1767,37 @@ class MosService {
   }
 
   /**
+   * Migrates legacy network service settings to new format:
+   * - Converts 'nmbd' to 'samba_discovery'
+   * - Adds 'workgroup' to 'samba' if missing
+   * @param {Object} settings - Network settings object
+   * @returns {Object} Migrated settings
+   * @private
+   */
+  _migrateNetworkServices(settings) {
+    if (!settings || !settings.services) {
+      return settings;
+    }
+
+    const services = settings.services;
+
+    // Migrate nmbd to samba_discovery
+    if (services.nmbd !== undefined && services.samba_discovery === undefined) {
+      services.samba_discovery = { enabled: services.nmbd.enabled || false };
+      delete services.nmbd;
+    }
+
+    // Ensure samba has workgroup
+    if (services.samba) {
+      if (services.samba.workgroup === undefined) {
+        services.samba.workgroup = 'WORKGROUP';
+      }
+    }
+
+    return settings;
+  }
+
+  /**
    * Reads the Network-Settings from the network.json file.
    * Ensures all expected fields are present by merging with defaults.
    * @returns {Promise<Object>} The Network-Settings as an object
@@ -1791,7 +1822,8 @@ class MosService {
       // Merge loaded settings with defaults (loaded settings take precedence)
       const settings = this._deepMerge(defaults, loadedSettings);
 
-      return settings;
+      // Apply migration for legacy settings (nmbd -> samba_discovery, add workgroup)
+      return this._migrateNetworkServices(settings);
     } catch (error) {
       if (error.code === 'ENOENT') {
         throw new Error('network.json not found');
@@ -1969,7 +2001,7 @@ class MosService {
       let nfsChanged = false, nfsValue = null;
       let nutChanged = false, nutValue = null;
       let sshChanged = false, sshValue = null;
-      let nmbdChanged = false, nmbdValue = null;
+      let sambaDiscoveryChanged = false, sambaDiscoveryValue = null;
       let tailscaleChanged = false, tailscaleValue = null;
       let netbirdChanged = false, netbirdValue = null;
       let remoteMountingChanged = false, remoteMountingValue = null;
@@ -1988,14 +2020,20 @@ class MosService {
       }
 
       // Handle samba service
-      if (services.samba && typeof services.samba.enabled === 'boolean') {
+      if (services.samba) {
         if (!current.services) current.services = {};
         if (!current.services.samba) current.services.samba = {};
-        if (current.services.samba.enabled !== services.samba.enabled) {
-          sambaChanged = true;
-          sambaValue = services.samba.enabled;
+        if (typeof services.samba.enabled === 'boolean') {
+          if (current.services.samba.enabled !== services.samba.enabled) {
+            sambaChanged = true;
+            sambaValue = services.samba.enabled;
+          }
+          current.services.samba.enabled = services.samba.enabled;
         }
-        current.services.samba.enabled = services.samba.enabled;
+        // Handle workgroup
+        if (services.samba.workgroup !== undefined) {
+          current.services.samba.workgroup = services.samba.workgroup;
+        }
       }
 
       // Handle nfs service
@@ -2031,15 +2069,20 @@ class MosService {
         current.services.ssh.enabled = services.ssh.enabled;
       }
 
-      // Handle nmbd service
-      if (services.nmbd && typeof services.nmbd.enabled === 'boolean') {
+      // Handle samba_discovery service (also accept legacy 'nmbd' key)
+      const sambaDiscoveryInput = services.samba_discovery || services.nmbd;
+      if (sambaDiscoveryInput && typeof sambaDiscoveryInput.enabled === 'boolean') {
         if (!current.services) current.services = {};
-        if (!current.services.nmbd) current.services.nmbd = {};
-        if (current.services.nmbd.enabled !== services.nmbd.enabled) {
-          nmbdChanged = true;
-          nmbdValue = services.nmbd.enabled;
+        if (!current.services.samba_discovery) current.services.samba_discovery = {};
+        if (current.services.samba_discovery.enabled !== sambaDiscoveryInput.enabled) {
+          sambaDiscoveryChanged = true;
+          sambaDiscoveryValue = sambaDiscoveryInput.enabled;
         }
-        current.services.nmbd.enabled = services.nmbd.enabled;
+        current.services.samba_discovery.enabled = sambaDiscoveryInput.enabled;
+        // Remove legacy nmbd key if present
+        if (current.services.nmbd) {
+          delete current.services.nmbd;
+        }
       }
 
       // Handle tailscale service
@@ -2123,11 +2166,13 @@ class MosService {
           await execPromise('/etc/init.d/ssh start');
         }
       }
-      if (nmbdChanged) {
-        if (nmbdValue === false) {
+      if (sambaDiscoveryChanged) {
+        if (sambaDiscoveryValue === false) {
           await execPromise('/etc/init.d/nmbd stop');
-        } else if (nmbdValue === true) {
+          await execPromise('/etc/init.d/wsddn stop');
+        } else if (sambaDiscoveryValue === true) {
           await execPromise('/etc/init.d/nmbd start');
+          await execPromise('/etc/init.d/wsddn start');
         }
       }
       if (tailscaleChanged) {
@@ -2887,7 +2932,9 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
       if (settings.services && typeof settings.services === 'object') {
         for (const [serviceName, serviceConfig] of Object.entries(settings.services)) {
           if (serviceConfig && typeof serviceConfig === 'object' && 'enabled' in serviceConfig) {
-            result[serviceName] = {
+            // Migrate nmbd to samba_discovery in status response
+            const outputName = serviceName === 'nmbd' ? 'samba_discovery' : serviceName;
+            result[outputName] = {
               enabled: serviceConfig.enabled === true
             };
           }

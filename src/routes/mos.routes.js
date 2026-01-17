@@ -304,6 +304,17 @@ const { checkRole } = require('../middleware/auth.middleware');
  *                   type: boolean
  *                   description: Enable Samba service
  *                   example: true
+ *                 workgroup:
+ *                   type: string
+ *                   description: Samba workgroup name
+ *                   example: "WORKGROUP"
+ *             samba_discovery:
+ *               type: object
+ *               properties:
+ *                 enabled:
+ *                   type: boolean
+ *                   description: Enable Samba discovery service (WSD)
+ *                   example: false
  *             nfs:
  *               type: object
  *               properties:
@@ -1633,12 +1644,12 @@ router.post('/update_ui', async (req, res) => {
  *                       type: boolean
  *                       description: Samba service status
  *                       example: true
- *                 nmbd:
+ *                 samba_discovery:
  *                   type: object
  *                   properties:
  *                     enabled:
  *                       type: boolean
- *                       description: NetBIOS service status
+ *                       description: Samba discovery service (WSD) status
  *                       example: false
  *                 nfs:
  *                   type: object
@@ -1701,7 +1712,7 @@ router.post('/update_ui', async (req, res) => {
  *                 enabled: true
  *               samba:
  *                 enabled: true
- *               nmbd:
+ *               samba_discovery:
  *                 enabled: false
  *               nfs:
  *                 enabled: false
