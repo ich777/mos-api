@@ -2,6 +2,8 @@
 
 This API came to life not because the world needed it, but because a few wanted it.
 
+## [Learn more about MOS](https://github.com/ich777/mos-releases)
+
 ---
 
 ### Documentation
