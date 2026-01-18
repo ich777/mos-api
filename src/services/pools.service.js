@@ -7,6 +7,7 @@ const os = require('os');
 const { DeviceStrategyFactory } = require('./pools/device-strategy');
 const PoolHelpers = require('./pools/pool-helpers');
 const disksService = require('./disks.service');
+const { sendNotification } = require('./plugins.service');
 
 // Timestamp-basierter ID-Generator
 const generateId = () => Date.now().toString();
@@ -32,6 +33,16 @@ class PoolsService {
       gid: 500
     };
 
+    // NonRAID operation monitor state
+    this._nonRaidMonitor = {
+      active: false,
+      poolName: null,
+      operation: null,
+      intervalId: null
+    };
+
+    // Initialize NonRAID monitor on startup (check if operation is already running)
+    this._initNonRaidMonitor();
   }
 
   /**
@@ -1035,6 +1046,41 @@ class PoolsService {
       console.log(`Executing NonRAID parity operation: ${command}`);
       await execPromise(command);
 
+      // Handle notifications and monitor based on operation type
+      const operationString = operation === 'check'
+        ? `check ${options.option || 'NOCORRECT'}`
+        : operation;
+
+      switch (operation) {
+        case 'check':
+          // Start monitor for completion tracking
+          this._startNonRaidMonitor(pool.name, operationString, true);
+          break;
+
+        case 'pause':
+          // Send pause notification (monitor keeps running)
+          sendNotification('nonraid', `nonraid operation ${this._nonRaidMonitor.operation || operationString} for Pool ${pool.name} paused`, 'normal')
+            .catch(err => console.warn(`Failed to send NonRAID pause notification: ${err.message}`));
+          break;
+
+        case 'resume':
+          // Send resume notification and ensure monitor is running
+          sendNotification('nonraid', `nonraid operation ${this._nonRaidMonitor.operation || operationString} for Pool ${pool.name} resumed`, 'normal')
+            .catch(err => console.warn(`Failed to send NonRAID resume notification: ${err.message}`));
+          // Restart monitor if not active
+          if (!this._nonRaidMonitor.active) {
+            this._startNonRaidMonitor(pool.name, this._nonRaidMonitor.operation || operationString, false);
+          }
+          break;
+
+        case 'cancel':
+          // Send cancel notification and stop monitor
+          sendNotification('nonraid', `nonraid operation ${this._nonRaidMonitor.operation || operationString} for Pool ${pool.name} cancelled`, 'normal')
+            .catch(err => console.warn(`Failed to send NonRAID cancel notification: ${err.message}`));
+          this._stopNonRaidMonitor();
+          break;
+      }
+
       return {
         success: true,
         message: description,
@@ -1098,6 +1144,156 @@ class PoolsService {
       return false;
     } catch (error) {
       return false;
+    }
+  }
+
+  /**
+   * Initialize NonRAID monitor on API startup
+   * Checks if a NonRAID operation is already running and starts monitoring if so
+   * @private
+   */
+  async _initNonRaidMonitor() {
+    try {
+      // Check if NonRAID is installed (/proc/nmdstat exists)
+      try {
+        await fs.access('/proc/nmdstat');
+      } catch (error) {
+        // NonRAID not installed or not mounted, nothing to monitor
+        return;
+      }
+
+      // Check if an operation is running
+      const isRunning = await this._isNonRaidParityOperationRunning();
+      if (!isRunning) {
+        return;
+      }
+
+      // Get operation info from /proc/nmdstat
+      const operationInfo = await this._getNonRaidOperationInfo();
+      if (!operationInfo) {
+        return;
+      }
+
+      // Find the NonRAID pool name
+      const pools = await this.listPools({});
+      const nonraidPool = pools.find(p => p.type === 'nonraid');
+      if (!nonraidPool) {
+        console.log('NonRAID operation detected but no NonRAID pool found in config');
+        return;
+      }
+
+      console.log(`NonRAID operation detected on startup: ${operationInfo.operation} for pool ${nonraidPool.name}`);
+
+      // Start monitoring (don't send start notification since operation was already running)
+      this._startNonRaidMonitor(nonraidPool.name, operationInfo.operation, false);
+    } catch (error) {
+      // Silently fail - NonRAID monitoring is optional
+      console.warn(`NonRAID monitor init failed: ${error.message}`);
+    }
+  }
+
+  /**
+   * Get NonRAID operation info from /proc/nmdstat
+   * @returns {Promise<Object|null>} Operation info or null if not running
+   * @private
+   */
+  async _getNonRaidOperationInfo() {
+    try {
+      const { stdout } = await execPromise('cat /proc/nmdstat');
+      const actionMatch = stdout.match(/mdResyncAction=(.+)/);
+
+      if (!actionMatch || !actionMatch[1] || actionMatch[1].trim() === '') {
+        return null;
+      }
+
+      const operation = actionMatch[1].trim();
+
+      // Get error count
+      const syncErrsMatch = stdout.match(/sbSyncErrs=(\d+)/);
+      const errors = syncErrsMatch ? parseInt(syncErrsMatch[1]) : 0;
+
+      return { operation, errors };
+    } catch (error) {
+      return null;
+    }
+  }
+
+  /**
+   * Start NonRAID operation monitor
+   * @param {string} poolName - Pool name
+   * @param {string} operation - Operation being executed
+   * @param {boolean} sendStartNotification - Whether to send start notification
+   * @private
+   */
+  _startNonRaidMonitor(poolName, operation, sendStartNotification = true) {
+    // Stop any existing monitor
+    this._stopNonRaidMonitor();
+
+    // Set monitor state
+    this._nonRaidMonitor.active = true;
+    this._nonRaidMonitor.poolName = poolName;
+    this._nonRaidMonitor.operation = operation;
+
+    // Send start notification if requested
+    if (sendStartNotification) {
+      sendNotification('nonraid', `Starting nonraid operation ${operation} for Pool ${poolName}`, 'normal')
+        .catch(err => console.warn(`Failed to send NonRAID start notification: ${err.message}`));
+    }
+
+    // Start interval to check for completion every 30 seconds
+    this._nonRaidMonitor.intervalId = setInterval(() => {
+      this._checkNonRaidCompletion();
+    }, 30000);
+
+    console.log(`NonRAID monitor started for pool ${poolName}, operation: ${operation}`);
+  }
+
+  /**
+   * Stop NonRAID operation monitor
+   * @private
+   */
+  _stopNonRaidMonitor() {
+    if (this._nonRaidMonitor.intervalId) {
+      clearInterval(this._nonRaidMonitor.intervalId);
+      this._nonRaidMonitor.intervalId = null;
+    }
+    this._nonRaidMonitor.active = false;
+    this._nonRaidMonitor.poolName = null;
+    this._nonRaidMonitor.operation = null;
+  }
+
+  /**
+   * Check if NonRAID operation has completed
+   * Called every 30 seconds by the monitor interval
+   * @private
+   */
+  async _checkNonRaidCompletion() {
+    try {
+      const isRunning = await this._isNonRaidParityOperationRunning();
+
+      if (!isRunning) {
+        // Operation completed - get error count
+        const operationInfo = await this._getNonRaidOperationInfo();
+        const errors = operationInfo?.errors || 0;
+        const poolName = this._nonRaidMonitor.poolName;
+        const operation = this._nonRaidMonitor.operation;
+
+        // Send completion notification
+        if (errors > 0) {
+          sendNotification('nonraid', `nonraid operation ${operation} for Pool: ${poolName} completed with ${errors} errors`, 'alert')
+            .catch(err => console.warn(`Failed to send NonRAID completion notification: ${err.message}`));
+        } else {
+          sendNotification('nonraid', `nonraid operation ${operation} for Pool: ${poolName} completed`, 'normal')
+            .catch(err => console.warn(`Failed to send NonRAID completion notification: ${err.message}`));
+        }
+
+        console.log(`NonRAID operation completed for pool ${poolName}${errors > 0 ? ` with ${errors} errors` : ''}`);
+
+        // Stop the monitor
+        this._stopNonRaidMonitor();
+      }
+    } catch (error) {
+      console.warn(`NonRAID completion check failed: ${error.message}`);
     }
   }
 

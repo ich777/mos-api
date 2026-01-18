@@ -1495,5 +1495,6 @@ module.exports = {
   getPluginSettings,
   setPluginSettings,
   checkUpdates,
-  updatePlugins
+  updatePlugins,
+  sendNotification: _sendNotification
 };
