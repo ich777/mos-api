@@ -4,6 +4,7 @@ const fs = require('fs');
 const fsPromises = require('fs').promises;
 const path = require('path');
 const https = require('https');
+const os = require('os');
 
 const execPromise = util.promisify(exec);
 
@@ -1122,36 +1123,43 @@ class LxcService {
   }
 
   /**
-   * Get CPU usage for a specific container by reading cgroup stats twice with 1 second interval
+   * Get CPU usage for a container (0-100%), normalized to available cores
    * @param {string} containerName - Name of the container
-   * @returns {Promise<number>} CPU usage percentage
+   * @returns {Promise<number>} CPU usage percentage (0-100)
    */
   async getContainerCpuUsage(containerName) {
     try {
-      const cpuStatPath = `/sys/fs/cgroup/lxc.payload.${containerName}/cpu.stat`;
+      const basePath = `/sys/fs/cgroup/lxc.payload.${containerName}`;
+      const cpuStatPath = `${basePath}/cpu.stat`;
 
-      // Check if path exists
-      if (!fs.existsSync(cpuStatPath)) {
-        return 0;
-      }
+      if (!fs.existsSync(cpuStatPath)) return 0;
 
-      // First measurement
-      const stats1 = fs.readFileSync(cpuStatPath, 'utf8');
-      const usage1Match = stats1.match(/usage_usec\s+(\d+)/);
-      const usage1 = usage1Match ? parseInt(usage1Match[1]) : 0;
+      // Get CPU count: try container cpuset, fallback to host
+      let cpuCount = os.cpus().length || 1;
+      try {
+        const cpuset = fs.readFileSync(`${basePath}/cpuset.cpus.effective`, 'utf8').trim();
+        if (cpuset) {
+          // Parse "0-3" or "0,2,4" format
+          cpuCount = cpuset.split(',').reduce((sum, part) => {
+            const [a, b] = part.split('-').map(Number);
+            return sum + (b !== undefined ? b - a + 1 : 1);
+          }, 0) || cpuCount;
+        }
+      } catch (e) { /* use host count */ }
 
-      // Wait 1 second
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      // Measure CPU usage over 1 second
+      const getUsage = () => {
+        const match = fs.readFileSync(cpuStatPath, 'utf8').match(/usage_usec\s+(\d+)/);
+        return match ? parseInt(match[1]) : 0;
+      };
 
-      // Second measurement
-      const stats2 = fs.readFileSync(cpuStatPath, 'utf8');
-      const usage2Match = stats2.match(/usage_usec\s+(\d+)/);
-      const usage2 = usage2Match ? parseInt(usage2Match[1]) : 0;
+      const usage1 = getUsage();
+      await new Promise(r => setTimeout(r, 1000));
+      const usage2 = getUsage();
 
-      // Calculate CPU usage percentage
-      const cpuUsage = Math.max(0, (usage2 - usage1) / 10000);
-
-      return cpuUsage;
+      // Normalize: delta_usec / (cpuCount * 1_000_000) * 100 = delta_usec / (cpuCount * 10000)
+      const cpuUsage = (usage2 - usage1) / (cpuCount * 10000);
+      return Math.min(100, Math.max(0, cpuUsage));
     } catch (error) {
       return 0;
     }
