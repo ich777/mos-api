@@ -1174,15 +1174,17 @@ class PoolsService {
       throw new Error('Pool does not have any SnapRAID parity devices configured');
     }
 
-    // Validate operation
+    // Validate operation - extract base operation (first word) for validation
+    // Operations can include flags like "sync --force-empty" or "fix -d d1"
+    const baseOperation = operation.split(' ')[0];
     const validOperations = ['sync', 'check', 'scrub', 'fix', 'status', 'force_stop'];
-    if (!validOperations.includes(operation)) {
+    if (!validOperations.includes(baseOperation)) {
       throw new Error(`Invalid operation. Supported operations: ${validOperations.join(', ')}`);
     }
 
     // Check if operation is already running (except for force_stop)
     const socketPath = `/run/snapraid/${pool.name}.socket`;
-    if (operation !== 'force_stop') {
+    if (baseOperation !== 'force_stop') {
       try {
         await fs.access(socketPath);
         throw new Error(`SnapRAID operation is already running for pool '${pool.name}'. Socket file exists: ${socketPath}`);
@@ -1207,8 +1209,9 @@ class PoolsService {
 
     // For fix operation, optionally map disk mount points to dN identifiers
     // If fixDisks is provided, only those disks will be fixed; otherwise all disks
+    // Skip this if operation already contains flags (e.g., "fix -d d1")
     let fixDisksArg = null;
-    if (operation === 'fix') {
+    if (baseOperation === 'fix' && operation === 'fix') {
       const { fixDisks } = options;
       if (fixDisks && Array.isArray(fixDisks) && fixDisks.length > 0) {
         // Map mount points to SnapRAID disk identifiers
@@ -5074,7 +5077,7 @@ class PoolsService {
    * @private
    */
   async _removeDevicesFromMergerFSPool(pool, devices, options, pools, poolIndex) {
-    const { unmount = true } = options;
+    const { unmount = true, skipSnapraidSync = false } = options;
 
     // For encrypted pools, need to handle both physical and mapped device removal
     let devicesToRemove = [];
@@ -5107,9 +5110,10 @@ class PoolsService {
       throw new Error(`Cannot remove all devices from the pool. At least one device must remain.`);
     }
 
-    // Get the mount points of the devices to remove for unmounting
+    // Get the mount points and slots of the devices to remove for unmounting
     const baseDir = `/var/mergerfs/${pool.name}`;
     const deviceMountPoints = {};
+    const removedSlots = []; // Track removed slots for SnapRAID sync
 
     for (const device of devicesToRemove) {
       let deviceInfo = null;
@@ -5133,6 +5137,7 @@ class PoolsService {
       if (deviceInfo) {
         const mountPoint = path.join(baseDir, `disk${deviceInfo.slot}`);
         deviceMountPoints[device] = mountPoint;
+        removedSlots.push(deviceInfo.slot); // Track the slot being removed
       }
     }
 
@@ -5264,10 +5269,29 @@ class PoolsService {
     // Save updated pool configuration
     await this._writePools(pools);
 
+    // Trigger SnapRAID sync --force-empty if pool has parity and is mounted
+    // Skip if this is part of a replace operation (skipSnapraidSync=true)
+    // This is needed to update parity after device removal
+    let snapraidSyncStarted = false;
+    if (!skipSnapraidSync && pool.parity_devices && pool.parity_devices.length > 0 && wasPoolMounted) {
+      try {
+        console.log(`Starting SnapRAID sync --force-empty for pool '${pool.name}' after device removal (removed slots: ${removedSlots.join(', ')})`);
+        await this.executeSnapRAIDOperation(pool.id, 'sync --force-empty');
+        snapraidSyncStarted = true;
+      } catch (syncError) {
+        console.warn(`Warning: Could not start SnapRAID sync after device removal: ${syncError.message}`);
+      }
+    }
+
+    const message = snapraidSyncStarted
+      ? `Successfully removed ${devicesToRemove.length} device(s) from pool '${pool.name}'. SnapRAID sync started to update parity.`
+      : `Successfully removed ${devicesToRemove.length} device(s) from pool '${pool.name}'`;
+
     return {
       success: true,
-      message: `Successfully removed ${devicesToRemove.length} device(s) from pool '${pool.name}'`,
-      pool
+      message,
+      pool,
+      snapraidSyncStarted
     };
   }
 
@@ -5397,14 +5421,21 @@ class PoolsService {
         const oldDeviceInfo = pool.data_devices.find(d => d.device === oldDevice);
         const preservedSlot = oldDeviceInfo ? oldDeviceInfo.slot : null;
 
+        // Check if pool has parity (SnapRAID)
+        const hasSnapRAID = pool.parity_devices && pool.parity_devices.length > 0;
+
         // Check mount status BEFORE removing device (to restore after add)
         const poolMountPoint = path.join(this.mountBasePath, pool.name);
         const wasMounted = await this._isMounted(poolMountPoint);
 
         try {
           // Step 1: Remove old device first
+          // Skip SnapRAID sync on remove - we'll do a fix instead after adding the new device
           console.log(`Removing old device ${oldDevice}...`);
-          await this.removeDevicesFromPool(poolId, [oldDevice], { unmount: true });
+          await this.removeDevicesFromPool(poolId, [oldDevice], {
+            unmount: true,
+            skipSnapraidSync: hasSnapRAID  // Skip sync for replace, we'll fix instead
+          });
 
           // Step 2: Add new device with the same slot number
           console.log(`Adding new device ${newDevice} to slot ${preservedSlot}...`);
@@ -5414,10 +5445,27 @@ class PoolsService {
             remount: wasMounted
           });
 
+          // Step 3: For pools with SnapRAID, start fix operation to restore data from parity
+          let snapraidFixStarted = false;
+          if (hasSnapRAID && wasMounted && preservedSlot) {
+            try {
+              console.log(`Starting SnapRAID fix for slot d${preservedSlot} to restore data from parity...`);
+              await this.executeSnapRAIDOperation(pool.id, `fix -d d${preservedSlot}`);
+              snapraidFixStarted = true;
+            } catch (fixError) {
+              console.warn(`Warning: Could not start SnapRAID fix after device replacement: ${fixError.message}`);
+            }
+          }
+
+          const message = snapraidFixStarted
+            ? `Successfully replaced device ${oldDevice} with ${newDevice} in pool '${pool.name}'. SnapRAID fix started to restore data.`
+            : `Successfully replaced device ${oldDevice} with ${newDevice} in pool '${pool.name}'`;
+
           return {
             success: true,
-            message: `Successfully replaced device ${oldDevice} with ${newDevice} in pool '${pool.name}'`,
-            pool: addResult.pool
+            message,
+            pool: addResult.pool,
+            snapraidFixStarted
           };
         } catch (error) {
           throw new Error(`Failed to replace device: ${error.message}`);
