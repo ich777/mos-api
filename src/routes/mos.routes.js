@@ -5217,6 +5217,178 @@ router.post('/tokens', checkRole(['admin']), async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /mos/validatetokens:
+ *   get:
+ *     summary: Validate configured tokens
+ *     description: |
+ *       Validates GitHub and DockerHub tokens and returns their status.
+ *       - GitHub: Returns rate limit info (limit, remaining, reset, used, resource)
+ *       - DockerHub: Returns validation status and rate limit info if available
+ *       If both tokens are empty, returns an error.
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Token validation results
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 github:
+ *                   type: object
+ *                   properties:
+ *                     configured:
+ *                       type: boolean
+ *                       description: Whether the token is configured
+ *                     valid:
+ *                       type: boolean
+ *                       description: Whether the token is valid
+ *                     rate:
+ *                       type: object
+ *                       description: GitHub rate limit info
+ *                       properties:
+ *                         limit:
+ *                           type: integer
+ *                           example: 5000
+ *                         remaining:
+ *                           type: integer
+ *                           example: 4999
+ *                         reset:
+ *                           type: integer
+ *                           example: 1768734414
+ *                         used:
+ *                           type: integer
+ *                           example: 1
+ *                         resource:
+ *                           type: string
+ *                           example: "core"
+ *                     error:
+ *                       type: string
+ *                       description: Error message if validation failed
+ *                 dockerhub:
+ *                   type: object
+ *                   properties:
+ *                     configured:
+ *                       type: boolean
+ *                       description: Whether the token is configured
+ *                     valid:
+ *                       type: boolean
+ *                       description: Whether the token is valid
+ *                     username:
+ *                       type: string
+ *                       description: DockerHub username
+ *                     rate:
+ *                       type: object
+ *                       nullable: true
+ *                       description: DockerHub rate limit info (if available)
+ *                       properties:
+ *                         limit:
+ *                           type: integer
+ *                           example: 200
+ *                         remaining:
+ *                           type: integer
+ *                           example: 199
+ *                     error:
+ *                       type: string
+ *                       description: Error message if validation failed
+ *                 error:
+ *                   type: string
+ *                   description: Error message if both tokens are empty
+ *             examples:
+ *               valid_tokens:
+ *                 summary: Both tokens valid
+ *                 value:
+ *                   github:
+ *                     configured: true
+ *                     valid: true
+ *                     rate:
+ *                       limit: 5000
+ *                       remaining: 4999
+ *                       reset: 1768734414
+ *                       used: 1
+ *                       resource: "core"
+ *                   dockerhub:
+ *                     configured: true
+ *                     valid: true
+ *                     username: "myuser"
+ *                     rate:
+ *                       limit: 200
+ *                       remaining: 199
+ *               both_empty:
+ *                 summary: Both tokens empty (shows anonymous rate limits)
+ *                 value:
+ *                   github:
+ *                     configured: false
+ *                     rate:
+ *                       limit: 60
+ *                       remaining: 60
+ *                       reset: 1768734414
+ *                       used: 0
+ *                       resource: "core"
+ *                   dockerhub:
+ *                     configured: false
+ *                     rate:
+ *                       limit: 100
+ *                       remaining: 100
+ *               invalid_token:
+ *                 summary: Invalid token (shows error + anonymous rate limit)
+ *                 value:
+ *                   github:
+ *                     configured: true
+ *                     valid: false
+ *                     error: "Invalid or expired token"
+ *                     rate:
+ *                       limit: 60
+ *                       remaining: 60
+ *                       reset: 1768734414
+ *                       used: 0
+ *                       resource: "core"
+ *                   dockerhub:
+ *                     configured: true
+ *                     valid: true
+ *                     username: "myuser"
+ *                     rate:
+ *                       limit: 200
+ *                       remaining: 199
+ *               github_only:
+ *                 summary: Only GitHub configured
+ *                 value:
+ *                   github:
+ *                     configured: true
+ *                     valid: true
+ *                     rate:
+ *                       limit: 5000
+ *                       remaining: 4999
+ *                       reset: 1768734414
+ *                       used: 1
+ *                       resource: "core"
+ *                   dockerhub:
+ *                     configured: false
+ *                     rate:
+ *                       limit: 100
+ *                       remaining: 100
+ *       401:
+ *         description: Not authenticated
+ *       403:
+ *         description: Admin permission required
+ *       500:
+ *         description: Server error
+ */
+
+// GET: Validate tokens
+router.get('/validatetokens', checkRole(['admin']), async (req, res) => {
+  try {
+    const result = await mosService.validateTokens();
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ============================================================
 // ZRAM ENDPOINTS
 // ============================================================

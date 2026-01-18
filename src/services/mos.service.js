@@ -4471,6 +4471,195 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
   }
 
   /**
+   * Get GitHub rate limit (works with or without token)
+   * @param {string|null} token - GitHub token or null for anonymous
+   * @returns {Promise<Object>} Rate limit info
+   * @private
+   */
+  async _getGitHubRateLimit(token) {
+    const headers = {
+      'Accept': 'application/vnd.github.v3+json',
+      'User-Agent': 'MOS-API'
+    };
+
+    if (token) {
+      headers['Authorization'] = `token ${token}`;
+    }
+
+    const response = await axios.get('https://api.github.com/rate_limit', {
+      headers,
+      timeout: 10000
+    });
+
+    return response.data.rate;
+  }
+
+  /**
+   * Get DockerHub rate limit (works with or without auth)
+   * @param {string|null} authString - Base64 encoded "username:token" or null for anonymous
+   * @returns {Promise<Object|null>} Rate limit info or null if unavailable
+   * @private
+   */
+  async _getDockerHubRateLimit(authString) {
+    try {
+      const tokenHeaders = authString
+        ? { 'Authorization': `Basic ${authString}` }
+        : {};
+
+      const tokenResponse = await axios.get(
+        'https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull',
+        { headers: tokenHeaders, timeout: 10000 }
+      );
+
+      if (!tokenResponse.data?.token) {
+        return null;
+      }
+
+      const registryResponse = await axios.head(
+        'https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/latest',
+        {
+          headers: { 'Authorization': `Bearer ${tokenResponse.data.token}` },
+          timeout: 10000,
+          validateStatus: () => true
+        }
+      );
+
+      const limitHeader = registryResponse.headers['ratelimit-limit'];
+      const remainingHeader = registryResponse.headers['ratelimit-remaining'];
+
+      if (limitHeader || remainingHeader) {
+        return {
+          limit: limitHeader ? parseInt(limitHeader.split(';')[0]) : null,
+          remaining: remainingHeader ? parseInt(remainingHeader.split(';')[0]) : null
+        };
+      }
+
+      return null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  /**
+   * Validate tokens (github, dockerhub)
+   * GET /mos/validatetokens
+   * @returns {Promise<Object>} Validation results for each token (always includes rate limits)
+   */
+  async validateTokens() {
+    const tokens = await this.getTokens();
+    const result = {
+      github: null,
+      dockerhub: null
+    };
+
+    const hasGithub = tokens.github && tokens.github.trim() !== '';
+    const hasDockerHub = tokens.dockerhub && tokens.dockerhub.trim() !== '';
+
+    // Validate GitHub token or get anonymous rate limit
+    if (hasGithub) {
+      try {
+        const rate = await this._getGitHubRateLimit(tokens.github);
+        result.github = {
+          configured: true,
+          valid: true,
+          rate
+        };
+      } catch (error) {
+        // Token invalid - get anonymous rate limit instead
+        let anonymousRate = null;
+        try {
+          anonymousRate = await this._getGitHubRateLimit(null);
+        } catch (anonError) {
+          // Could not get anonymous rate either
+        }
+
+        result.github = {
+          configured: true,
+          valid: false,
+          error: error.response?.status === 401
+            ? 'Invalid or expired token'
+            : error.message,
+          rate: anonymousRate
+        };
+      }
+    } else {
+      // No token configured - get anonymous rate limit
+      let anonymousRate = null;
+      try {
+        anonymousRate = await this._getGitHubRateLimit(null);
+      } catch (error) {
+        // Could not get anonymous rate
+      }
+
+      result.github = {
+        configured: false,
+        valid: null,
+        rate: anonymousRate
+      };
+    }
+
+    // Validate DockerHub token or get anonymous rate limit
+    if (hasDockerHub) {
+      const [username, token] = tokens.dockerhub.split(':');
+      if (!username || !token) {
+        // Invalid format - get anonymous rate limit
+        const anonymousRate = await this._getDockerHubRateLimit(null);
+        result.dockerhub = {
+          configured: true,
+          valid: false,
+          error: 'Invalid format. Expected "username:token"',
+          rate: anonymousRate
+        };
+      } else {
+        try {
+          // Use Docker Hub API to validate - check user info
+          const authString = Buffer.from(`${username}:${token}`).toString('base64');
+          const response = await axios.get(`https://hub.docker.com/v2/users/${username}/`, {
+            headers: {
+              'Authorization': `Basic ${authString}`,
+              'Accept': 'application/json'
+            },
+            timeout: 10000
+          });
+
+          // Get rate limit with auth
+          const rate = await this._getDockerHubRateLimit(authString);
+
+          result.dockerhub = {
+            configured: true,
+            valid: true,
+            username: response.data?.username || username,
+            rate
+          };
+        } catch (error) {
+          // Token invalid - get anonymous rate limit
+          const anonymousRate = await this._getDockerHubRateLimit(null);
+
+          result.dockerhub = {
+            configured: true,
+            valid: false,
+            error: error.response?.status === 401 || error.response?.status === 403
+              ? 'Invalid or expired token'
+              : error.message,
+            rate: anonymousRate
+          };
+        }
+      }
+    } else {
+      // No token configured - get anonymous rate limit
+      const anonymousRate = await this._getDockerHubRateLimit(null);
+
+      result.dockerhub = {
+        configured: false,
+        valid: null,
+        rate: anonymousRate
+      };
+    }
+
+    return result;
+  }
+
+  /**
    * Creates a new file on the filesystem
    * @param {string} filePath - Path to the file to create
    * @param {string} content - Content for the new file (default: empty)

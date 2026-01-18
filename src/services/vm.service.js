@@ -1,6 +1,7 @@
 const { exec, spawn } = require('child_process');
 const util = require('util');
-const fs = require('fs').promises;
+const fsSync = require('fs');
+const fs = fsSync.promises;
 const path = require('path');
 const net = require('net');
 const https = require('https');
@@ -1709,10 +1710,38 @@ class VmService {
 
       // Ensure parent directory exists
       const dir = path.dirname(diskPath);
-      await fs.mkdir(dir, { recursive: true });
+      try {
+        await fs.mkdir(dir, { recursive: true });
+      } catch (mkdirError) {
+        throw new Error(`Failed to create directory "${dir}": ${mkdirError.message}`);
+      }
+
+      // Verify directory was created and is writable
+      try {
+        await fs.access(dir, fsSync.constants.W_OK);
+      } catch (accessError) {
+        throw new Error(`Directory "${dir}" is not writable: ${accessError.message}`);
+      }
 
       // Create disk with qemu-img
-      await execPromise(`qemu-img create -f ${format} "${diskPath}" ${size}`);
+      const { stderr } = await execPromise(`qemu-img create -f ${format} "${diskPath}" ${size}`);
+      if (stderr && stderr.toLowerCase().includes('error')) {
+        throw new Error(`qemu-img error: ${stderr}`);
+      }
+
+      // Verify the disk file was actually created
+      try {
+        const stats = await fs.stat(diskPath);
+        if (stats.size === 0 && format === 'raw') {
+          // Raw format with 0 bytes is invalid
+          throw new Error('Disk file was created but has 0 bytes');
+        }
+      } catch (statError) {
+        if (statError.code === 'ENOENT') {
+          throw new Error(`Disk file was not created at "${diskPath}" - check filesystem permissions and available space`);
+        }
+        throw statError;
+      }
 
       return {
         success: true,
