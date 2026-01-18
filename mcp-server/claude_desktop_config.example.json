@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "mos": {
+      "command": "node",
+      "args": ["/opt/mos-mcp-server/src/index.js"],
+      "env": {
+        "MOS_API_URL": "http://127.0.0.1:3000",
+        "MOS_API_TOKEN": "your-jwt-token-here"
+      }
+    }
+  }
+}
