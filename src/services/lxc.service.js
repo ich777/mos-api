@@ -949,30 +949,17 @@ class LxcService {
   }
 
   /**
-   * Download data from URL
+   * Download data from URL using wget
    * @param {string} url - URL to download from
    * @returns {Promise<string>} Downloaded data
    */
   async downloadData(url) {
-    return new Promise((resolve, reject) => {
-      https.get(url, (response) => {
-        let data = '';
-
-        response.on('data', (chunk) => {
-          data += chunk;
-        });
-
-        response.on('end', () => {
-          resolve(data);
-        });
-
-        response.on('error', (error) => {
-          reject(error);
-        });
-      }).on('error', (error) => {
-        reject(error);
-      });
-    });
+    try {
+      const { stdout } = await execPromise(`wget -qO- "${url}"`);
+      return stdout;
+    } catch (error) {
+      throw new Error(`Failed to download data from ${url}: ${error.message}`);
+    }
   }
 
   /**
@@ -1003,8 +990,12 @@ class LxcService {
           fs.mkdirSync(cacheDir, { recursive: true });
         }
 
+        // Get custom registry if configured, otherwise use default
+        const lxcRegistry = await getLxcRegistry();
+        const baseUrl = lxcRegistry ? `https://${lxcRegistry}` : 'https://images.linuxcontainers.org';
+
         // Download fresh data
-        const rawData = await this.downloadData('https://images.linuxcontainers.org/meta/simplestreams/v1/index.json');
+        const rawData = await this.downloadData(`${baseUrl}/meta/simplestreams/v1/index.json`);
 
         // Save to cache file
         fs.writeFileSync(cacheFile, rawData);
