@@ -32,6 +32,8 @@ const systemWebSocketRoutes = require('./routes/websocket/system.websocket.route
 const terminalWebSocketRoutes = require('./routes/websocket/terminal.websocket.routes');
 const dockerWebSocketRoutes = require('./routes/websocket/docker.websocket.routes');
 const disksWebSocketRoutes = require('./routes/websocket/disks.websocket.routes');
+const vmWebSocketRoutes = require('./routes/websocket/vm.websocket.routes');
+const lxcWebSocketRoutes = require('./routes/websocket/lxc.websocket.routes');
 
 // Middleware
 const { authenticateToken } = require('./middleware/auth.middleware');
@@ -138,6 +140,8 @@ async function startServer() {
   app.use('/api/v1/terminal', terminalWebSocketRoutes);
   app.use('/api/v1/docker', dockerWebSocketRoutes);
   app.use('/api/v1/disks', disksWebSocketRoutes);
+  app.use('/api/v1/vm', vmWebSocketRoutes);
+  app.use('/api/v1/lxc', lxcWebSocketRoutes);
 
   // Error Handling
   app.use(errorHandler);
@@ -256,6 +260,8 @@ async function startServer() {
   const TerminalWebSocketManager = require('./websockets/terminal.websocket');
   const DockerWebSocketManager = require('./websockets/docker.websocket');
   const DisksWebSocketManager = require('./websockets/disks.websocket');
+  const VmWebSocketManager = require('./websockets/vm.websocket');
+  const LxcWebSocketManager = require('./websockets/lxc.websocket');
 
   // Initialize event emitter for service communication
   const EventEmitter = require('events');
@@ -267,6 +273,8 @@ async function startServer() {
   const terminalNamespace = io.of('/terminal');
   const dockerNamespace = io.of('/docker');
   const disksNamespace = io.of('/disks');
+  const vmNamespace = io.of('/vm');
+  const lxcNamespace = io.of('/lxc');
 
   // Initialize pool WebSocket manager with pools namespace
   const PoolsService = require('./services/pools.service');
@@ -321,12 +329,22 @@ async function startServer() {
   // Initialize Disks WebSocket manager with disks namespace
   const disksWebSocketManager = new DisksWebSocketManager(disksNamespace, disksServiceInstance);
 
+  // Initialize VM WebSocket manager with vm namespace
+  const vmService = require('./services/vm.service');
+  const vmWebSocketManager = new VmWebSocketManager(vmNamespace, vmService);
+
+  // Initialize LXC WebSocket manager with lxc namespace
+  const lxcService = require('./services/lxc.service');
+  const lxcWebSocketManager = new LxcWebSocketManager(lxcNamespace, lxcService);
+
   // Make WebSocket managers available to routes
   app.locals.poolWebSocketManager = poolWebSocketManager;
   app.locals.systemLoadWebSocketManager = systemLoadWebSocketManager;
   app.locals.terminalWebSocketManager = terminalWebSocketManager;
   app.locals.dockerWebSocketManager = dockerWebSocketManager;
   app.locals.disksWebSocketManager = disksWebSocketManager;
+  app.locals.vmWebSocketManager = vmWebSocketManager;
+  app.locals.lxcWebSocketManager = lxcWebSocketManager;
 
   // Setup namespace handlers
   poolsNamespace.on('connection', (socket) => {
@@ -355,6 +373,18 @@ async function startServer() {
   disksNamespace.on('connection', (socket) => {
     console.info(`Disks WebSocket client connected: ${socket.id}`);
     disksWebSocketManager.handleConnection(socket);
+  });
+
+  // VM namespace for VM usage monitoring
+  vmNamespace.on('connection', (socket) => {
+    console.info(`VM WebSocket client connected: ${socket.id}`);
+    vmWebSocketManager.handleConnection(socket);
+  });
+
+  // LXC namespace for container usage monitoring
+  lxcNamespace.on('connection', (socket) => {
+    console.info(`LXC WebSocket client connected: ${socket.id}`);
+    lxcWebSocketManager.handleConnection(socket);
   });
 
   server.listen(PORT, '0.0.0.0', async () => {

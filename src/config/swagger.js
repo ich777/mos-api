@@ -58,8 +58,16 @@ const options = {
         description: 'LXC Container Management'
       },
       {
+        name: 'LXC WebSocket',
+        description: 'Real-time LXC container monitoring via WebSocket'
+      },
+      {
         name: 'VM',
         description: 'Virtual Machine Management with libvirt/QEMU'
+      },
+      {
+        name: 'VM WebSocket',
+        description: 'Real-time VM monitoring via WebSocket'
       },
       {
         name: 'Users',

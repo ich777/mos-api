@@ -5,6 +5,7 @@ const fs = fsSync.promises;
 const path = require('path');
 const net = require('net');
 const https = require('https');
+const os = require('os');
 const execPromise = util.promisify(exec);
 
 // Import mosService for VM settings
@@ -22,6 +23,56 @@ const MOS_NOTIFY_SOCKET = '/var/run/mos-notify.sock';
 // VirtIO constants
 const VIRTIO_ARCHIVE_URL = 'https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/';
 const VIRTIO_ISO_DIR = '/etc/libvirt/virtio-isos';
+
+// VM Index constants
+const VM_INDEX_PATH = '/etc/libvirt/mos/vms';
+const VM_ICONS_PATH = '/var/lib/os_icons';
+
+// Icon name to pretty name mapping
+const VM_ICON_MAPPING = {
+  'almalinux': 'AlmaLinux',
+  'alpine': 'Alpine Linux',
+  'archlinux': 'Arch Linux',
+  'alt': 'Alt Linux',
+  'amazonlinux': 'Amazon Linux',
+  'android': 'Android',
+  'busybox': 'BusyBox',
+  'centos': 'CentOS',
+  'chromeos': 'ChromeOS',
+  'debian': 'Debian',
+  'devuan': 'Devuan',
+  'fedora': 'Fedora',
+  'freebsd': 'FreeBSD',
+  'funtoo': 'Funtoo',
+  'gentoo': 'Gentoo',
+  'kali': 'Kali Linux',
+  'linux': 'Linux',
+  'macos': 'macOS',
+  'manjaro': 'Manjaro',
+  'mint': 'Linux Mint',
+  'nixos': 'NixOS',
+  'openbsd': 'OpenBSD',
+  'openeuler': 'openEuler',
+  'opensuse': 'openSUSE',
+  'openwrt': 'OpenWrt',
+  'oracle': 'Oracle Linux',
+  'plamo': 'Plamo',
+  'rockylinux': 'Rocky Linux',
+  'rehl': 'Red Hat Enterprise Linux',
+  'slackware': 'Slackware',
+  'springdalelinux': 'Springdale Linux',
+  'suse': 'SUSE',
+  'ubuntu': 'Ubuntu',
+  'voidlinux': 'Void Linux',
+  'windows3': 'Windows 3.x',
+  'windows7': 'Windows 7',
+  'windows8': 'Windows 8',
+  'windows10': 'Windows 10',
+  'windows11': 'Windows 11',
+  'windows98': 'Windows 98',
+  'windows2000': 'Windows 2000',
+  'windowsxp': 'Windows XP'
+};
 
 /**
  * VM Service
@@ -132,6 +183,296 @@ class VmService {
     }
   }
 
+  // ============================================================
+  // VM Index Management
+  // ============================================================
+
+  /**
+   * Read VM index file
+   * @returns {Promise<Array>} Array of VM index entries
+   * @private
+   */
+  async _readVmIndex() {
+    try {
+      const data = await fs.readFile(VM_INDEX_PATH, 'utf8');
+      return JSON.parse(data);
+    } catch (error) {
+      // File doesn't exist or is invalid - return empty array
+      return [];
+    }
+  }
+
+  /**
+   * Write VM index file
+   * @param {Array} indexData - Array of VM index entries
+   * @private
+   */
+  async _writeVmIndex(indexData) {
+    // Ensure directory exists
+    const dir = path.dirname(VM_INDEX_PATH);
+    try {
+      await fs.access(dir);
+    } catch (e) {
+      await fs.mkdir(dir, { recursive: true });
+    }
+    await fs.writeFile(VM_INDEX_PATH, JSON.stringify(indexData, null, 2), 'utf8');
+  }
+
+  /**
+   * Sync VM index with virsh - removes VMs that no longer exist
+   * and adds new VMs that are not in the index
+   * @returns {Promise<Array>} Synchronized index data
+   */
+  async syncVmIndex() {
+    // Get all VMs from virsh
+    const { stdout } = await execPromise('virsh list --all --name');
+    const virshVms = stdout.trim().split('\n').filter(name => name.trim());
+
+    // Read current index
+    let indexData = await this._readVmIndex();
+
+    // Remove VMs that no longer exist in virsh
+    indexData = indexData.filter(entry => virshVms.includes(entry.name));
+
+    // Find VMs in virsh that are not in the index
+    const indexedNames = indexData.map(e => e.name);
+    const newVms = virshVms.filter(name => !indexedNames.includes(name));
+
+    // Get next available index
+    let nextIndex = indexData.length > 0
+      ? Math.max(...indexData.map(e => e.index || 0)) + 1
+      : 1;
+
+    // Add new VMs with next available index
+    for (const name of newVms) {
+      indexData.push({
+        name,
+        index: nextIndex++,
+        icon: null,
+        description: null
+      });
+    }
+
+    // Sort by index
+    indexData.sort((a, b) => (a.index || 0) - (b.index || 0));
+
+    // Write updated index
+    await this._writeVmIndex(indexData);
+
+    return indexData;
+  }
+
+  /**
+   * Get synchronized VM index
+   * @returns {Promise<Array>} VM index with name, index, icon, description
+   */
+  async getVmIndex() {
+    return this.syncVmIndex();
+  }
+
+  /**
+   * Update VM index entries
+   * @param {Array} updates - Array of updates with name and optional index/icon/description
+   * @returns {Promise<Array>} Updated index
+   */
+  async updateVmIndex(updates) {
+    if (!Array.isArray(updates)) {
+      throw new Error('Updates must be an array');
+    }
+
+    // Sync first to ensure we have current state
+    let indexData = await this.syncVmIndex();
+
+    // Validate updates
+    for (const update of updates) {
+      if (!update.name) {
+        throw new Error('Each update must have a name');
+      }
+
+      // Check if VM exists in index
+      const exists = indexData.find(e => e.name === update.name);
+      if (!exists) {
+        throw new Error(`VM "${update.name}" not found`);
+      }
+
+      // Validate index if provided
+      if (update.index !== undefined && (!Number.isInteger(update.index) || update.index < 1)) {
+        throw new Error(`Invalid index for VM "${update.name}". Index must be a positive integer.`);
+      }
+    }
+
+    // Check for duplicate indices
+    const newIndices = updates.filter(u => u.index !== undefined).map(u => u.index);
+    if (newIndices.length !== new Set(newIndices).size) {
+      throw new Error('Duplicate index values are not allowed');
+    }
+
+    // Apply updates
+    for (const update of updates) {
+      const entry = indexData.find(e => e.name === update.name);
+      if (entry) {
+        if (update.index !== undefined) entry.index = update.index;
+        if (update.icon !== undefined) entry.icon = update.icon;
+        if (update.description !== undefined) entry.description = update.description || null;
+      }
+    }
+
+    // Sort by index
+    indexData.sort((a, b) => (a.index || 0) - (b.index || 0));
+
+    // Write and return
+    await this._writeVmIndex(indexData);
+    return indexData;
+  }
+
+  /**
+   * Add a VM to the index
+   * @param {string} name - VM name
+   * @param {string|null} icon - Icon name
+   * @param {string|null} description - Description
+   * @returns {Promise<Object>} The new index entry
+   */
+  async addVmToIndex(name, icon = null, description = null) {
+    let indexData = await this._readVmIndex();
+
+    // Check if already exists
+    if (indexData.find(e => e.name === name)) {
+      // Update existing entry
+      const entry = indexData.find(e => e.name === name);
+      if (icon !== undefined) entry.icon = icon;
+      if (description !== undefined) entry.description = description || null;
+      await this._writeVmIndex(indexData);
+      return entry;
+    }
+
+    // Get next index
+    const nextIndex = indexData.length > 0
+      ? Math.max(...indexData.map(e => e.index || 0)) + 1
+      : 1;
+
+    const newEntry = {
+      name,
+      index: nextIndex,
+      icon: icon || null,
+      description: description || null
+    };
+
+    indexData.push(newEntry);
+    await this._writeVmIndex(indexData);
+
+    return newEntry;
+  }
+
+  /**
+   * Remove a VM from the index
+   * @param {string} name - VM name
+   */
+  async removeVmFromIndex(name) {
+    let indexData = await this._readVmIndex();
+    indexData = indexData.filter(e => e.name !== name);
+    await this._writeVmIndex(indexData);
+  }
+
+  /**
+   * Get available VM icons from /var/lib/os_icons
+   * @returns {Promise<Array>} Array of icons with icon name and pretty name
+   */
+  async getAvailableIcons() {
+    try {
+      const files = await fs.readdir(VM_ICONS_PATH);
+      const icons = files
+        .filter(f => f.endsWith('.png'))
+        .map(f => {
+          const icon = f.replace('.png', '');
+          return {
+            icon,
+            namePretty: VM_ICON_MAPPING[icon] || icon
+          };
+        });
+
+      // Sort by namePretty
+      icons.sort((a, b) => a.namePretty.localeCompare(b.namePretty));
+      return icons;
+    } catch (error) {
+      // Directory doesn't exist or can't be read
+      return [];
+    }
+  }
+
+  // ============================================================
+  // XML Metadata Helpers
+  // ============================================================
+
+  /**
+   * Check if VM XML has been manually edited (has mos:xmlEdited metadata)
+   * @param {string} xml - VM XML string
+   * @returns {boolean} True if XML was manually edited
+   */
+  _isXmlManuallyEdited(xml) {
+    // Look for our metadata marker
+    const match = xml.match(/<mos:xmlEdited>([^<]+)<\/mos:xmlEdited>/);
+    return match ? match[1].trim() === 'true' : false;
+  }
+
+  /**
+   * Inject mos:config metadata in VM XML to mark it as manually edited
+   * Only adds metadata if not already present (preserves first edit timestamp)
+   * @param {string} xml - Original VM XML
+   * @returns {string} Modified XML with metadata
+   */
+  _injectXmlEditedMetadata(xml) {
+    // If already marked as edited, don't change anything (preserve first edit date)
+    if (xml.includes('<mos:xmlEdited>true</mos:xmlEdited>')) {
+      return xml;
+    }
+
+    const timestamp = new Date().toISOString();
+    const mosMetadata = `<mos:config xmlns:mos="mos:1">
+      <mos:xmlEdited>true</mos:xmlEdited>
+      <mos:editedAt>${timestamp}</mos:editedAt>
+    </mos:config>`;
+
+    // Check if <metadata> already exists
+    if (xml.includes('<metadata>')) {
+      // Add mos:config inside existing metadata
+      return xml.replace(
+        /<metadata>/,
+        `<metadata>\n    ${mosMetadata}`
+      );
+    } else {
+      // Add metadata section after <uuid> or <name>
+      const insertPoint = xml.match(/<\/uuid>/) ? '</uuid>' :
+                          xml.match(/<\/name>/) ? '</name>' : null;
+      if (insertPoint) {
+        return xml.replace(
+          insertPoint,
+          `${insertPoint}\n  <metadata>\n    ${mosMetadata}\n  </metadata>`
+        );
+      }
+    }
+
+    return xml;
+  }
+
+  /**
+   * Remove mos:config metadata from VM XML (when editing via config endpoint)
+   * @param {string} xml - VM XML string
+   * @returns {string} XML without mos:config metadata
+   */
+  _removeXmlEditedMetadata(xml) {
+    // Remove mos:config block
+    let result = xml.replace(/<mos:config[^>]*>[\s\S]*?<\/mos:config>\s*/g, '');
+
+    // Remove empty metadata tag if nothing left inside
+    result = result.replace(/<metadata>\s*<\/metadata>\s*/g, '');
+
+    return result;
+  }
+
+  // ============================================================
+  // VM Listing
+  // ============================================================
+
   /**
    * List all virtual machines with detailed information
    * @returns {Promise<Array>} List of VMs with their status, disk info and VNC port
@@ -201,17 +542,189 @@ class VmService {
               vmInfo.vncPort = null;
             }
           }
+
+          // Check if XML was manually edited
+          try {
+            const { stdout: xmlStdout } = await execPromise(`virsh dumpxml ${name}`);
+            vmInfo.xmlEdited = this._isXmlManuallyEdited(xmlStdout);
+          } catch (xmlError) {
+            vmInfo.xmlEdited = false;
+          }
         } catch (detailError) {
           // If we can't get details, just return basic info
           console.error(`Error getting details for VM ${name}: ${detailError.message}`);
+          vmInfo.xmlEdited = false;
         }
 
         return vmInfo;
       });
 
-      return Promise.all(vmsPromises);
+      const vms = await Promise.all(vmsPromises);
+
+      // Inject index data (index, icon, description) from the index file
+      try {
+        const indexData = await this.syncVmIndex();
+        for (const vm of vms) {
+          const indexEntry = indexData.find(e => e.name === vm.name);
+          if (indexEntry) {
+            vm.index = indexEntry.index;
+            vm.icon = indexEntry.icon;
+            vm.description = indexEntry.description;
+          } else {
+            vm.index = null;
+            vm.icon = null;
+            vm.description = null;
+          }
+        }
+
+        // Sort VMs by index
+        vms.sort((a, b) => {
+          if (a.index === null && b.index === null) return a.name.localeCompare(b.name);
+          if (a.index === null) return 1;
+          if (b.index === null) return -1;
+          return a.index - b.index;
+        });
+      } catch (indexError) {
+        // If index sync fails, continue without index data
+        console.error(`Warning: Could not sync VM index: ${indexError.message}`);
+        for (const vm of vms) {
+          vm.index = null;
+          vm.icon = null;
+          vm.description = null;
+        }
+      }
+
+      return vms;
     } catch (error) {
       throw new Error(`Failed to list virtual machines: ${error.message}`);
+    }
+  }
+
+  /**
+   * Get resource usage for all VMs (CPU % and RAM) using cgroup2
+   * Returns all VMs with their state, running VMs include usage data
+   * @returns {Promise<Array>} Array of usage info for all VMs
+   */
+  async getVmUsage() {
+    try {
+      const cgroupBase = '/sys/fs/cgroup/machine';
+
+      // Get all VMs from virsh
+      const { stdout: allStdout } = await execPromise('virsh list --all --name');
+      const allVms = allStdout.trim().split('\n').filter(name => name.trim());
+
+      if (allVms.length === 0) return [];
+
+      // Get running VMs from virsh
+      const { stdout: runningStdout } = await execPromise('virsh list --name');
+      const runningVms = runningStdout.trim().split('\n').filter(name => name.trim());
+
+      // Build cgroup path map for running VMs
+      const cgroupMap = {};
+      try {
+        const entries = fsSync.readdirSync(cgroupBase);
+        for (const dir of entries) {
+          // Format: qemu-<id>-<name>.libvirt-qemu
+          const match = dir.match(/^qemu-\d+-(.+)\.libvirt-qemu$/);
+          if (match) {
+            cgroupMap[match[1]] = `${cgroupBase}/${dir}`;
+          }
+        }
+      } catch (e) { /* cgroup not available */ }
+
+      // Collect initial CPU times for running VMs
+      const cpuTimes1 = {};
+      for (const vmName of runningVms) {
+        const cgroupPath = cgroupMap[vmName];
+        if (!cgroupPath) continue;
+
+        try {
+          const cpuStat = fsSync.readFileSync(`${cgroupPath}/cpu.stat`, 'utf8');
+          const usageMatch = cpuStat.match(/usage_usec\s+(\d+)/);
+          cpuTimes1[vmName] = usageMatch ? parseInt(usageMatch[1]) : 0;
+        } catch (e) { /* skip */ }
+      }
+
+      // Wait 1 second for CPU measurement (only if we have running VMs)
+      if (runningVms.length > 0) {
+        await new Promise(r => setTimeout(r, 1000));
+      }
+
+      // Collect final data for all VMs
+      const results = allVms.map(vmName => {
+        const isRunning = runningVms.includes(vmName);
+        const cgroupPath = cgroupMap[vmName];
+
+        // Default values for stopped VMs
+        if (!isRunning) {
+          return {
+            name: vmName,
+            state: 'stopped',
+            cpu: { usage: 0, unit: '%' },
+            memory: { bytes: 0, formatted: '0 GiB' }
+          };
+        }
+
+        let cpuUsage = 0;
+        let memoryBytes = 0;
+
+        // Read final CPU usage and calculate percentage
+        if (cgroupPath) {
+          try {
+            const cpuStat = fsSync.readFileSync(`${cgroupPath}/cpu.stat`, 'utf8');
+            const usageMatch = cpuStat.match(/usage_usec\s+(\d+)/);
+            const cpuTime2 = usageMatch ? parseInt(usageMatch[1]) : 0;
+            const cpuTime1 = cpuTimes1[vmName] || 0;
+
+            // Get CPU count: try cgroup cpuset (respects pinning), fallback to host
+            let cpuCount = os.cpus().length || 1;
+            try {
+              const cpuset = fsSync.readFileSync(`${cgroupPath}/cpuset.cpus.effective`, 'utf8').trim();
+              if (cpuset) {
+                // Parse "0-3" or "0,2,4" format
+                cpuCount = cpuset.split(',').reduce((sum, part) => {
+                  const [a, b] = part.split('-').map(Number);
+                  return sum + (b !== undefined ? b - a + 1 : 1);
+                }, 0) || cpuCount;
+              }
+            } catch (e) { /* use host count */ }
+
+            // Calculate: (delta_usec / (cpuCount * 1_000_000)) * 100
+            cpuUsage = (cpuTime2 - cpuTime1) / (cpuCount * 10000);
+            cpuUsage = Math.min(100, Math.max(0, cpuUsage));
+          } catch (e) { /* skip */ }
+
+          // Read memory usage
+          try {
+            const memoryCurrent = fsSync.readFileSync(`${cgroupPath}/memory.current`, 'utf8');
+            memoryBytes = parseInt(memoryCurrent.trim()) || 0;
+          } catch (e) { /* skip */ }
+        }
+
+        // Format memory in GiB
+        const memoryGiB = memoryBytes / 1073741824;
+        const formatted = memoryGiB >= 0.01
+          ? memoryGiB.toFixed(2) + ' GiB'
+          : (memoryBytes / 1048576).toFixed(2) + ' MiB';
+
+        return {
+          name: vmName,
+          state: 'running',
+          cpu: {
+            usage: parseFloat(cpuUsage.toFixed(1)),
+            unit: '%'
+          },
+          memory: {
+            bytes: memoryBytes,
+            formatted
+          }
+        };
+      });
+
+      // Sort by name
+      return results.sort((a, b) => a.name.localeCompare(b.name));
+    } catch (error) {
+      throw new Error(`Failed to get VM usage: ${error.message}`);
     }
   }
 
@@ -454,11 +967,12 @@ class VmService {
    */
   async getVmCapabilities() {
     try {
-      const [machines, networks, virtioVersions, vmSettings] = await Promise.all([
+      const [machines, networks, virtioVersions, vmSettings, icons] = await Promise.all([
         this.getQemuMachines(),
         this.getNetworkInterfaces(),
         this.getInstalledVirtioVersions().catch(() => []),
-        getMosService().getVmSettings().catch(() => ({}))
+        getMosService().getVmSettings().catch(() => ({})),
+        this.getAvailableIcons()
       ]);
 
       // Check which BIOS files exist
@@ -489,6 +1003,7 @@ class VmService {
         networkTypes: this.VALID_NETWORK_TYPES,
         networkModels: this.VALID_NETWORK_MODELS,
         graphicsTypes: this.VALID_GRAPHICS_TYPES,
+        icons,
         machines,
         networks,
         virtioIsos
@@ -1086,11 +1601,27 @@ class VmService {
         // Define the VM using virsh
         await execPromise(`virsh define ${xmlPath}`);
 
+        // Add VM to index with icon and description from config
+        let indexEntry = null;
+        try {
+          indexEntry = await this.addVmToIndex(
+            config.name,
+            config.icon || null,
+            config.description || null
+          );
+        } catch (indexError) {
+          // Don't fail VM creation if index update fails
+          console.warn(`Warning: Could not add VM to index: ${indexError.message}`);
+        }
+
         return {
           success: true,
           message: `VM "${config.name}" created successfully`,
           name: config.name,
-          xmlPath
+          xmlPath,
+          index: indexEntry ? indexEntry.index : null,
+          icon: indexEntry ? indexEntry.icon : null,
+          description: indexEntry ? indexEntry.description : null
         };
       } catch (error) {
         // Clean up XML file on failure
@@ -1228,6 +1759,14 @@ class VmService {
         }
       }
 
+      // Remove VM from index
+      try {
+        await this.removeVmFromIndex(vmName);
+      } catch (indexError) {
+        // Don't fail deletion if index update fails
+        console.warn(`Warning: Could not remove VM from index: ${indexError.message}`);
+      }
+
       return {
         success: true,
         message: `VM "${vmName}" deleted successfully`,
@@ -1289,9 +1828,12 @@ class VmService {
         }
       }
 
+      // Inject xmlEdited metadata to mark this XML as manually edited
+      const xmlWithMetadata = this._injectXmlEditedMetadata(xml);
+
       // Write to temp file and redefine
       const tempFile = `/tmp/vm-update-${vmName}-${Date.now()}.xml`;
-      await fs.writeFile(tempFile, xml, 'utf8');
+      await fs.writeFile(tempFile, xmlWithMetadata, 'utf8');
 
       try {
         await execPromise(`virsh define ${tempFile}`);
@@ -1310,6 +1852,33 @@ class VmService {
       }
     } catch (error) {
       throw new Error(`Failed to update VM XML: ${error.message}`);
+    }
+  }
+
+  /**
+   * Save VM XML without injecting xmlEdited metadata (internal use)
+   * Used by updateVmConfig to save without marking as manually edited
+   * @param {string} vmName - VM name
+   * @param {string} xml - XML content
+   * @returns {Promise<Object>} Save result
+   * @private
+   */
+  async _saveVmXml(vmName, xml) {
+    const tempFile = `/tmp/vm-save-${vmName}-${Date.now()}.xml`;
+    await fs.writeFile(tempFile, xml, 'utf8');
+
+    try {
+      await execPromise(`virsh define ${tempFile}`);
+      return {
+        success: true,
+        message: `VM "${vmName}" configuration updated successfully`
+      };
+    } finally {
+      try {
+        await fs.unlink(tempFile);
+      } catch (e) {
+        // Ignore cleanup errors
+      }
     }
   }
 
@@ -1431,10 +2000,13 @@ class VmService {
       };
 
       // Generate new XML
-      const xml = this.generateVmXml(newConfig);
+      let xml = this.generateVmXml(newConfig);
 
-      // Update VM
-      return await this.updateVmXml(vmName, xml);
+      // Remove any xmlEdited metadata since we're editing via config endpoint
+      xml = this._removeXmlEditedMetadata(xml);
+
+      // Update VM without injecting xmlEdited metadata
+      return await this._saveVmXml(vmName, xml);
     } catch (error) {
       throw new Error(`Failed to update VM config: ${error.message}`);
     }

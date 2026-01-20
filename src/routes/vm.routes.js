@@ -59,6 +59,25 @@ const { checkRole } = require('../middleware/auth.middleware');
  *           type: boolean
  *           description: Whether the VM is configured to start automatically on system boot
  *           example: true
+ *         index:
+ *           type: integer
+ *           nullable: true
+ *           description: Sort index from VM index file
+ *           example: 1
+ *         icon:
+ *           type: string
+ *           nullable: true
+ *           description: Icon name (without .png extension)
+ *           example: "ubuntu"
+ *         description:
+ *           type: string
+ *           nullable: true
+ *           description: VM description
+ *           example: "Web Server"
+ *         xmlEdited:
+ *           type: boolean
+ *           description: Whether the VM XML was manually edited (via raw XML endpoint)
+ *           example: false
  *     VmOperationResult:
  *       type: object
  *       properties:
@@ -137,6 +156,64 @@ router.get('/machines', async (req, res) => {
   try {
     const vms = await vmService.listVms();
     res.json(vms);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /vm/machines/usage:
+ *   get:
+ *     summary: Get resource usage for all VMs
+ *     description: Returns CPU usage (%) and memory usage (GiB) for all VMs. Running VMs show actual usage from cgroup2, stopped VMs show 0 values. Takes ~1 second to measure CPU if any VM is running.
+ *     tags: [VM]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: VM resource usage for all VMs
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: object
+ *                 properties:
+ *                   name:
+ *                     type: string
+ *                     example: "windows-10"
+ *                   state:
+ *                     type: string
+ *                     example: "running"
+ *                   cpu:
+ *                     type: object
+ *                     properties:
+ *                       usage:
+ *                         type: number
+ *                         description: CPU usage percentage
+ *                         example: 25.3
+ *                       unit:
+ *                         type: string
+ *                         example: "%"
+ *                   memory:
+ *                     type: object
+ *                     properties:
+ *                       bytes:
+ *                         type: integer
+ *                         description: Memory usage in bytes
+ *                         example: 4294967296
+ *                       formatted:
+ *                         type: string
+ *                         description: Memory usage formatted in GiB
+ *                         example: "4.00 GiB"
+ *       500:
+ *         description: Failed to get VM usage
+ */
+router.get('/machines/usage', async (req, res) => {
+  try {
+    const usage = await vmService.getVmUsage();
+    res.json(usage);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -819,6 +896,16 @@ router.get('/capabilities', async (req, res) => {
  *               name:
  *                 type: string
  *                 description: VM name (letters, numbers, underscores, hyphens only)
+ *               icon:
+ *                 type: string
+ *                 nullable: true
+ *                 description: Icon name (without .png extension) from /var/lib/os_icons
+ *                 example: "windows10"
+ *               description:
+ *                 type: string
+ *                 nullable: true
+ *                 description: Optional description for the VM
+ *                 example: "Gaming VM"
  *               memory:
  *                 type: string
  *                 description: Memory size. Supports units like "4G", "4GB", "4GiB", "512M", "512MB" or plain number in MiB
@@ -993,6 +1080,144 @@ router.delete('/machines/:name', async (req, res) => {
       removeNvram: req.query.removeNvram === 'true'
     };
     const result = await vmService.deleteVm(name, options);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================
+// VM Index Management
+// ============================================================
+
+/**
+ * @swagger
+ * /vm/index:
+ *   get:
+ *     summary: Get VM index
+ *     description: Returns the synchronized VM index with name, index, icon and description for each VM
+ *     tags: [VM]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: VM index retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: object
+ *                 properties:
+ *                   name:
+ *                     type: string
+ *                     description: VM name
+ *                     example: "windows-10"
+ *                   index:
+ *                     type: integer
+ *                     description: Sort index
+ *                     example: 1
+ *                   icon:
+ *                     type: string
+ *                     nullable: true
+ *                     description: Icon name (without .png extension)
+ *                     example: "windows10"
+ *                   description:
+ *                     type: string
+ *                     nullable: true
+ *                     description: VM description
+ *                     example: "Gaming VM"
+ *       500:
+ *         description: Failed to get VM index
+ */
+router.get('/index', async (req, res) => {
+  try {
+    const index = await vmService.getVmIndex();
+    res.json(index);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /vm/index:
+ *   put:
+ *     summary: Update VM index
+ *     description: Update index, icon and/or description for one or more VMs
+ *     tags: [VM]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: array
+ *             items:
+ *               type: object
+ *               required:
+ *                 - name
+ *               properties:
+ *                 name:
+ *                   type: string
+ *                   description: VM name
+ *                   example: "windows-10"
+ *                 index:
+ *                   type: integer
+ *                   description: New sort index (must be positive integer)
+ *                   example: 2
+ *                 icon:
+ *                   type: string
+ *                   nullable: true
+ *                   description: Icon name (without .png extension)
+ *                   example: "windows10"
+ *                 description:
+ *                   type: string
+ *                   nullable: true
+ *                   description: VM description
+ *                   example: "Gaming VM"
+ *           example:
+ *             - name: "windows-10"
+ *               index: 2
+ *               icon: "windows10"
+ *             - name: "ubuntu-server"
+ *               index: 1
+ *               description: "Web Server"
+ *     responses:
+ *       200:
+ *         description: VM index updated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: object
+ *                 properties:
+ *                   name:
+ *                     type: string
+ *                   index:
+ *                     type: integer
+ *                   icon:
+ *                     type: string
+ *                     nullable: true
+ *                   description:
+ *                     type: string
+ *                     nullable: true
+ *       400:
+ *         description: Invalid request body
+ *       500:
+ *         description: Failed to update VM index
+ */
+router.put('/index', async (req, res) => {
+  try {
+    const updates = req.body;
+
+    if (!Array.isArray(updates)) {
+      return res.status(400).json({ error: 'Request body must be an array of updates' });
+    }
+
+    const result = await vmService.updateVmIndex(updates);
     res.json(result);
   } catch (error) {
     res.status(500).json({ error: error.message });

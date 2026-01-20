@@ -1904,6 +1904,44 @@ class DisksService {
 
       // Build set of devices used in pools (both original device AND base disk)
       const poolDisks = new Set();
+
+      // Load ZFS pool devices (native zpool, not managed by pools.json)
+      try {
+        const { stdout: zpoolList } = await execPromise('zpool list -H -o name 2>/dev/null || true');
+        const zpoolNames = zpoolList.trim().split('\n').filter(name => name);
+
+        for (const zpoolName of zpoolNames) {
+          try {
+            // Get devices from zpool status - parse the VDEV tree
+            const { stdout: zpoolStatus } = await execPromise(`zpool status -P ${zpoolName} 2>/dev/null || true`);
+            const lines = zpoolStatus.split('\n');
+
+            for (const line of lines) {
+              // Match device paths like /dev/sda, /dev/sdb1, /dev/disk/by-id/...
+              const deviceMatch = line.match(/^\s+(\/dev\/\S+)/);
+              if (deviceMatch) {
+                let device = deviceMatch[1];
+
+                // Resolve symlinks (e.g., /dev/disk/by-id/... -> /dev/sda)
+                try {
+                  const { stdout: realPath } = await execPromise(`readlink -f "${device}"`);
+                  device = realPath.trim();
+                } catch {
+                  // Keep original path if readlink fails
+                }
+
+                // Add both the device and its base disk
+                poolDisks.add(device);
+                poolDisks.add(this._getBaseDisk(device));
+              }
+            }
+          } catch {
+            // Ignore errors for individual pools
+          }
+        }
+      } catch {
+        // ZFS not installed or no pools - ignore
+      }
       for (const pool of pools) {
         // Collect data devices
         if (pool.data_devices) {
@@ -3366,7 +3404,8 @@ class DisksService {
    * Prüft verfügbare Dateisysteme für die Formatierung
    * @param {string} pooltype - Optional: Filter für Pool-Typ ('multi', 'nonraid', 'single', 'mergerfs')
    *                            Bei 'multi' werden nur btrfs und zfs zurückgegeben
-   *                            Bei 'nonraid', 'single', 'mergerfs' oder ohne Parameter werden alle zurückgegeben
+   *                            Bei 'mergerfs' und 'nonraid' wird vfat ausgeschlossen (keine POSIX-Unterstützung)
+   *                            Bei 'single' oder ohne Parameter werden alle zurückgegeben
    */
   async getAvailableFilesystems(pooltype = null) {
     const supportedFilesystems = [
@@ -3387,21 +3426,28 @@ class DisksService {
 
     for (const fs of filesystemsToCheck) {
       try {
-        // Spezielle Behandlung für ZFS
-        if (fs.name === 'zfs') {
-          try {
-            await execPromise(`which zpool`);
-            await execPromise(`which zfs`);
-            await execPromise(`modinfo zfs`);
-            availableFilesystems.push(fs.name);
-          } catch (zfsError) {
-            // ZFS nicht verfügbar
-          }
-        } else {
-          // Normale mkfs-Tools prüfen
-          await execPromise(`which ${fs.command}`);
-          availableFilesystems.push(fs.name);
-        }
+        // Spezielle Behandlung für ZFS (deaktiviert für jetzt)
+        // if (fs.name === 'zfs') {
+        //   try {
+        //     await execPromise(`which zpool`);
+        //     await execPromise(`which zfs`);
+        //     await execPromise(`modinfo zfs`);
+        //     availableFilesystems.push(fs.name);
+        //   } catch (zfsError) {
+        //     // ZFS nicht verfügbar
+        //   }
+        // } else {
+        //   // Normale mkfs-Tools prüfen
+        //   await execPromise(`which ${fs.command}`);
+        //   availableFilesystems.push(fs.name);
+        // }
+
+        // Ohne ZFS - nur normale mkfs-Tools prüfen
+        if (fs.name === 'zfs') continue;
+        // vfat bei mergerfs und nonraid ausschließen
+        if (fs.name === 'vfat' && (pooltype === 'mergerfs' || pooltype === 'nonraid')) continue;
+        await execPromise(`which ${fs.command}`);
+        availableFilesystems.push(fs.name);
       } catch (error) {
         // Tool nicht verfügbar - ignorieren
       }
