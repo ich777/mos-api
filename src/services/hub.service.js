@@ -9,6 +9,7 @@ class HubService {
     this.hubConfigPath = '/boot/config/system/hub.json';
     this.indexPath = '/var/mos/hub/repositories.json';
     this.allowedTypes = ['docker', 'compose', 'lxc', 'plugin', 'vm'];
+    this.allowedCategories = ['AI', 'Backup', 'Hosting', 'Crypto', 'Downloader', 'Driver', 'Game Server', 'Home Automation', 'Media', 'Network', 'Productivity', 'Monitoring', 'Security', 'System', 'Utilities', 'Misc'];
   }
 
   /**
@@ -470,10 +471,10 @@ class HubService {
   }
 
   /**
-   * Gets available categories from the index (filtered by allowed types)
+   * Gets available types from the index (filtered by allowed types)
    * @returns {Promise<Array<string>>} List of available types
    */
-  async getCategories() {
+  async getTypes() {
     let indexData;
     try {
       const data = await fs.readFile(this.indexPath, 'utf8');
@@ -485,6 +486,29 @@ class HubService {
     const templates = indexData.results || [];
     const foundTypes = new Set(templates.map(t => t.type));
     return this.allowedTypes.filter(t => foundTypes.has(t));
+  }
+
+  /**
+   * Gets available categories from the index (filtered by allowed categories)
+   * @returns {Promise<Array<string>>} List of available categories
+   */
+  async getCategories() {
+    let indexData;
+    try {
+      const data = await fs.readFile(this.indexPath, 'utf8');
+      indexData = JSON.parse(data);
+    } catch {
+      indexData = await this.buildIndex({});
+    }
+
+    const templates = indexData.results || [];
+    const foundCategories = new Set();
+    for (const t of templates) {
+      if (Array.isArray(t.category)) {
+        t.category.forEach(c => foundCategories.add(c));
+      }
+    }
+    return this.allowedCategories.filter(c => foundCategories.has(c));
   }
 
   /**

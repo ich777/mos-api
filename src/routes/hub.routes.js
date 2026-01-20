@@ -350,7 +350,7 @@ router.get('/index', async (req, res) => {
 
 /**
  * @swagger
- * /mos/hub/categories:
+ * /mos/hub/types:
  *   get:
  *     summary: Get available template types
  *     description: Returns available template types (docker, compose, lxc, plugin, vm) that exist in repositories
@@ -367,6 +367,37 @@ router.get('/index', async (req, res) => {
  *               items:
  *                 type: string
  *               example: ["docker", "compose", "plugin"]
+ *       500:
+ *         description: Server error
+ */
+router.get('/types', async (req, res) => {
+  try {
+    const types = await hubService.getTypes();
+    res.json(types);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /mos/hub/categories:
+ *   get:
+ *     summary: Get available template categories
+ *     description: Returns available categories (AI, Backup, Media, etc.) that exist in repositories
+ *     tags: [MOS Hub]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: List of available categories
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: string
+ *               example: ["AI", "Backup", "Media", "Network"]
  *       500:
  *         description: Server error
  */
