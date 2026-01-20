@@ -329,7 +329,7 @@ router.post('/update', async (req, res) => {
 router.get('/index', async (req, res) => {
   try {
     const { search, category, type, sort, order, limit, skip } = req.query;
-    const result = await hubService.buildIndex({
+    const result = await hubService.getIndex({
       search,
       category,
       type,
@@ -345,6 +345,37 @@ router.get('/index', async (req, res) => {
     } else {
       res.status(500).json({ error: error.message });
     }
+  }
+});
+
+/**
+ * @swagger
+ * /mos/hub/categories:
+ *   get:
+ *     summary: Get available template types
+ *     description: Returns available template types (docker, compose, lxc, plugin, vm) that exist in repositories
+ *     tags: [MOS Hub]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: List of available types
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: string
+ *               example: ["docker", "compose", "plugin"]
+ *       500:
+ *         description: Server error
+ */
+router.get('/categories', async (req, res) => {
+  try {
+    const categories = await hubService.getCategories();
+    res.json(categories);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 

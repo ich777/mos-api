@@ -7,6 +7,8 @@ const execPromise = util.promisify(exec);
 class HubService {
   constructor() {
     this.hubConfigPath = '/boot/config/system/hub.json';
+    this.indexPath = '/var/mos/hub/repositories.json';
+    this.allowedTypes = ['docker', 'compose', 'lxc', 'plugin', 'vm'];
   }
 
   /**
@@ -369,7 +371,120 @@ class HubService {
       }
     }
 
+    // Build and save index after successful update
+    await this._saveIndex();
+
     return results;
+  }
+
+  /**
+   * Builds and saves the template index to disk
+   * @returns {Promise<void>}
+   */
+  async _saveIndex() {
+    const indexData = await this.buildIndex({});
+    await fs.mkdir(path.dirname(this.indexPath), { recursive: true });
+    await fs.writeFile(this.indexPath, JSON.stringify(indexData, null, 2), 'utf8');
+  }
+
+  /**
+   * Gets the cached template index with optional filtering
+   * @param {Object} options - Filter, sort and pagination options
+   * @returns {Promise<Object>} Object with results array and count
+   */
+  async getIndex(options = {}) {
+    const { search, category, type, sort, order = 'asc', limit, skip } = options;
+
+    // Try to read cached index
+    let indexData;
+    try {
+      const data = await fs.readFile(this.indexPath, 'utf8');
+      indexData = JSON.parse(data);
+    } catch {
+      // No cached index, build fresh
+      indexData = await this.buildIndex({});
+    }
+
+    let filtered = indexData.results || [];
+    const searchLower = search ? search.toLowerCase() : null;
+    const categoryLower = category ? category.toLowerCase() : null;
+    const typeLower = type ? type.toLowerCase() : null;
+
+    // Filter by type
+    if (typeLower) {
+      filtered = filtered.filter(t => t.type === typeLower);
+    }
+
+    // Filter by search term
+    if (searchLower) {
+      filtered = filtered.filter(t => {
+        const name = (t.name || '').toLowerCase();
+        const maintainer = (t.maintainer || '').toLowerCase();
+        const description = (t.description || '').toLowerCase();
+        return name.includes(searchLower) || maintainer.includes(searchLower) || description.includes(searchLower);
+      });
+    }
+
+    // Filter by category
+    if (categoryLower) {
+      filtered = filtered.filter(t => {
+        if (!Array.isArray(t.category)) return false;
+        return t.category.some(c => c.toLowerCase().includes(categoryLower));
+      });
+    }
+
+    // Sort results
+    if (sort) {
+      filtered.sort((a, b) => {
+        let valA, valB;
+        switch (sort) {
+          case 'name':
+            valA = (a.name || '').toLowerCase();
+            valB = (b.name || '').toLowerCase();
+            return order === 'desc' ? valB.localeCompare(valA) : valA.localeCompare(valB);
+          case 'created':
+            valA = a.created_at || 0;
+            valB = b.created_at || 0;
+            return order === 'desc' ? valB - valA : valA - valB;
+          case 'updated':
+            valA = a.updated_at || 0;
+            valB = b.updated_at || 0;
+            return order === 'desc' ? valB - valA : valA - valB;
+          default:
+            return 0;
+        }
+      });
+    }
+
+    const totalCount = filtered.length;
+
+    if (skip && skip > 0) filtered = filtered.slice(skip);
+    if (limit && limit > 0) filtered = filtered.slice(0, limit);
+
+    const config = await this._readConfig();
+    return {
+      results: filtered,
+      page_entries: config.page_entries || 24,
+      count: totalCount
+    };
+  }
+
+  /**
+   * Gets available categories from the index (filtered by allowed types)
+   * @returns {Promise<Array<string>>} List of available types
+   */
+  async getCategories() {
+    let indexData;
+    try {
+      const data = await fs.readFile(this.indexPath, 'utf8');
+      indexData = JSON.parse(data);
+    } catch {
+      indexData = await this.buildIndex({});
+    }
+
+    const templates = indexData.results || [];
+    const foundTypes = new Set(templates.map(t => t.type));
+    return this.allowedTypes.filter(t => foundTypes.has(t));
   }
 
   /**
