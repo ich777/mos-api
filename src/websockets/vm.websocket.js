@@ -1,5 +1,3 @@
-const jwt = require('jsonwebtoken');
-const config = require('../config');
 
 class VmWebSocketManager {
   constructor(io, vmService) {
@@ -117,10 +115,11 @@ class VmWebSocketManager {
 
   /**
    * Authenticate user from JWT token
+   * Supports: Boot token, Admin API token, Regular JWT
    */
   async authenticateUser(token) {
     if (!token) {
-      return { success: false, message: 'Authentication token required' };
+      return { success: false, message: 'Authentication token is required' };
     }
 
     // Check cache first
@@ -130,10 +129,62 @@ class VmWebSocketManager {
     }
 
     try {
-      const decoded = jwt.verify(token, config.get('JWT_SECRET'));
+      const jwt = require('jsonwebtoken');
+      const { getBootToken } = require('../middleware/auth.middleware');
+      const userService = require('../services/user.service');
+
+      // Check if it's the boot token
+      const bootToken = await getBootToken();
+      if (bootToken && token === bootToken) {
+        const user = {
+          id: 'boot',
+          userId: 'boot',
+          username: 'boot',
+          role: 'admin',
+          isBootToken: true
+        };
+        this.authCache.set(token, { user, timestamp: Date.now() });
+        return { success: true, user };
+      }
+
+      // Check if it's an admin API token
+      const adminTokenData = await userService.validateAdminToken(token);
+      if (adminTokenData) {
+        const user = {
+          ...adminTokenData,
+          userId: adminTokenData.id
+        };
+        this.authCache.set(token, { user, timestamp: Date.now() });
+        return { success: true, user };
+      }
+
+      // Regular JWT verification
+      const decodedUser = jwt.verify(token, process.env.JWT_SECRET);
+
+      // Check if user still exists
+      const users = await userService.loadUsers();
+      const currentUser = users.find(u => u.id === decodedUser.id);
+
+      if (!currentUser) {
+        return { success: false, message: 'User no longer exists' };
+      }
+
+      // samba_only users are not allowed
+      if (currentUser.role === 'samba_only') {
+        return { success: false, message: 'Access denied. This account is for file sharing only' };
+      }
+
+      // Check if role has changed
+      if (currentUser.role !== decodedUser.role) {
+        return { success: false, message: 'Token invalid due to role change. Please login again' };
+      }
+
       const user = {
-        userId: decoded.userId,
-        role: decoded.role
+        id: currentUser.id,
+        userId: currentUser.id,
+        username: currentUser.username,
+        role: currentUser.role,
+        byte_format: currentUser.byte_format
       };
 
       // Cache the result

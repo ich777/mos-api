@@ -1713,6 +1713,9 @@ class MosService {
       } catch (error) {
         if (error.code !== 'ENOENT') throw error;
       }
+      // Remove read-only fields that may come from GET response
+      delete updates.iommu_active;
+
       // Only allowed fields are updated
       const allowed = ['enabled', 'directory', 'vdisk_directory', 'start_wait'];
 
