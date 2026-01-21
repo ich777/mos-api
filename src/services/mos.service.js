@@ -927,7 +927,8 @@ class MosService {
         appdata: `${basePath}/appdata`
       },
       lxc: {
-        directory: `${basePath}/system/lxc`
+        directory: `${basePath}/system/lxc`,
+        backup_path: `${basePath}/backups/lxc`
       },
       vm: {
         directory: `${basePath}/system/vm`,
@@ -1399,8 +1400,14 @@ class MosService {
       enabled: false,
       bridge: false,
       directory: defaultPaths ? defaultPaths.lxc.directory : null,
+      backing_storage: 'directory',  // Options: 'directory', 'btrfs'
       start_wait: 0,
-      lxc_registry: null
+      lxc_registry: null,
+      backup_path: defaultPaths ? defaultPaths.lxc.backup_path : null,
+      backups_to_keep: 3,
+      compression: 6,
+      threads: 0,
+      use_snapshot: false
     };
   }
 
@@ -1467,7 +1474,7 @@ class MosService {
         if (error.code !== 'ENOENT') throw error;
       }
       // Only allowed fields are updated
-      const allowed = ['enabled', 'bridge', 'directory', 'start_wait', 'lxc_registry'];
+      const allowed = ['enabled', 'bridge', 'directory', 'start_wait', 'lxc_registry', 'backup_path', 'backups_to_keep', 'compression', 'threads', 'use_snapshot'];
 
       // Validate lxc_registry if provided (must not contain protocol prefixes)
       if (updates.lxc_registry !== undefined && updates.lxc_registry !== null && updates.lxc_registry !== '') {
@@ -1477,10 +1484,39 @@ class MosService {
         }
       }
 
+      // Validate backup settings
+      if (updates.backups_to_keep !== undefined) {
+        const val = updates.backups_to_keep;
+        if (!Number.isInteger(val) || val < 1 || val > 100) {
+          throw new Error('backups_to_keep must be an integer between 1 and 100');
+        }
+      }
+
+      if (updates.compression !== undefined) {
+        const val = updates.compression;
+        if (!Number.isInteger(val) || val < 0 || val > 9) {
+          throw new Error('compression must be an integer between 0 and 9 (7-9 requires 12GB+ RAM)');
+        }
+      }
+
+      if (updates.threads !== undefined) {
+        const val = updates.threads;
+        if (!Number.isInteger(val) || val < 0) {
+          throw new Error('threads must be 0 (auto) or a positive integer');
+        }
+      }
+
+      if (updates.use_snapshot !== undefined && typeof updates.use_snapshot !== 'boolean') {
+        throw new Error('use_snapshot must be a boolean');
+      }
+
       // Check directory paths for mount status
       const pathsToCheck = {};
       if (updates.directory && updates.directory !== current.directory) {
         pathsToCheck.directory = updates.directory;
+      }
+      if (updates.backup_path && updates.backup_path !== current.backup_path) {
+        pathsToCheck.backup_path = updates.backup_path;
       }
 
       if (Object.keys(pathsToCheck).length > 0) {
@@ -1560,6 +1596,29 @@ class MosService {
   }
 
   /**
+   * Checks if IOMMU is currently active on the system
+   * @returns {Promise<boolean>} True if IOMMU is active
+   */
+  async _checkIommuActive() {
+    try {
+      // Check if /sys/class/iommu/ exists and has entries
+      const iommuPath = '/sys/class/iommu';
+      try {
+        const entries = await fs.readdir(iommuPath);
+        return entries.length > 0;
+      } catch (error) {
+        if (error.code === 'ENOENT') {
+          return false;
+        }
+        throw error;
+      }
+    } catch (error) {
+      console.error('Error checking IOMMU status:', error.message);
+      return false;
+    }
+  }
+
+  /**
    * Returns the default VM settings structure with all expected fields
    * @returns {Promise<Object>} Default VM settings
    */
@@ -1591,6 +1650,8 @@ class MosService {
       } catch (error) {
         if (error.code === 'ENOENT') {
           console.warn('vm.json not found, returning defaults');
+          // Inject iommu_active (runtime-only, not saved to file)
+          defaults.iommu_active = await this._checkIommuActive();
           return defaults;
         }
         throw error;
@@ -1612,6 +1673,9 @@ class MosService {
           }
         }
       }
+
+      // Inject iommu_active (runtime-only, not saved to file)
+      settings.iommu_active = await this._checkIommuActive();
 
       return settings;
     } catch (error) {

@@ -27,6 +27,7 @@ const VIRTIO_ISO_DIR = '/etc/libvirt/virtio-isos';
 // VM Index constants
 const VM_INDEX_PATH = '/etc/libvirt/mos/vms';
 const VM_ICONS_PATH = '/var/lib/os_icons';
+const VM_CUSTOM_ICONS_PATH = '/var/www/vm_custom';
 
 // Icon name to pretty name mapping
 const VM_ICON_MAPPING = {
@@ -104,6 +105,24 @@ class VmService {
     this.VALID_NETWORK_TYPES = ['bridge', 'macvtap', 'network'];
     this.VALID_NETWORK_MODELS = ['virtio', 'e1000', 'rtl8139'];
     this.VALID_GRAPHICS_TYPES = ['vnc', 'spice', 'none'];
+  }
+
+  // ============================================================
+  // Custom Icon Helper
+  // ============================================================
+
+  /**
+   * Check if a VM has a custom icon
+   * @param {string} vmName - Name of the VM
+   * @returns {boolean} True if custom icon exists, false otherwise
+   */
+  hasCustomIcon(vmName) {
+    try {
+      const iconPath = `${VM_CUSTOM_ICONS_PATH}/${vmName}.png`;
+      return fsSync.existsSync(iconPath);
+    } catch (error) {
+      return false;
+    }
   }
 
   // ============================================================
@@ -561,7 +580,7 @@ class VmService {
 
       const vms = await Promise.all(vmsPromises);
 
-      // Inject index data (index, icon, description) from the index file
+      // Inject index data (index, icon, description) and custom_icon from the index file
       try {
         const indexData = await this.syncVmIndex();
         for (const vm of vms) {
@@ -575,6 +594,7 @@ class VmService {
             vm.icon = null;
             vm.description = null;
           }
+          vm.custom_icon = this.hasCustomIcon(vm.name);
         }
 
         // Sort VMs by index
@@ -591,6 +611,7 @@ class VmService {
           vm.index = null;
           vm.icon = null;
           vm.description = null;
+          vm.custom_icon = this.hasCustomIcon(vm.name);
         }
       }
 

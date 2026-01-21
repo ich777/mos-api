@@ -327,7 +327,7 @@ class PoolWebSocketManager {
    */
   async emitPoolsUpdate(poolId = null) {
     try {
-      const room = this.io.sockets.adapter.rooms.get('pools');
+      const room = this.io.adapter.rooms.get('pools');
       if (room && room.size > 0) {
         // Clear all pools cache to force fresh data
         for (const [key] of this.dataCache) {
@@ -362,7 +362,7 @@ class PoolWebSocketManager {
     };
 
     for (const [poolId, subscription] of this.activeSubscriptions) {
-      const room = this.io.sockets.adapter.rooms.get(`pool-${poolId}`);
+      const room = this.io.adapter.rooms.get(`pool-${poolId}`);
       stats.subscriptions.push({
         poolId,
         clientCount: room ? room.size : 0,

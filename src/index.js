@@ -6,6 +6,25 @@ const swaggerSpecs = require('./config/swagger');
 const config = require('./config');
 const http = require('http');
 const { Server } = require('socket.io');
+const { execSync } = require('child_process');
+
+// Set high priority for API process (only affects this process, not child processes)
+try {
+  // renice -n -10 -p <pid> (higher priority, requires root)
+  execSync(`renice -n -10 -p ${process.pid}`, { stdio: 'ignore' });
+  console.info('API process priority set to -10 (high priority)');
+} catch (err) {
+  console.warn('Could not set process priority (requires root for negative nice values)');
+}
+
+// Set I/O priority for API process (best-effort, highest priority)
+try {
+  // ionice -c 2 -n 0 -p <pid> (class 2 = best-effort, priority 0 = highest)
+  execSync(`ionice -c 2 -n 0 -p ${process.pid}`, { stdio: 'ignore' });
+  console.info('API I/O priority set to best-effort class, priority 0 (highest)');
+} catch (err) {
+  console.warn('Could not set I/O priority:', err.message);
+}
 
 // Routes
 const authRoutes = require('./routes/auth.routes');

@@ -215,6 +215,11 @@ const { checkRole } = require('../middleware/auth.middleware');
  *           type: boolean
  *           description: Enable VM service
  *           example: true
+ *         iommu_active:
+ *           type: boolean
+ *           description: Whether IOMMU is currently active on the system (read-only, injected at runtime)
+ *           readOnly: true
+ *           example: false
  *         directory:
  *           type: string
  *           description: VM storage directory
@@ -734,6 +739,7 @@ router.post('/settings/lxc', async (req, res) => {
  *               $ref: '#/components/schemas/VmSettings'
  *             example:
  *               enabled: true
+ *               iommu_active: false
  *               directory: "/mnt/pool1/vm"
  *               vdisk_directory: "/mnt/pool1/vdisk"
  *               start_wait: 30

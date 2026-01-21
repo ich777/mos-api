@@ -1268,4 +1268,603 @@ router.post('/mos/containers', async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /lxc/backups:
+ *   get:
+ *     summary: List all available LXC container backups
+ *     tags: [LXC]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: List of all backups
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: object
+ *                 properties:
+ *                   container:
+ *                     type: string
+ *                   filename:
+ *                     type: string
+ *                   size:
+ *                     type: integer
+ *                   size_human:
+ *                     type: string
+ *                   created:
+ *                     type: string
+ *                     format: date-time
+ */
+router.get('/backups', async (req, res) => {
+  try {
+    const result = await lxcService.listBackups(null, req.user);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /lxc/containers/{name}/backups:
+ *   get:
+ *     summary: List backups for a specific container
+ *     tags: [LXC]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: name
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Container name
+ *     responses:
+ *       200:
+ *         description: List of backups for the container
+ */
+router.get('/containers/:name/backups', async (req, res) => {
+  try {
+    const { name } = req.params;
+    const result = await lxcService.listBackups(name, req.user);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /lxc/containers/{name}/backup:
+ *   post:
+ *     summary: Create a backup of a container
+ *     description: Starts an async backup operation. Container will be stopped during backup (unless use_snapshot is enabled).
+ *     tags: [LXC]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: name
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Container name
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               use_snapshot:
+ *                 type: boolean
+ *                 description: Use snapshot for faster container restart
+ *               compression:
+ *                 type: integer
+ *                 minimum: 0
+ *                 maximum: 9
+ *                 description: Compression level (7-9 requires 12GB+ RAM)
+ *               threads:
+ *                 type: integer
+ *                 description: Number of threads (0 = auto)
+ *               allow_running:
+ *                 type: boolean
+ *                 default: false
+ *                 description: Allow backup while container is running (may cause inconsistent data)
+ *     responses:
+ *       200:
+ *         description: Backup started
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 message:
+ *                   type: string
+ *                 backup_file:
+ *                   type: string
+ *                 use_snapshot:
+ *                   type: boolean
+ *                 was_running:
+ *                   type: boolean
+ *       400:
+ *         description: Backup already in progress or container not found
+ *       500:
+ *         description: Error starting backup
+ */
+router.post('/containers/:name/backup', async (req, res) => {
+  try {
+    const { name } = req.params;
+    const options = req.body || {};
+    const result = await lxcService.backupContainer(name, options);
+    res.json(result);
+  } catch (error) {
+    if (error.message.includes('does not exist') ||
+        error.message.includes('already in progress') ||
+        error.message.includes('not configured')) {
+      return res.status(400).json({ error: error.message });
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /lxc/containers/{name}/backup/abort:
+ *   post:
+ *     summary: Abort an active backup operation
+ *     tags: [LXC]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: name
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Container name
+ *     responses:
+ *       200:
+ *         description: Abort signal sent
+ *       400:
+ *         description: No active operation for container
+ */
+router.post('/containers/:name/backup/abort', async (req, res) => {
+  try {
+    const { name } = req.params;
+    const result = await lxcService.abortBackup(name);
+    res.json(result);
+  } catch (error) {
+    if (error.message.includes('No active operation')) {
+      return res.status(400).json({ error: error.message });
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /lxc/containers/{name}/backups/{filename}:
+ *   delete:
+ *     summary: Delete a specific backup file
+ *     tags: [LXC]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: name
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Container name
+ *       - in: path
+ *         name: filename
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Backup filename
+ *     responses:
+ *       200:
+ *         description: Backup deleted
+ *       400:
+ *         description: Backup not found
+ */
+router.delete('/containers/:name/backups/:filename', async (req, res) => {
+  try {
+    const { name, filename } = req.params;
+    const result = await lxcService.deleteBackup(name, filename);
+    res.json(result);
+  } catch (error) {
+    if (error.message.includes('not found') || error.message.includes('Invalid')) {
+      return res.status(400).json({ error: error.message });
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /lxc/containers/{name}/restore:
+ *   post:
+ *     summary: Restore a container from backup
+ *     description: Starts an async restore operation. If new_name matches existing container, it will be replaced.
+ *     tags: [LXC]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: name
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Source container name (for backup lookup)
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - backup_file
+ *               - new_name
+ *             properties:
+ *               backup_file:
+ *                 type: string
+ *                 description: Backup filename to restore
+ *               new_name:
+ *                 type: string
+ *                 description: Name for the restored container
+ *     responses:
+ *       200:
+ *         description: Restore started
+ *       400:
+ *         description: Invalid parameters or backup not found
+ */
+router.post('/containers/:name/restore', async (req, res) => {
+  try {
+    const { name } = req.params;
+    const { backup_file, new_name } = req.body;
+
+    if (!backup_file || !new_name) {
+      return res.status(400).json({ error: 'backup_file and new_name are required' });
+    }
+
+    const result = await lxcService.restoreContainer(name, new_name, backup_file);
+    res.json(result);
+  } catch (error) {
+    if (error.message.includes('not found') ||
+        error.message.includes('Invalid') ||
+        error.message.includes('already in progress') ||
+        error.message.includes('not configured')) {
+      return res.status(400).json({ error: error.message });
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /lxc/containers/{name}/convert-btrfs:
+ *   post:
+ *     summary: Convert container rootfs to BTRFS subvolume
+ *     description: Converts a dir-based container to use a BTRFS subvolume. LXC directory must be on BTRFS filesystem.
+ *     tags: [LXC]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: name
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Container name
+ *     responses:
+ *       200:
+ *         description: Conversion started
+ *       400:
+ *         description: Already BTRFS or not on BTRFS filesystem
+ */
+router.post('/containers/:name/convert-btrfs', async (req, res) => {
+  try {
+    const { name } = req.params;
+    const result = await lxcService.convertToBtrfs(name);
+    res.json(result);
+  } catch (error) {
+    if (error.message.includes('does not exist') ||
+        error.message.includes('already using BTRFS') ||
+        error.message.includes('not on a BTRFS') ||
+        error.message.includes('already in progress')) {
+      return res.status(400).json({ error: error.message });
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /lxc/snapshots:
+ *   get:
+ *     summary: List all snapshots from all containers
+ *     tags: [LXC]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: List of all snapshots
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: object
+ *                 properties:
+ *                   container:
+ *                     type: string
+ *                     description: Container name
+ *                   name:
+ *                     type: string
+ *                     description: Snapshot name
+ *                   timestamp:
+ *                     type: string
+ *                   size:
+ *                     type: integer
+ *                   size_human:
+ *                     type: string
+ */
+router.get('/snapshots', async (req, res) => {
+  try {
+    const result = await lxcService.listAllSnapshots(req.user);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /lxc/containers/{name}/snapshots:
+ *   get:
+ *     summary: List all snapshots for a container
+ *     tags: [LXC]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: name
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Container name
+ *     responses:
+ *       200:
+ *         description: List of snapshots
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: object
+ *                 properties:
+ *                   name:
+ *                     type: string
+ *                   timestamp:
+ *                     type: string
+ *                   size:
+ *                     type: integer
+ *                   size_human:
+ *                     type: string
+ *   post:
+ *     summary: Create a snapshot of a container
+ *     tags: [LXC]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: name
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Container name
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               snapshot_name:
+ *                 type: string
+ *                 description: Optional custom snapshot name
+ *               allow_running:
+ *                 type: boolean
+ *                 default: false
+ *                 description: Allow snapshot while container is running (default stops container first)
+ *     responses:
+ *       200:
+ *         description: Snapshot created
+ *       400:
+ *         description: Container not found or operation in progress
+ */
+router.get('/containers/:name/snapshots', async (req, res) => {
+  try {
+    const { name } = req.params;
+    const result = await lxcService.listSnapshots(name, req.user);
+    res.json(result);
+  } catch (error) {
+    if (error.message.includes('does not exist')) {
+      return res.status(400).json({ error: error.message });
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/containers/:name/snapshots', async (req, res) => {
+  try {
+    const { name } = req.params;
+    const { snapshot_name, allow_running } = req.body || {};
+    const result = await lxcService.createSnapshot(name, snapshot_name, { allowRunning: allow_running || false });
+    res.json(result);
+  } catch (error) {
+    if (error.message.includes('does not exist') ||
+        error.message.includes('operation in progress') ||
+        error.message.includes('can only contain')) {
+      return res.status(400).json({ error: error.message });
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /lxc/containers/{name}/snapshots/{snapshot}:
+ *   delete:
+ *     summary: Delete a snapshot
+ *     tags: [LXC]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: name
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Container name
+ *       - in: path
+ *         name: snapshot
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Snapshot name
+ *     responses:
+ *       200:
+ *         description: Snapshot deleted
+ *       400:
+ *         description: Snapshot not found or operation in progress
+ */
+router.delete('/containers/:name/snapshots/:snapshot', async (req, res) => {
+  try {
+    const { name, snapshot } = req.params;
+    const result = await lxcService.deleteSnapshot(name, snapshot);
+    res.json(result);
+  } catch (error) {
+    if (error.message.includes('does not exist') ||
+        error.message.includes('not found') ||
+        error.message.includes('Invalid') ||
+        error.message.includes('operation in progress')) {
+      return res.status(400).json({ error: error.message });
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /lxc/containers/{name}/snapshots/{snapshot}/restore:
+ *   post:
+ *     summary: Restore container from a snapshot
+ *     description: Restores the container to the state of the specified snapshot. Container will be stopped during restore.
+ *     tags: [LXC]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: name
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Container name
+ *       - in: path
+ *         name: snapshot
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Snapshot name to restore
+ *     responses:
+ *       200:
+ *         description: Restore started
+ *       400:
+ *         description: Snapshot not found or operation in progress
+ */
+router.post('/containers/:name/snapshots/:snapshot/restore', async (req, res) => {
+  try {
+    const { name, snapshot } = req.params;
+    const result = await lxcService.restoreSnapshot(name, snapshot);
+    res.json(result);
+  } catch (error) {
+    if (error.message.includes('does not exist') ||
+        error.message.includes('not found') ||
+        error.message.includes('Invalid') ||
+        error.message.includes('operation in progress')) {
+      return res.status(400).json({ error: error.message });
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /lxc/containers/{name}/snapshots/{snapshot}/clone:
+ *   post:
+ *     summary: Create a new container from a snapshot
+ *     description: Creates a new container based on the specified snapshot.
+ *     tags: [LXC]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: name
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Source container name
+ *       - in: path
+ *         name: snapshot
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Snapshot name to clone from
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - new_name
+ *             properties:
+ *               new_name:
+ *                 type: string
+ *                 description: Name for the new container
+ *     responses:
+ *       200:
+ *         description: Clone started
+ *       400:
+ *         description: Invalid parameters or operation in progress
+ */
+router.post('/containers/:name/snapshots/:snapshot/clone', async (req, res) => {
+  try {
+    const { name, snapshot } = req.params;
+    const { new_name } = req.body;
+
+    if (!new_name) {
+      return res.status(400).json({ error: 'new_name is required' });
+    }
+
+    const result = await lxcService.cloneFromSnapshot(name, snapshot, new_name);
+    res.json(result);
+  } catch (error) {
+    if (error.message.includes('does not exist') ||
+        error.message.includes('already exists') ||
+        error.message.includes('not found') ||
+        error.message.includes('Invalid') ||
+        error.message.includes('operation in progress')) {
+      return res.status(400).json({ error: error.message });
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
 module.exports = router;

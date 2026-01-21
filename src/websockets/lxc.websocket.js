@@ -165,11 +165,11 @@ class LxcWebSocketManager {
         });
       } else {
         // Room - send to each socket with their individual filter
-        const room = this.io.sockets.adapter.rooms.get('container-usage');
+        const room = this.io.adapter.rooms.get('container-usage');
         if (!room) return;
 
         for (const socketId of room) {
-          const socket = this.io.sockets.sockets.get(socketId);
+          const socket = this.io.sockets.get(socketId);
           if (!socket) continue;
 
           const usage = socket.containerFilter
@@ -193,13 +193,13 @@ class LxcWebSocketManager {
   startMonitoring() {
     if (this.monitoringInterval) return;
 
-    const room = this.io.sockets.adapter.rooms.get('container-usage');
+    const room = this.io.adapter.rooms.get('container-usage');
     if (!room || room.size === 0) return;
 
     console.log('Starting LXC container usage monitoring');
 
     this.monitoringInterval = setInterval(async () => {
-      const room = this.io.sockets.adapter.rooms.get('container-usage');
+      const room = this.io.adapter.rooms.get('container-usage');
       if (!room || room.size === 0) {
         this.stopMonitoring();
         return;
@@ -224,7 +224,7 @@ class LxcWebSocketManager {
    * Check if monitoring should be stopped
    */
   checkStopMonitoring() {
-    const room = this.io.sockets.adapter.rooms.get('container-usage');
+    const room = this.io.adapter.rooms.get('container-usage');
     if (!room || room.size === 0) {
       this.stopMonitoring();
     }
@@ -234,10 +234,10 @@ class LxcWebSocketManager {
    * Get monitoring statistics
    */
   getStats() {
-    const room = this.io.sockets.adapter.rooms.get('container-usage');
+    const room = this.io.adapter.rooms.get('container-usage');
     return {
       activeSubscriptions: room ? room.size : 0,
-      clientCount: this.io.sockets.sockets.size,
+      clientCount: this.io.sockets.size,
       subscription: this.monitoringInterval ? {
         interval: this.updateInterval,
         isActive: true
