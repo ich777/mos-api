@@ -1474,7 +1474,7 @@ class MosService {
         if (error.code !== 'ENOENT') throw error;
       }
       // Only allowed fields are updated
-      const allowed = ['enabled', 'bridge', 'directory', 'start_wait', 'lxc_registry', 'backup_path', 'backups_to_keep', 'compression', 'threads', 'use_snapshot'];
+      const allowed = ['enabled', 'bridge', 'directory', 'start_wait', 'lxc_registry', 'backup_path', 'backups_to_keep', 'compression', 'threads', 'use_snapshot', 'backing_storage'];
 
       // Validate lxc_registry if provided (must not contain protocol prefixes)
       if (updates.lxc_registry !== undefined && updates.lxc_registry !== null && updates.lxc_registry !== '') {
@@ -1508,6 +1508,13 @@ class MosService {
 
       if (updates.use_snapshot !== undefined && typeof updates.use_snapshot !== 'boolean') {
         throw new Error('use_snapshot must be a boolean');
+      }
+
+      if (updates.backing_storage !== undefined) {
+        const validBackingStorage = ['directory', 'btrfs'];
+        if (!validBackingStorage.includes(updates.backing_storage)) {
+          throw new Error('backing_storage must be either "directory" or "btrfs"');
+        }
       }
 
       // Check directory paths for mount status
