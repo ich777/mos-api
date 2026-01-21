@@ -51,6 +51,7 @@ const VM_ICON_MAPPING = {
   'macos': 'macOS',
   'manjaro': 'Manjaro',
   'mint': 'Linux Mint',
+  'mos': 'MOS',
   'nixos': 'NixOS',
   'openbsd': 'OpenBSD',
   'openeuler': 'openEuler',
@@ -594,7 +595,7 @@ class VmService {
             vm.icon = null;
             vm.description = null;
           }
-          vm.custom_icon = this.hasCustomIcon(vm.name);
+          vm.customIcon = this.hasCustomIcon(vm.name);
         }
 
         // Sort VMs by index
@@ -611,7 +612,7 @@ class VmService {
           vm.index = null;
           vm.icon = null;
           vm.description = null;
-          vm.custom_icon = this.hasCustomIcon(vm.name);
+          vm.customIcon = this.hasCustomIcon(vm.name);
         }
       }
 
@@ -1930,7 +1931,8 @@ class VmService {
       else if (memoryUnit === 'GiB') memoryBytes = memory * 1024 * 1024 * 1024;
 
       const memoryMiB = Math.floor(memoryBytes / (1024 * 1024));
-      const memoryHuman = this.formatBytes(memoryBytes, user);
+      // RAM should always be displayed in binary (GiB/MiB), not user preference
+      const memoryHuman = this.formatBytes(memoryBytes, { byte_format: 'binary' });
 
       // Parse machine type and platform
       const machineType = this._extractXmlAttr(xml, 'type', 'machine') || '';
