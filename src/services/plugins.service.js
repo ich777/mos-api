@@ -73,7 +73,7 @@ async function getPlugins() {
       const manifest = JSON.parse(manifestContent);
 
       // Add update_available status
-      let updateAvailable = 'unknown';
+      let updateAvailable = false;
       if (versionsExists) {
         const pluginName = manifest.name || dir.name;
         if (pluginName in versionsMap) {

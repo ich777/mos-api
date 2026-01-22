@@ -7,6 +7,8 @@ const config = require('./config');
 const http = require('http');
 const { Server } = require('socket.io');
 const { execSync } = require('child_process');
+const net = require('net');
+const WebSocket = require('ws');
 
 // Set high priority for API process (only affects this process, not child processes)
 try {
@@ -406,6 +408,111 @@ async function startServer() {
     lxcWebSocketManager.handleConnection(socket);
   });
 
+  // ============================================================
+  // VNC WebSocket Proxy
+  // ============================================================
+  const vncService = require('./services/vnc.service');
+
+  // Create WebSocket server for VNC (no server attached - we handle upgrade manually)
+  const vncWss = new WebSocket.Server({ noServer: true });
+
+  // Handle VNC WebSocket connections
+  vncWss.on('connection', (ws, req, session) => {
+    console.info(`VNC WebSocket connected for VM "${session.vmName}" (user: ${session.userId})`);
+
+    // Connect to VNC port via TCP
+    const tcp = net.connect(session.vncPort, '127.0.0.1', () => {
+      console.info(`VNC TCP connected to port ${session.vncPort}`);
+      vncService.markConnected(session.token);
+    });
+
+    // Error handling for TCP
+    tcp.on('error', (err) => {
+      console.error(`VNC TCP error for ${session.vmName}:`, err.message);
+      ws.close(1011, 'VNC connection failed');
+    });
+
+    // Bidirectional data piping
+    tcp.on('data', (data) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(data);
+      }
+    });
+
+    ws.on('message', (data) => {
+      if (tcp.writable) {
+        tcp.write(data);
+      }
+    });
+
+    // Cleanup on WebSocket close
+    ws.on('close', () => {
+      console.info(`VNC WebSocket closed for VM "${session.vmName}"`);
+      tcp.destroy();
+      vncService.endSession(session.token);
+    });
+
+    ws.on('error', (err) => {
+      console.error(`VNC WebSocket error for ${session.vmName}:`, err.message);
+      tcp.destroy();
+      vncService.endSession(session.token);
+    });
+
+    // Cleanup on TCP close
+    tcp.on('close', () => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.close(1000, 'VNC connection closed');
+      }
+    });
+
+    // Heartbeat to detect dead connections
+    ws.isAlive = true;
+    ws.on('pong', () => { ws.isAlive = true; });
+  });
+
+  // Heartbeat interval for VNC connections
+  const vncHeartbeat = setInterval(() => {
+    vncWss.clients.forEach((ws) => {
+      if (ws.isAlive === false) {
+        return ws.terminate();
+      }
+      ws.isAlive = false;
+      ws.ping();
+    });
+  }, 30000);
+
+  vncWss.on('close', () => {
+    clearInterval(vncHeartbeat);
+  });
+
+  // Handle HTTP upgrade requests for VNC WebSocket
+  server.on('upgrade', (req, socket, head) => {
+    const pathname = req.url;
+
+    // Check if this is a VNC WebSocket request
+    const vncMatch = pathname.match(/^\/api\/v1\/vm\/vnc\/ws\/([a-f0-9]{64})$/);
+
+    if (vncMatch) {
+      const token = vncMatch[1];
+      const session = vncService.validateToken(token);
+
+      if (!session) {
+        console.warn(`VNC WebSocket rejected: invalid or expired token`);
+        socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+
+      // Store token in session for later cleanup
+      session.token = token;
+
+      // Upgrade to WebSocket
+      vncWss.handleUpgrade(req, socket, head, (ws) => {
+        vncWss.emit('connection', ws, req, session);
+      });
+    }
+  });
+
   server.listen(PORT, '0.0.0.0', async () => {
     console.info(`API running on port ${PORT}`);
 
@@ -433,17 +540,21 @@ startServer().catch(error => {
   process.exit(1);
 });
 
-// Graceful shutdown - end Terminal-Sessions
+// Graceful shutdown - end Terminal-Sessions and VNC sessions
 process.on('SIGTERM', () => {
   console.log('SIGTERM received, shutting down gracefully...');
   const terminalService = require('./services/terminal.service');
+  const vncService = require('./services/vnc.service');
   terminalService.shutdown();
+  vncService.shutdown();
   process.exit(0);
 });
 
 process.on('SIGINT', () => {
   console.log('SIGINT received, shutting down gracefully...');
   const terminalService = require('./services/terminal.service');
+  const vncService = require('./services/vnc.service');
   terminalService.shutdown();
+  vncService.shutdown();
   process.exit(0);
 });

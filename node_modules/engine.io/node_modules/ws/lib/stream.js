@@ -1,7 +1,5 @@
-/* eslint no-unused-vars: ["error", { "varsIgnorePattern": "^WebSocket$" }] */
 'use strict';
 
-const WebSocket = require('./websocket');
 const { Duplex } = require('stream');
 
 /**

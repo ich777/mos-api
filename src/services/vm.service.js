@@ -106,6 +106,13 @@ class VmService {
     this.VALID_NETWORK_TYPES = ['bridge', 'macvtap', 'network'];
     this.VALID_NETWORK_MODELS = ['virtio', 'e1000', 'rtl8139'];
     this.VALID_GRAPHICS_TYPES = ['vnc', 'spice', 'none'];
+    // Standard QEMU VNC keymaps (not Linux console keymaps!)
+    this.VALID_VNC_KEYMAPS = [
+      'en-us', 'en-gb', 'de', 'de-ch', 'fr', 'fr-be', 'fr-ca', 'fr-ch',
+      'es', 'it', 'pt', 'pt-br', 'nl', 'nl-be', 'pl', 'ru', 'ja', 'ko',
+      'ar', 'da', 'et', 'fi', 'fo', 'hr', 'hu', 'is', 'lt', 'lv', 'mk',
+      'no', 'sl', 'sv', 'th', 'tr'
+    ];
   }
 
   // ============================================================
@@ -683,7 +690,8 @@ class VmService {
             name: vmName,
             state: 'stopped',
             cpu: { usage: 0, unit: '%' },
-            memory: { bytes: 0, formatted: '0 GiB' }
+            memory: { bytes: 0, formatted: '0 GiB' },
+            vncPort: null
           };
         }
 
@@ -739,9 +747,28 @@ class VmService {
           memory: {
             bytes: memoryBytes,
             formatted
-          }
+          },
+          vncPort: null  // Populated below
         };
       });
+
+      // Get VNC ports for running VMs
+      for (const vm of results) {
+        if (vm.state === 'running') {
+          try {
+            const { stdout: vncStdout } = await execPromise(`virsh vncdisplay ${vm.name}`);
+            const vncDisplay = vncStdout.trim();
+            if (vncDisplay) {
+              const displayNumber = parseInt(vncDisplay.replace(':', ''), 10);
+              if (!isNaN(displayNumber)) {
+                vm.vncPort = 5900 + displayNumber;
+              }
+            }
+          } catch (e) {
+            // VM might not have VNC configured
+          }
+        }
+      }
 
       // Sort by name
       return results.sort((a, b) => a.name.localeCompare(b.name));
@@ -1025,6 +1052,7 @@ class VmService {
         networkTypes: this.VALID_NETWORK_TYPES,
         networkModels: this.VALID_NETWORK_MODELS,
         graphicsTypes: this.VALID_GRAPHICS_TYPES,
+        vncKeymaps: this.VALID_VNC_KEYMAPS,
         icons,
         machines,
         networks,
@@ -1359,7 +1387,8 @@ class VmService {
       type = 'vnc',
       port = null,
       listen = '0.0.0.0',
-      password = null
+      password = null,
+      keymap = 'en-us'
     } = graphics;
 
     // null or -1 means autoport
@@ -1371,6 +1400,11 @@ class VmService {
 
     if (password) {
       xml += ` passwd='${this._escapeXml(password)}'`;
+    }
+
+    // Add keymap for VNC to properly handle special characters
+    if (type === 'vnc' && keymap) {
+      xml += ` keymap='${keymap}'`;
     }
 
     xml += `>
@@ -2205,17 +2239,22 @@ class VmService {
   _parseGraphicsFromXml(xml) {
     const graphicsMatch = xml.match(/<graphics[^>]*type='([^']+)'[^>]*/);
     if (!graphicsMatch) {
-      return { type: 'none', port: null, listen: null };
+      return { type: 'none', port: null, listen: null, keymap: null };
     }
 
     const graphicsXml = graphicsMatch[0];
     const portStr = this._extractXmlAttr(graphicsXml, 'graphics', 'port');
     const port = portStr ? parseInt(portStr) : null;
 
+    // Extract keymap attribute
+    const keymapMatch = graphicsXml.match(/keymap='([^']+)'/);
+    const keymap = keymapMatch ? keymapMatch[1] : null;
+
     return {
       type: graphicsMatch[1],
       port: (port === -1) ? null : port,  // Convert -1 (autoport) to null
-      listen: this._extractXmlAttr(graphicsXml, 'listen', 'address') || '0.0.0.0'
+      listen: this._extractXmlAttr(graphicsXml, 'listen', 'address') || '0.0.0.0',
+      keymap
     };
   }
 

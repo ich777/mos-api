@@ -1622,4 +1622,139 @@ router.post('/virtioiso/cleanup', async (req, res) => {
   }
 });
 
+// ============================================================
+// VNC Proxy Endpoints
+// ============================================================
+
+const vncService = require('../services/vnc.service');
+
+/**
+ * @swagger
+ * /vm/vnc/token:
+ *   post:
+ *     summary: Generate VNC access token
+ *     description: Generates a short-lived token for WebSocket VNC connection to a running VM
+ *     tags: [VM]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - vmName
+ *             properties:
+ *               vmName:
+ *                 type: string
+ *                 description: Name of the running VM
+ *                 example: "ubuntu-server"
+ *     responses:
+ *       200:
+ *         description: VNC token generated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 token:
+ *                   type: string
+ *                   description: One-time use token (valid 60s)
+ *                   example: "a1b2c3d4e5f6..."
+ *                 wsPath:
+ *                   type: string
+ *                   description: WebSocket path to connect to
+ *                   example: "/api/v1/vm/vnc/ws/a1b2c3d4e5f6..."
+ *       400:
+ *         description: VM name required or VM not running
+ *       500:
+ *         description: Server error
+ */
+router.post('/vnc/token', async (req, res) => {
+  try {
+    const { vmName } = req.body;
+
+    if (!vmName) {
+      return res.status(400).json({
+        success: false,
+        error: 'vmName is required'
+      });
+    }
+
+    const result = await vncService.generateToken(vmName, req.user.id);
+
+    res.json({
+      success: true,
+      token: result.token,
+      wsPath: result.wsPath
+    });
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * @swagger
+ * /vm/vnc/sessions:
+ *   get:
+ *     summary: Get active VNC sessions
+ *     description: Returns all active VNC sessions (admin only)
+ *     tags: [VM]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Active VNC sessions
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 sessions:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       tokenPrefix:
+ *                         type: string
+ *                         example: "a1b2c3d4..."
+ *                       vmName:
+ *                         type: string
+ *                       userId:
+ *                         type: string
+ *                       connected:
+ *                         type: boolean
+ *                       createdAt:
+ *                         type: integer
+ *                       connectedAt:
+ *                         type: integer
+ *                         nullable: true
+ *                 counts:
+ *                   type: object
+ *                   description: Connection count per VM
+ */
+router.get('/vnc/sessions', async (req, res) => {
+  try {
+    res.json({
+      success: true,
+      sessions: vncService.getSessions(),
+      counts: vncService.getSessionCounts()
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 module.exports = router;
