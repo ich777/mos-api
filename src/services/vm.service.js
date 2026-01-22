@@ -73,7 +73,8 @@ const VM_ICON_MAPPING = {
   'windows11': 'Windows 11',
   'windows98': 'Windows 98',
   'windows2000': 'Windows 2000',
-  'windowsxp': 'Windows XP'
+  'windowsxp': 'Windows XP',
+  'zorinos': 'Zorin OS'
 };
 
 /**
