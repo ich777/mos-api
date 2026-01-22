@@ -13,6 +13,24 @@ const MAX_SOURCE_SIZE = 10 * 1024 * 1024; // 10MB
 
 const PLUGINS_DIR = '/var/www/mos-plugins';
 
+// Forbidden commands that cannot be executed via query API
+// These are blocked both by name and as symlink targets
+const FORBIDDEN_COMMANDS = [
+  'mkdir', 'rmdir', 'rm', 'mv', 'cp', 'touch', 'truncate', 'ln',
+  'chmod', 'chown', 'chgrp', 'chattr', 'tar', 'unzip', 'gunzip',
+  'gzip', 'bzip2', 'xz', 'zip', 'cpio', 'sh', 'bash', 'zsh',
+  'dash', 'fish', 'csh', 'tcsh', 'ksh', 'python', 'python2',
+  'python3', 'perl', 'ruby', 'node', 'lua', 'php', 'awk', 'gawk',
+  'nawk', 'mawk', 'sed', 'dd', 'shred', 'mkfs', 'fdisk',
+  'parted', 'mount', 'umount', 'kill', 'killall', 'pkill',
+  'reboot', 'shutdown', 'poweroff', 'halt', 'init', 'insmod',
+  'rmmod', 'modprobe', 'depmod', 'nc', 'netcat', 'ncat',
+  'socat', 'curl', 'wget', 'su', 'sudo', 'chroot', 'nohup',
+  'setsid', 'apt', 'apt-get', 'dpkg', 'aptitude', 'snap', 'tee',
+  'install', 'rsync', 'scp', 'sftp', 'ssh', 'eval', 'exec',
+  'xargs', 'at', 'atq', 'atrm', 'crontab'
+];
+
 /**
  * Get list of all installed plugins
  * @returns {Promise<{results: Array, count: number}>}
@@ -100,6 +118,11 @@ async function executeQuery(command, args = [], options = {}) {
     throw new Error('Only command names allowed, not paths');
   }
 
+  // Check if command name itself is forbidden
+  if (FORBIDDEN_COMMANDS.includes(commandName)) {
+    throw new Error(`Command '${commandName}' is not allowed`);
+  }
+
   // Build full path to command
   const commandPath = path.join(PLUGINS_BIN_DIR, commandName);
 
@@ -108,6 +131,30 @@ async function executeQuery(command, args = [], options = {}) {
     await fs.access(commandPath, fs.constants.X_OK);
   } catch {
     throw new Error(`Command not found or not executable: ${commandName}`);
+  }
+
+  // Security: If it's a symlink, validate the target
+  // Regular files (plugin scripts) are allowed
+  try {
+    const stats = await fs.lstat(commandPath);
+    if (stats.isSymbolicLink()) {
+      // Resolve the symlink to get the real target
+      const realPath = await fs.realpath(commandPath);
+      const targetName = path.basename(realPath);
+
+      // Check if the symlink target is a forbidden command
+      if (FORBIDDEN_COMMANDS.includes(targetName)) {
+        throw new Error(`Command '${commandName}' links to forbidden command '${targetName}'`);
+      }
+    }
+    // Regular files are allowed (plugin scripts, custom binaries)
+  } catch (e) {
+    // Re-throw our own errors
+    if (e.message.includes('forbidden') || e.message.includes('not allowed')) {
+      throw e;
+    }
+    // For other fs errors, provide generic message
+    throw new Error(`Command '${commandName}' validation failed`);
   }
 
   // Validate and sanitize arguments

@@ -93,7 +93,7 @@ router.get('/', async (req, res) => {
  * /mos/plugins/query:
  *   post:
  *     summary: Query a plugin command
- *     description: Executes a command from /usr/bin/plugins and returns output (symlinks allowed)
+ *     description: Executes a command from /usr/bin/plugins and returns output. Symlinks are allowed but their targets are validated. Dangerous commands like rm, mkdir, bash, sh, etc. are blocked both by name and as symlink targets.
  *     tags: [MOS Plugins]
  *     security:
  *       - bearerAuth: []
@@ -161,7 +161,10 @@ router.post('/query', async (req, res) => {
     if (error.message.includes('required') ||
         error.message.includes('not found') ||
         error.message.includes('Invalid') ||
-        error.message.includes('Only command')) {
+        error.message.includes('Only command') ||
+        error.message.includes('not allowed') ||
+        error.message.includes('forbidden') ||
+        error.message.includes('validation failed')) {
       res.status(400).json({ error: error.message });
     } else {
       res.status(500).json({ error: error.message });
