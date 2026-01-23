@@ -5,7 +5,7 @@
 // ----------------------------------------------------------------------------------
 // Description:   System Information - library
 //                for Node.js
-// Copyright:     (c) 2014 - 2025
+// Copyright:     (c) 2014 - 2026
 // Author:        Sebastian Hildebrandt
 // ----------------------------------------------------------------------------------
 // License:       MIT
@@ -18,10 +18,8 @@ const isWin = require('os').type() === 'Windows_NT';
 const socketPath = isWin ? '//./pipe/docker_engine' : '/var/run/docker.sock';
 
 class DockerSocket {
-
   getInfo(callback) {
     try {
-
       let socket = net.createConnection({ path: socketPath });
       let alldata = '';
       let data;
@@ -30,7 +28,7 @@ class DockerSocket {
         socket.write('GET http:/info HTTP/1.0\r\n\r\n');
       });
 
-      socket.on('data', data => {
+      socket.on('data', (data) => {
         alldata = alldata + data.toString();
       });
 
@@ -40,24 +38,23 @@ class DockerSocket {
       });
 
       socket.on('end', () => {
-        let startbody = alldata.indexOf('\r\n\r\n');
+        const startbody = alldata.indexOf('\r\n\r\n');
         alldata = alldata.substring(startbody + 4);
         socket = false;
         try {
           data = JSON.parse(alldata);
           callback(data);
-        } catch (err) {
+        } catch {
           callback({});
         }
       });
-    } catch (err) {
+    } catch {
       callback({});
     }
   }
 
   listImages(all, callback) {
     try {
-
       let socket = net.createConnection({ path: socketPath });
       let alldata = '';
       let data;
@@ -66,7 +63,7 @@ class DockerSocket {
         socket.write('GET http:/images/json' + (all ? '?all=1' : '') + ' HTTP/1.0\r\n\r\n');
       });
 
-      socket.on('data', data => {
+      socket.on('data', (data) => {
         alldata = alldata + data.toString();
       });
 
@@ -76,17 +73,17 @@ class DockerSocket {
       });
 
       socket.on('end', () => {
-        let startbody = alldata.indexOf('\r\n\r\n');
+        const startbody = alldata.indexOf('\r\n\r\n');
         alldata = alldata.substring(startbody + 4);
         socket = false;
         try {
           data = JSON.parse(alldata);
           callback(data);
-        } catch (err) {
+        } catch {
           callback({});
         }
       });
-    } catch (err) {
+    } catch {
       callback({});
     }
   }
@@ -103,7 +100,7 @@ class DockerSocket {
           socket.write('GET http:/images/' + id + '/json?stream=0 HTTP/1.0\r\n\r\n');
         });
 
-        socket.on('data', data => {
+        socket.on('data', (data) => {
           alldata = alldata + data.toString();
         });
 
@@ -113,17 +110,17 @@ class DockerSocket {
         });
 
         socket.on('end', () => {
-          let startbody = alldata.indexOf('\r\n\r\n');
+          const startbody = alldata.indexOf('\r\n\r\n');
           alldata = alldata.substring(startbody + 4);
           socket = false;
           try {
             data = JSON.parse(alldata);
             callback(data);
-          } catch (err) {
+          } catch {
             callback({});
           }
         });
-      } catch (err) {
+      } catch {
         callback({});
       }
     } else {
@@ -133,7 +130,6 @@ class DockerSocket {
 
   listContainers(all, callback) {
     try {
-
       let socket = net.createConnection({ path: socketPath });
       let alldata = '';
       let data;
@@ -142,7 +138,7 @@ class DockerSocket {
         socket.write('GET http:/containers/json' + (all ? '?all=1' : '') + ' HTTP/1.0\r\n\r\n');
       });
 
-      socket.on('data', data => {
+      socket.on('data', (data) => {
         alldata = alldata + data.toString();
       });
 
@@ -152,17 +148,17 @@ class DockerSocket {
       });
 
       socket.on('end', () => {
-        let startbody = alldata.indexOf('\r\n\r\n');
+        const startbody = alldata.indexOf('\r\n\r\n');
         alldata = alldata.substring(startbody + 4);
         socket = false;
         try {
           data = JSON.parse(alldata);
           callback(data);
-        } catch (err) {
+        } catch {
           callback({});
         }
       });
-    } catch (err) {
+    } catch {
       callback({});
     }
   }
@@ -179,7 +175,7 @@ class DockerSocket {
           socket.write('GET http:/containers/' + id + '/stats?stream=0 HTTP/1.0\r\n\r\n');
         });
 
-        socket.on('data', data => {
+        socket.on('data', (data) => {
           alldata = alldata + data.toString();
         });
 
@@ -189,17 +185,17 @@ class DockerSocket {
         });
 
         socket.on('end', () => {
-          let startbody = alldata.indexOf('\r\n\r\n');
+          const startbody = alldata.indexOf('\r\n\r\n');
           alldata = alldata.substring(startbody + 4);
           socket = false;
           try {
             data = JSON.parse(alldata);
             callback(data);
-          } catch (err) {
+          } catch {
             callback({});
           }
         });
-      } catch (err) {
+      } catch {
         callback({});
       }
     } else {
@@ -219,7 +215,7 @@ class DockerSocket {
           socket.write('GET http:/containers/' + id + '/json?stream=0 HTTP/1.0\r\n\r\n');
         });
 
-        socket.on('data', data => {
+        socket.on('data', (data) => {
           alldata = alldata + data.toString();
         });
 
@@ -229,17 +225,17 @@ class DockerSocket {
         });
 
         socket.on('end', () => {
-          let startbody = alldata.indexOf('\r\n\r\n');
+          const startbody = alldata.indexOf('\r\n\r\n');
           alldata = alldata.substring(startbody + 4);
           socket = false;
           try {
             data = JSON.parse(alldata);
             callback(data);
-          } catch (err) {
+          } catch {
             callback({});
           }
         });
-      } catch (err) {
+      } catch {
         callback({});
       }
     } else {
@@ -259,7 +255,7 @@ class DockerSocket {
           socket.write('GET http:/containers/' + id + '/top?ps_args=-opid,ppid,pgid,vsz,time,etime,nice,ruser,user,rgroup,group,stat,rss,args HTTP/1.0\r\n\r\n');
         });
 
-        socket.on('data', data => {
+        socket.on('data', (data) => {
           alldata = alldata + data.toString();
         });
 
@@ -269,17 +265,17 @@ class DockerSocket {
         });
 
         socket.on('end', () => {
-          let startbody = alldata.indexOf('\r\n\r\n');
+          const startbody = alldata.indexOf('\r\n\r\n');
           alldata = alldata.substring(startbody + 4);
           socket = false;
           try {
             data = JSON.parse(alldata);
             callback(data);
-          } catch (err) {
+          } catch {
             callback({});
           }
         });
-      } catch (err) {
+      } catch {
         callback({});
       }
     } else {
@@ -289,7 +285,6 @@ class DockerSocket {
 
   listVolumes(callback) {
     try {
-
       let socket = net.createConnection({ path: socketPath });
       let alldata = '';
       let data;
@@ -298,7 +293,7 @@ class DockerSocket {
         socket.write('GET http:/volumes HTTP/1.0\r\n\r\n');
       });
 
-      socket.on('data', data => {
+      socket.on('data', (data) => {
         alldata = alldata + data.toString();
       });
 
@@ -308,17 +303,17 @@ class DockerSocket {
       });
 
       socket.on('end', () => {
-        let startbody = alldata.indexOf('\r\n\r\n');
+        const startbody = alldata.indexOf('\r\n\r\n');
         alldata = alldata.substring(startbody + 4);
         socket = false;
         try {
           data = JSON.parse(alldata);
           callback(data);
-        } catch (err) {
+        } catch {
           callback({});
         }
       });
-    } catch (err) {
+    } catch {
       callback({});
     }
   }

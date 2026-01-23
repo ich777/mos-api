@@ -15,33 +15,33 @@
   "description": "MountainOS API - System Management API",
   "dependencies": {
     "axios": "^1.13.2",
-    "bcryptjs": "2.4.3",
-    "cors": "2.8.5",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
     "express": "^4.21.2",
-    "express-rate-limit": "7.1.5",
-    "glob": "11.0.2",
-    "joi": "17.11.0",
-    "jsonwebtoken": "9.0.2",
-    "lru-cache": "10.1.0",
-    "node-pty": "1.0.0",
-    "socket.io": "4.8.1",
-    "swagger-jsdoc": "6.2.8",
-    "swagger-ui-express": "5.0.1",
+    "express-rate-limit": "^7.1.5",
+    "glob": "^11.0.2",
+    "joi": "^17.11.0",
+    "jsonwebtoken": "^9.0.2",
+    "lru-cache": "^10.1.0",
+    "node-pty": "^1.0.0",
+    "socket.io": "^4.8.1",
+    "swagger-jsdoc": "^6.2.8",
+    "swagger-ui-express": "^5.0.1",
     "systeminformation": "^5.27.11",
     "ws": "^8.19.0"
   },
   "devDependencies": {
     "jest": "^30.2.0",
-    "nodemon": "3.0.2",
-    "npm-force-resolutions": "0.0.10"
+    "nodemon": "^3.0.2",
+    "npm-force-resolutions": "^0.0.10"
   },
   "overrides": {
-    "glob": "11.0.2",
-    "inflight": "2.0.0"
+    "glob": "^11.0.2",
+    "inflight": "^2.0.0"
   },
   "resolutions": {
-    "glob": "11.0.2",
-    "inflight": "2.0.0"
+    "glob": "^11.0.2",
+    "inflight": "^2.0.0"
   },
   "engines": {
     "node": ">=16.0.0"
