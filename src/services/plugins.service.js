@@ -544,9 +544,38 @@ async function installPlugin(templatePath, tag) {
 
   // Check if plugin is already installed
   const existingPluginDir = path.join(PLUGINS_CONFIG_DIR, pluginName);
+  let existingTag = null;
+  let existingDebPackage = null;
   try {
     await fs.access(existingPluginDir);
-    throw new Error(`Plugin '${pluginName}' is already installed. Please remove it first if you plan to use a different version.`);
+    // Plugin exists - check which tag is installed
+    const templatePath = path.join(existingPluginDir, 'template.json');
+    try {
+      const templateData = await fs.readFile(templatePath, 'utf8');
+      const template = JSON.parse(templateData);
+      existingTag = template.tag;
+    } catch {
+      // No template.json, treat as corrupted install - allow reinstall
+    }
+
+    if (existingTag === tag) {
+      throw new Error(`Plugin '${pluginName}' is already installed at version ${tag}`);
+    }
+
+    // Different tag - we'll remove the old one and install the new one
+    // First, find and remember the old .deb package name for removal
+    const oldTagDir = path.join(existingPluginDir, existingTag);
+    try {
+      const files = await fs.readdir(oldTagDir);
+      const debFile = files.find(f => f.endsWith('.deb') && !f.endsWith('.md5'));
+      if (debFile) {
+        const debFilePath = path.join(oldTagDir, debFile);
+        try {
+          const { stdout } = await execPromise(`dpkg-deb -f "${debFilePath}" Package`);
+          existingDebPackage = stdout.trim();
+        } catch { }
+      }
+    } catch { }
   } catch (err) {
     if (err.code !== 'ENOENT') throw err;
     // Plugin not installed, continue
@@ -746,8 +775,21 @@ async function installPlugin(templatePath, tag) {
       }
     }
 
-    // Install .deb package
-    await execPromise(`dpkg -i "${targetDebPath}"`, { timeout: 120000 });
+    // If upgrading/downgrading, remove old .deb package and old tag directory first
+    if (existingDebPackage) {
+      try {
+        await execPromise(`dpkg --purge "${existingDebPackage}"`, { timeout: 120000 });
+      } catch {
+        // Old package might not be installed, continue
+      }
+    }
+    if (existingTag) {
+      const oldTagDir = path.join(pluginBaseDir, existingTag);
+      await fs.rm(oldTagDir, { recursive: true, force: true }).catch(() => {});
+    }
+
+    // Install .deb package (force to handle downgrades and same version reinstalls)
+    await execPromise(`dpkg -i --force-downgrade "${targetDebPath}"`, { timeout: 120000 });
 
     // Cleanup temp directory
     await fs.rm(tempDir, { recursive: true, force: true });
@@ -762,10 +804,9 @@ async function installPlugin(templatePath, tag) {
         timeout: 600000 // 10min timeout for install
       });
     } catch (installError) {
-      // functions doesn't exist - skip silently
+      // Only log if it's not a missing functions file
       if (installError.code !== 'ENOENT') {
-        // install function failed - send notification but continue
-        await _sendNotification('Plugin', `Install function failed for ${notifyName}: ${installError.message}`, 'alert');
+        await _sendNotification('Plugin', `Install function for ${notifyName} reported an error`, 'alert');
       }
     }
 
@@ -1074,30 +1115,26 @@ async function updatePlugins(pluginName = null) {
         if (!sourceDir) throw new Error('Failed to extract source');
         const extractedPath = path.join(tempDir, sourceDir);
 
-        // Read plugin.config.js
+        // Read plugin.config.js - only override template values if explicitly defined
         const configPath = path.join(extractedPath, 'page', 'plugin.config.js');
         const configContent = await fs.readFile(configPath, 'utf8');
+
         const versionMatch = configContent.match(/version:\s*['"]([^'"]+)['"]/);
         const configVersion = versionMatch ? versionMatch[1] : newTag;
 
+        // Only override if explicitly defined in plugin.config.js, otherwise keep template value
         const displayNameMatch = configContent.match(/displayName:\s*['"]([^'"]+)['"]/);
-        const configDisplayName = displayNameMatch ? displayNameMatch[1] : null;
-
         const driverMatch = configContent.match(/driver:\s*(true|false)/);
-        const configDriver = driverMatch ? driverMatch[1] === 'true' : false;
-
+        const settingsMatch = configContent.match(/settings:\s*(true|false)/);
         const donateMatch = configContent.match(/donate:\s*['"]([^'"]+)['"]/);
-        const configDonate = donateMatch ? donateMatch[1] : null;
-
         const supportMatch = configContent.match(/support:\s*['"]([^'"]+)['"]/);
-        const configSupport = supportMatch ? supportMatch[1] : null;
-
         const homepageMatch = configContent.match(/homepage:\s*['"]([^'"]+)['"]/);
-        const configHomepage = homepageMatch ? homepageMatch[1] : null;
+        const iconMatch = configContent.match(/icon:\s*['"]([^'"]+)['"]/);
+        const authorMatch = configContent.match(/author:\s*['"]([^'"]+)['"]/);
+        const descriptionMatch = configContent.match(/description:\s*['"]([^'"]+)['"]/);
 
-        // Remove old tag directory
+        // Store old tag directory path for later removal (after successful update)
         const oldTagDir = path.join(PLUGINS_CONFIG_DIR, plugin.plugin, oldTag);
-        await fs.rm(oldTagDir, { recursive: true, force: true }).catch(() => {});
 
         // Create new tag directory
         const newTagDir = path.join(PLUGINS_CONFIG_DIR, plugin.plugin, newTag);
@@ -1120,19 +1157,24 @@ async function updatePlugins(pluginName = null) {
           await fs.copyFile(path.join(cacheDir, md5Asset.name), path.join(newTagDir, md5Asset.name));
         }
 
-        // Update template.json
+        // Update template.json - only override if explicitly defined in plugin.config.js
         template.version = configVersion;
-        template.displayName = configDisplayName;
-        template.driver = configDriver;
-        template.donate = configDonate;
-        template.support = configSupport;
-        template.homepage = configHomepage;
         template.tag = newTag;
         template.updated_at = new Date().toISOString();
+        // Only update these fields if they are explicitly defined in plugin.config.js
+        if (displayNameMatch) template.displayName = displayNameMatch[1];
+        if (driverMatch) template.driver = driverMatch[1] === 'true';
+        if (settingsMatch) template.settings = settingsMatch[1] === 'true';
+        if (donateMatch) template.donate = donateMatch[1];
+        if (supportMatch) template.support = supportMatch[1];
+        if (homepageMatch) template.homepage = homepageMatch[1];
+        if (iconMatch) template.icon = iconMatch[1];
+        if (authorMatch) template.author = authorMatch[1];
+        if (descriptionMatch) template.description = descriptionMatch[1];
         await fs.writeFile(path.join(PLUGINS_CONFIG_DIR, plugin.plugin, 'template.json'), JSON.stringify(template, null, 2), 'utf8');
 
-        // Install .deb
-        await execPromise(`dpkg -i "${path.join(newTagDir, debAsset.name)}"`, { timeout: 300000 });
+        // Install .deb (force to handle downgrades and same version reinstalls)
+        await execPromise(`dpkg -i --force-downgrade "${path.join(newTagDir, debAsset.name)}"`, { timeout: 300000 });
 
         // Execute plugin-update function
         const functionsPath = path.join(newTagDir, 'functions');
@@ -1144,8 +1186,13 @@ async function updatePlugins(pluginName = null) {
           });
         } catch (updateError) {
           if (updateError.code !== 'ENOENT') {
-            await _sendNotification('Plugin', `plugin-update failed for ${notifyName}: ${updateError.message}`, 'alert');
+            await _sendNotification('Plugin', `Update function for ${notifyName} reported an error`, 'alert');
           }
+        }
+
+        // Remove old tag directory only after successful update
+        if (oldTag !== newTag) {
+          await fs.rm(oldTagDir, { recursive: true, force: true }).catch(() => {});
         }
 
         // Cleanup temp and cache directories
@@ -1222,8 +1269,9 @@ async function uninstallPlugin(pluginName) {
   }
 
   try {
-    // Find the .deb package name from any tag directory (only if config dir exists)
+    // Find the .deb file and extract real package name using dpkg-deb
     let debPackageName = null;
+    let debFilePath = null;
     if (configExists) {
       const entries = await fs.readdir(pluginConfigDir);
       for (const entry of entries) {
@@ -1233,10 +1281,17 @@ async function uninstallPlugin(pluginName) {
           const files = await fs.readdir(entryPath);
           const debFile = files.find(f => f.endsWith('.deb') && !f.endsWith('.md5'));
           if (debFile) {
-            // Extract package name from .deb filename (format: name_version_arch.deb)
-            const match = debFile.match(/^([^_]+)/);
-            if (match) {
-              debPackageName = match[1].replace(/-/g, '_');
+            debFilePath = path.join(entryPath, debFile);
+            // Extract real package name from .deb file using dpkg-deb
+            try {
+              const { stdout } = await execPromise(`dpkg-deb -f "${debFilePath}" Package`);
+              debPackageName = stdout.trim();
+            } catch {
+              // Fallback: try to extract from filename
+              const match = debFile.match(/^([^_]+)/);
+              if (match) {
+                debPackageName = match[1];
+              }
             }
             break;
           }
@@ -1260,8 +1315,7 @@ async function uninstallPlugin(pluginName) {
             });
           } catch (uninstallError) {
             if (uninstallError.code !== 'ENOENT') {
-              // uninstall function failed - send notification but continue
-              await _sendNotification('Plugin', `Uninstall function failed for ${displayName}: ${uninstallError.message}`, 'alert');
+              await _sendNotification('Plugin', `Uninstall function for ${displayName} reported an error`, 'alert');
             }
           }
           break; // Only one tag directory expected
@@ -1269,30 +1323,16 @@ async function uninstallPlugin(pluginName) {
       }
     }
 
-    // Uninstall .deb package if found
+    // Uninstall .deb package if found (use --purge to also remove config-only packages)
     if (debPackageName) {
       try {
-        await execPromise(`dpkg -r "${debPackageName}"`, { timeout: 120000 });
-      } catch (dpkgError) {
-        // dpkg might fail if package wasn't installed or has different name
-        // Try alternative package name format
-        try {
-          await execPromise(`dpkg -r "${debPackageName.replace(/_/g, '-')}"`, { timeout: 120000 });
-        } catch {
-          // Package might not be installed via dpkg, continue with cleanup
-        }
+        await execPromise(`dpkg --purge "${debPackageName}"`, { timeout: 120000 });
+      } catch {
+        // Package might not be installed via dpkg, continue with cleanup
       }
     }
 
-    // Delete plugin directories (if they exist)
-    if (configExists) {
-      await fs.rm(pluginConfigDir, { recursive: true, force: true });
-    }
-    if (webExists) {
-      await fs.rm(pluginWebDir, { recursive: true, force: true });
-    }
-
-    // Delete driver directory if this is a driver plugin
+    // Delete driver directory if this is a driver plugin (but don't uninstall driver packages)
     let driverDir = null;
     if (isDriver) {
       driverDir = path.join('/boot/optional/drivers', safeName);
@@ -1302,6 +1342,14 @@ async function uninstallPlugin(pluginName) {
       } catch {
         driverDir = null; // Directory doesn't exist
       }
+    }
+
+    // Delete plugin directories (if they exist)
+    if (configExists) {
+      await fs.rm(pluginConfigDir, { recursive: true, force: true });
+    }
+    if (webExists) {
+      await fs.rm(pluginWebDir, { recursive: true, force: true });
     }
 
     // Clean up cache
