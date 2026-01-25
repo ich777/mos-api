@@ -527,16 +527,24 @@ const sharesService = require('../services/shares.service');
  *         content:
  *           application/json:
  *             schema:
- *               type: array
- *               items:
- *                 type: object
- *                 additionalProperties: true
+ *               type: object
+ *               properties:
+ *                 smb:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/SmbShare'
+ *                 nfs:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/NfsShare'
  *             example:
- *               - smb:
- *                   - shareName: "media"
- *                     poolName: "storage-pool"
- *                     enabled: true
- *                     read_only: false
+ *               smb:
+ *                 - id: "1640995200000"
+ *                   name: "media"
+ *                   path: "/mnt/storage-pool/movies"
+ *                   enabled: true
+ *                   read_only: false
+ *               nfs: []
  *       401:
  *         description: Not authenticated
  *         content:
@@ -560,7 +568,15 @@ const sharesService = require('../services/shares.service');
 // Get all shares configuration (admin only)
 router.get('/', checkRole(['admin']), async (req, res) => {
   try {
-    const shares = await sharesService.getShares();
+    const sharesArray = await sharesService.getShares();
+    
+    // Transform array format to flat object {smb: [], nfs: []}
+    const shares = { smb: [], nfs: [] };
+    sharesArray.forEach(section => {
+      if (section.smb) shares.smb = shares.smb.concat(section.smb);
+      if (section.nfs) shares.nfs = shares.nfs.concat(section.nfs);
+    });
+    
     res.json(shares);
   } catch (error) {
     res.status(500).json({
