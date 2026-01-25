@@ -552,9 +552,9 @@ class SharesService {
         sharesConfig = [];
       }
 
-      // Check if share name already exists
-      if (this._shareExists(sharesConfig, shareName)) {
-        throw new Error(`Share with name '${shareName}' already exists`);
+      // Check if share name already exists (only within SMB shares)
+      if (this._shareExists(sharesConfig, shareName, 'smb')) {
+        throw new Error(`SMB share with name '${shareName}' already exists`);
       }
 
       // Create SMB share configuration
@@ -750,9 +750,9 @@ class SharesService {
         sharesConfig = [];
       }
 
-      // Check if share name already exists
-      if (this._shareExists(sharesConfig, shareName)) {
-        throw new Error(`Share with name '${shareName}' already exists`);
+      // Check if share name already exists (only within NFS shares)
+      if (this._shareExists(sharesConfig, shareName, 'nfs')) {
+        throw new Error(`NFS share with name '${shareName}' already exists`);
       }
 
       // Create NFS share configuration
@@ -816,13 +816,18 @@ class SharesService {
    * Check if a share name already exists
    * @param {Array} sharesConfig - Current shares configuration
    * @param {string} shareName - Name to check
+   * @param {string} [filterType] - Optional: only check within this share type ('smb' or 'nfs')
    * @returns {boolean} True if share exists
    */
-  _shareExists(sharesConfig, shareName) {
+  _shareExists(sharesConfig, shareName, filterType = null) {
     if (!Array.isArray(sharesConfig)) return false;
 
     return sharesConfig.some(section => {
       return Object.keys(section).some(shareType => {
+        // If filterType is specified, only check that specific type
+        if (filterType && shareType !== filterType) {
+          return false;
+        }
         if (Array.isArray(section[shareType])) {
           return section[shareType].some(share => {
             return share.name === shareName;
