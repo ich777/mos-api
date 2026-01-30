@@ -10,6 +10,11 @@ const { execSync } = require('child_process');
 const net = require('net');
 const WebSocket = require('ws');
 
+// Enable timestamp logging and format as YYYY-MM-DD HH:MM:SS
+require('log-timestamp')(function() {
+  return '[' + new Date().toISOString().replace('T', ' ').substring(0, 19) + ']';
+});
+
 // Set high priority for API process (only affects this process, not child processes)
 try {
   // renice -n -10 -p <pid> (higher priority, requires root)
@@ -210,7 +215,7 @@ async function startServer() {
    *               example: "/api-docs"
    */
 
-  // Root redirect zu API-Dokumentation
+  // Root redirect to API Documentation
   app.get('/', (req, res) => {
     res.redirect('/api-docs');
   });

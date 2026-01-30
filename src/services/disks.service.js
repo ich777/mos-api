@@ -15,9 +15,9 @@ const PRECLEAR_LOG_MAX_SIZE = 5 * 1024 * 1024; // 5MB
 
 class DisksService {
   constructor() {
-    // Cache für Power-Status (verhindert mehrfache smartctl-Aufrufe innerhalb kurzer Zeit)
+    // Cache for power status (prevents multiple smartctl calls within short time)
     this.powerStatusCache = new Map();
-    this.powerStatusCacheTTL = 10000; // 10 Sekunden Cache
+    this.powerStatusCacheTTL = 10000; // 10 seconds cache
 
     // Background I/O Stats Sampling
     this.diskStatsHistory = new Map(); // device -> { timestamp, readBytes, writeBytes, readSpeed, writeSpeed }
@@ -447,7 +447,7 @@ class DisksService {
     try {
       const deviceName = device.replace('/dev/', '');
 
-      // 1. NVMe Erkennung
+      // 1. NVME detection
       if (deviceName.includes('nvme')) {
         return {
           type: 'nvme',
@@ -456,7 +456,7 @@ class DisksService {
         };
       }
 
-      // 2. MMC/eMMC Erkennung
+      // 2. MMC/eMMC detection
       if (deviceName.includes('mmc')) {
         return {
           type: 'emmc',
@@ -465,16 +465,16 @@ class DisksService {
         };
       }
 
-      // 3. md/nmd (Software RAID) Erkennung
+      // 3. md/nmd (Software RAID) detection
       if (deviceName.match(/^(n)?md\d+/)) {
         return {
           type: 'md',
-          rotational: null, // kann aus HDD oder SSD bestehen
+          rotational: null, // can be HDD or SSD
           removable: false
         };
       }
 
-      // 4. USB-Device Erkennung über sysfs (SAFE)
+      // 4. USB-Device detection via sysfs (SAFE)
       const usbCheck = await this._checkIfUSBDeviceSafe(deviceName);
       if (usbCheck.isUSB) {
         return {
@@ -485,10 +485,10 @@ class DisksService {
         };
       }
 
-      // 5. SSD vs HDD Erkennung über /sys/block/{device}/queue/rotational (SAFE)
+      // 5. SSD vs HDD detection via /sys/block/{device}/queue/rotational (SAFE)
       const rotationalInfo = await this._checkRotationalSafe(deviceName);
 
-      // 6. Removable-Status prüfen (SAFE)
+      // 6. Removable-Status check (SAFE)
       const removableInfo = await this._checkRemovableSafe(deviceName);
 
       return {
@@ -508,32 +508,32 @@ class DisksService {
   }
 
   /**
-   * Prüft ob Device ein USB-Device ist (SAFE VERSION - weckt keine Disks auf)
+   * Checks if a device is a USB device (SAFE VERSION - does not wake up disks)
    */
   async _checkIfUSBDeviceSafe(deviceName) {
     try {
-      // Prüfe /sys/block/{device}/removable für USB-Devices
+      // Check /sys/block/{device}/removable for USB devices
       const removablePath = `/sys/block/${deviceName}/removable`;
       const removableContent = await fs.readFile(removablePath, 'utf8').catch(() => '0');
       const isRemovable = removableContent.trim() === '1';
 
-      // Prüfe USB-spezifische sysfs Pfade
+      // Check USB-specific sysfs paths
       const devicePath = `/sys/block/${deviceName}/device`;
 
       try {
-        // Folge dem symbolischen Link um den echten Gerätepfad zu finden
+        // Follow the symbolic link to find the real device path
         const realPath = await fs.realpath(devicePath);
 
-        // USB-Devices haben '/usb' im Pfad
+        // USB devices have '/usb' in the path
         const isUSB = realPath.includes('/usb');
 
         let usbInfo = null;
         if (isUSB) {
-          // Versuche USB-Informationen zu sammeln
+          // Try to collect USB information
           usbInfo = await this._getUSBDeviceInfo(realPath);
         }
 
-        // Zusätzliche Rotational-Info für USB-Devices
+        // Additional rotational info for USB devices
         const rotationalPath = `/sys/block/${deviceName}/queue/rotational`;
         const rotationalContent = await fs.readFile(rotationalPath, 'utf8').catch(() => '1');
         const rotational = rotationalContent.trim() === '1';
@@ -565,13 +565,13 @@ class DisksService {
   }
 
   /**
-   * Sammelt USB-Geräteinformationen
+   * Collects USB device information
    */
   async _getUSBDeviceInfo(devicePath) {
     try {
       const usbInfo = {};
 
-      // Suche nach USB-spezifischen Verzeichnissen
+      // Search for USB-specific directories
       const pathParts = devicePath.split('/');
 
       for (let i = 0; i < pathParts.length; i++) {
@@ -579,7 +579,7 @@ class DisksService {
           const usbDevicePath = pathParts.slice(0, i + 1).join('/');
 
           try {
-            // Versuche Vendor und Product IDs zu lesen
+            // Try to read Vendor and Product IDs
             const idVendor = await fs.readFile(`${usbDevicePath}/idVendor`, 'utf8').catch(() => null);
             const idProduct = await fs.readFile(`${usbDevicePath}/idProduct`, 'utf8').catch(() => null);
             const manufacturer = await fs.readFile(`${usbDevicePath}/manufacturer`, 'utf8').catch(() => null);
@@ -594,7 +594,7 @@ class DisksService {
 
             break;
           } catch (error) {
-            // Weiter versuchen
+            // Continue trying
           }
         }
       }
@@ -606,7 +606,7 @@ class DisksService {
   }
 
   /**
-   * Prüft ob Device rotational ist (HDD vs SSD) (SAFE VERSION)
+   * Checks if device is rotational (HDD vs SSD) (SAFE VERSION)
    */
   async _checkRotationalSafe(deviceName) {
     try {
@@ -614,7 +614,7 @@ class DisksService {
       const content = await fs.readFile(rotationalPath, 'utf8');
       return { rotational: content.trim() === '1' };
     } catch (error) {
-      // Fallback: versuche über Gerätename zu erraten
+      // Fallback: try to guess based on device name
       const deviceLower = deviceName.toLowerCase();
       if (deviceLower.includes('ssd') || deviceLower.includes('nvme')) {
         return { rotational: false };
@@ -624,16 +624,16 @@ class DisksService {
   }
 
   /**
-   * Ermittelt Device-Interface (SATA, IDE, USB, etc.) (SAFE VERSION)
+   * Gets device interface (SATA, IDE, USB, etc.) (SAFE VERSION)
    */
   async _getDeviceInterfaceSafe(deviceName) {
     try {
       const devicePath = `/sys/block/${deviceName}/device`;
       const realPath = await fs.realpath(devicePath);
 
-      // Bestimme Interface basierend auf sysfs Pfad
+      // Determine interface based on sysfs path
       if (realPath.includes('/ata')) {
-        // Unterscheide zwischen SATA und PATA
+        // Differentiate between SATA and PATA
         if (realPath.includes('/host')) {
           return { interface: 'sata', transportType: 'sata' };
         }
@@ -655,7 +655,7 @@ class DisksService {
   }
 
   /**
-   * Prüft ob Device removable ist (SAFE VERSION)
+   * Checks if device is removable (SAFE VERSION)
    */
   async _checkRemovableSafe(deviceName) {
     try {
@@ -668,7 +668,7 @@ class DisksService {
   }
 
   /**
-   * Original-Versionen für Legacy-Kompatibilität mit _getDiskPowerStatus
+   * Original versions for legacy compatibility with _getDiskPowerStatus
    */
   async _checkIfUSBDevice(deviceName) {
     return await this._checkIfUSBDeviceSafe(deviceName);
@@ -687,19 +687,19 @@ class DisksService {
   }
 
   /**
-   * Extra-sichere Disk-Typ-Erkennung für Pool-Services
-   * Garantiert KEINE Disk-Zugriffe, verwendet nur statische sysfs-Informationen
+   * Super Safe Disk detection for pools
+   * Garantizes no disk access, uses only static sysfs information
    */
   async _getEnhancedDiskTypeForPools(device) {
     try {
       const deviceName = device.replace('/dev/', '');
 
-      // Extra-Sicherheit: Prüfe zuerst ob das sysfs-Verzeichnis existiert
+      // Extra Safety: Check if the sysfs directory exists
       const sysPath = `/sys/block/${deviceName}`;
       try {
         await fs.access(sysPath);
       } catch (error) {
-        // Disk existiert nicht mehr oder ist nicht verfügbar
+        // Disk does not exist or is not available
         return {
           type: 'unknown',
           rotational: null,
@@ -708,7 +708,7 @@ class DisksService {
         };
       }
 
-      // Verwende die gleiche Logik wie _getEnhancedDiskType, aber garantiert safe
+      // Use the same logic as _getEnhancedDiskType
       return await this._getEnhancedDiskType(device);
 
     } catch (error) {
@@ -722,23 +722,23 @@ class DisksService {
   }
 
   /**
-   * LIVE Power-Status Abfrage mit kurzem Cache (10s)
-   * Diese Methode verwendet smartctl -n standby um den Power-Status zu prüfen
-   * OHNE die Disk aufzuwecken (im Gegensatz zu hdparm -C)
+   * LIVE Power-Status Query with short cache (10s)
+   * Uses smartctl -n standby to check the power status
+   * Without waking up the disk (opposed to hdparm -C)
    */
   async _getLiveDiskPowerStatus(device) {
     try {
       const devicePath = device.startsWith('/dev/') ? device : `/dev/${device}`;
       const deviceName = device.replace('/dev/', '');
 
-      // Prüfe Cache (verhindert mehrfache Abfragen derselben Disk innerhalb von 10s)
+      // Check cache (prevents multiple queries of the same disk within 10s)
       const cacheKey = devicePath;
       const cachedEntry = this.powerStatusCache.get(cacheKey);
       if (cachedEntry && (Date.now() - cachedEntry.timestamp < this.powerStatusCacheTTL)) {
         return cachedEntry.data;
       }
 
-      // Helper-Funktion um Result zu cachen
+      // Helper function to cache result
       const cacheAndReturn = (result) => {
         this.powerStatusCache.set(cacheKey, {
           data: result,
@@ -747,11 +747,11 @@ class DisksService {
         return result;
       };
 
-      // Hole erweiterte Typ-Informationen (nur für Typ-Bestimmung)
+      // Get enhanced disk type information (only for type determination)
       const diskTypeInfo = await this._getEnhancedDiskType(device);
 
-      // Nur NVMe, eMMC, md und nmd sind wirklich immer aktiv (haben keinen Standby-Modus)
-      // ALLE anderen Disks (HDDs, SSDs, USB mit mSATA) können in Standby gehen!
+      // Only NVMe, eMMC, md and nmd are really always active (have no Standby mode)
+      // ALL other disks (HDDs, SSDs, USB with mSATA) can go into Standby!
       if (diskTypeInfo.type === 'nvme' || diskTypeInfo.type === 'emmc' || diskTypeInfo.type === 'md') {
         return cacheAndReturn({
           status: 'active',
@@ -763,8 +763,8 @@ class DisksService {
         });
       }
 
-      // Zusätzliche Prüfung: nmd und Partitionen
-      // nmd (Network Block Device) unterstützt auch kein Power Management
+      // Additional check: nmd and partitions
+      // nmd (Network Block Device) does not support power management
       if (deviceName.match(/^nmd\d+/) || devicePath.includes('/dev/nmd')) {
         return cacheAndReturn({
           status: 'active',
@@ -776,15 +776,14 @@ class DisksService {
         });
       }
 
-      // Partitionen können nicht in Standby gehen (nur ganze Disks)
-      // Bei Partitionen: Prüfe die zugrunde liegende Basis-Disk!
-      // NVMe Partitionen: nvme0n1p1 -> nvme0n1, SATA/SCSI Partitionen: sda1 -> sda
+      // Partitions cannot go into Standby (only whole disks)
+      // For partitions: Check the underlying base disk!
+      // NVMe partitions: nvme0n1p1 -> nvme0n1, SATA/SCSI partitions: sda1 -> sda
       const endsWithDigit = deviceName.match(/\d+$/);
       const isSpecialDevice = deviceName.match(/^(nvme\d+n\d+|md\d+|nmd\d+)$/);
 
       if (endsWithDigit && !isSpecialDevice) {
-        // Das ist eine Partition - ermittle die Basis-Disk und prüfe deren Status
-        // Ermittle Basis-Disk:
+        // Get Base Disk for partitions
         // NVMe: nvme0n1p1 -> nvme0n1 (remove p\d+)
         // SATA/SCSI: sda1 -> sda (remove \d+)
         let baseDisk;
@@ -796,7 +795,7 @@ class DisksService {
           baseDisk = deviceName.replace(/\d+$/, '');
         }
 
-        // Rekursiv die Basis-Disk prüfen (nutzt automatisch den Cache für die Basis-Disk)
+        // Recursively check the base disk (uses automatic cache for the base disk)
         const baseDiskStatus = await this._getLiveDiskPowerStatus(baseDisk);
 
         return cacheAndReturn({
@@ -810,13 +809,13 @@ class DisksService {
         });
       }
 
-      // Für ALLE anderen Disks: smartctl -n standby (weckt die Disk NICHT auf!)
-      // Das schließt ein: HDDs, SSDs, USB-Disks mit echten SSDs/HDDs
+      // For ALL other disks: smartctl -n standby (does NOT wake up the disk!)
+      // Includes: HDDs, SSDs, USB-Disks with real SSDs/HDDs
       try {
-        // smartctl -n standby: Prüft Power-Status OHNE die Disk aufzuwecken
-        // Exit Code 0: Disk ist active/idle
-        // Exit Code 2: Disk ist in STANDBY (und wurde NICHT aufgeweckt)
-        // Andere: Fehler oder nicht unterstützt
+        // smartctl -n standby: Checks Power-Status WITHOUT waking up the disk
+        // Exit Code 0: Disk is active/idle
+        // Exit Code 2: Disk is in STANDBY (and was NOT woken up)
+        // Others: Error or not supported
         const { stdout, stderr } = await execPromise(
           `smartctl -n standby -i ${devicePath} 2>&1 || echo "EXIT_CODE:$?"`
         );
@@ -827,7 +826,7 @@ class DisksService {
         // Parse smartctl output
         const output = stdout + stderr;
 
-        // Check for standby mode (exit code 2 oder Text-Meldung)
+        // Check for standby mode (exit code 2 or text message)
         if (output.includes('Device is in STANDBY mode') ||
             output.includes('EXIT_CODE:2')) {
           status = 'standby';
@@ -849,8 +848,8 @@ class DisksService {
         else if (output.includes('does not support') ||
                  output.includes('Unable to detect') ||
                  output.includes('Unknown USB bridge')) {
-          // Annahme: Wenn nicht unterstützt, ist die Disk wahrscheinlich aktiv
-          // (z.B. SSDs die kein Power-Management haben)
+          // Assumption: If not supported, the disk is probably active
+          // (e.g. SSDs without Power Management)
           status = 'active';
           active = true;
         }
@@ -879,7 +878,7 @@ class DisksService {
       }
 
     } catch (error) {
-      // Bei generellen Fehlern NICHT cachen, da das ein temporäres Problem sein könnte
+      // Do not cache on general errors, as this might be a temporary problem
       return {
         status: 'unknown',
         active: null,
@@ -891,22 +890,20 @@ class DisksService {
   }
 
   /**
-   * Prüft den Power-Status einer Disk ohne sie aufzuwecken
-   * Verwendet smartctl -n standby (weckt die Disk NICHT auf)
-   * Für Pool-Services verwende _getEnhancedDiskTypeForPools()
+   * Checks the power status of a disk without waking it up
+   * Uses smartctl -n standby (does not wake the disk up)
+   * For pool services use _getEnhancedDiskTypeForPools()
    */
   async _getDiskPowerStatus(device) {
-    // Diese Methode verwendet jetzt die gleiche Logik wie _getLiveDiskPowerStatus
     return await this._getLiveDiskPowerStatus(device);
   }
 
   /**
-   * Holt Filesystem-Informationen mit df (weckt keine Disks auf)
+   * Gets Filesystem-Information with df (does not wake up disks)
    */
   async _getFilesystemInfo(device) {
     try {
-      // df kann mit Devices oder Mount-Punkten arbeiten
-      // Use timeout to avoid hanging on unavailable mounts
+      // use df with timeout to avoid hanging on unavailable mounts
       const { stdout } = await execPromise(`timeout 5 df -B1 ${device} 2>/dev/null || echo "not_mounted"`);
 
       if (stdout.includes('not_mounted')) {
@@ -933,7 +930,7 @@ class DisksService {
   }
 
   /**
-   * Holt Mount-Informationen aus /proc/mounts
+   * Gets Mount-Information from /proc/mounts
    */
   async _getMountInfo() {
     try {
@@ -962,19 +959,19 @@ class DisksService {
   }
 
   /**
-   * Prüft ob ein Device zur System-Disk gehört oder anderweitig verwendet wird
+   * Checks if a device belongs to the system disk or is used elsewhere
    */
   async _isSystemDisk(device) {
     try {
       const mounts = await this._getMountInfo();
 
-      // Prüfe alle Mount-Punkte für diese Disk oder ihre Partitionen
+      // Checks if a device belongs to the disk or is used elsewhere
       for (const [mountedDevice, mountInfo] of mounts) {
         // Direkter Mount der ganzen Disk ODER Partition dieser Disk
         if (mountedDevice === device || mountedDevice.startsWith(device)) {
           const mp = mountInfo.mountpoint;
 
-          // System-relevante Mount-Punkte
+          // System-relevant mount points
           if (mp === '/boot' || mp === '/' || mp === '/usr' || mp === '/var' ||
               mp === '/etc' || mp.startsWith('/mnt/system')) {
             return true;
@@ -989,10 +986,10 @@ class DisksService {
   }
 
   /**
-   * Prüft ob eine einzelne Partition eine System-Partition ist
-   * @param {string} partitionDevice - Partition device path (z.B. /dev/sda1)
+   * Checks if a single partition is a system partition
+   * @param {string} partitionDevice - Partition device path (e.g. /dev/sda1)
    * @param {Map} mounts - Pre-loaded mounts map (optional)
-   * @returns {Promise<boolean>} true wenn System-Partition
+   * @returns {Promise<boolean>} true if system partition
    */
   async _isSystemPartition(partitionDevice, mounts = null) {
     try {
@@ -1002,12 +999,12 @@ class DisksService {
 
       const mountInfo = mounts.get(partitionDevice);
       if (!mountInfo) {
-        return false; // Nicht gemountet = keine System-Partition
+        return false; // Not mounted = not a system partition
       }
 
       const mp = mountInfo.mountpoint;
 
-      // System-relevante Mount-Punkte
+      // System-relevant mount points
       if (mp === '/boot' || mp === '/' || mp === '/usr' || mp === '/var' ||
           mp === '/etc' || mp.startsWith('/mnt/system') || mp === '/boot/efi') {
         return true;
@@ -1020,15 +1017,15 @@ class DisksService {
   }
 
   /**
-   * Prüft ob ein Device eine Partition eines anderen Devices ist (NVMe-kompatibel)
+   * Checks if a device is a partition of another device (NVMe compatible)
    */
   _isPartitionOfDevice(partitionDevice, parentDevice) {
-    // Standard SATA/SCSI: /dev/sdb1 ist Partition von /dev/sdb
+    // Default SATA/SCSI: /dev/sdb1 is a partition of /dev/sdb
     if (partitionDevice.startsWith(parentDevice) && partitionDevice !== parentDevice) {
       return true;
     }
 
-    // NVMe: /dev/nvme0n1p1 ist Partition von /dev/nvme0n1
+    // NVMe: /dev/nvme0n1p1 is a partition of /dev/nvme0n1
     if (parentDevice.includes('nvme') && partitionDevice.startsWith(parentDevice + 'p')) {
       return true;
     }
@@ -1336,13 +1333,13 @@ class DisksService {
         // Pools service not available, ignore
       }
 
-      // Erst NACH Pool-Prüfung: Mount-Prüfungen
+      // After Pool checks: Mount checks
       // Use provided mounts or load them
       if (!mounts) {
         mounts = await this._getMountInfo();
       }
 
-      // Prüfe direkte Mounts der ganzen Disk
+      // Check direct mounts of the whole disk
       if (mounts.has(device)) {
         return {
           inUse: true,
@@ -1352,7 +1349,7 @@ class DisksService {
         };
       }
 
-      // Prüfe Partitions-Mounts (NVMe-kompatibel)
+      // Check partition mounts (NVMe compatible)
       for (const [mountedDevice, mountInfo] of mounts) {
         if (this._isPartitionOfDevice(mountedDevice, device)) {
           return {
@@ -1468,13 +1465,13 @@ class DisksService {
   }
 
   /**
-   * Erweiterte BTRFS Multi-Device Erkennung - findet alle Disks mit gleicher BTRFS UUID
+   * Extended BTRFS Multi-Device Detection - finds all disks with the same BTRFS UUID
    */
   async _getAllBtrfsDevicesWithSameUuid(uuid) {
     try {
       if (!uuid) return [];
 
-      // Hole alle Block-Devices und prüfe ihre UUIDs
+      // Get all block devices and check their UUIDs
       const { stdout } = await execPromise(`blkid -o list | grep btrfs || echo ""`);
       if (!stdout.trim()) return [];
 
@@ -1498,7 +1495,7 @@ class DisksService {
   }
 
   /**
-   * Holt Partitions-Informationen mit lsblk - erweitert um ganze Disk-Erkennung
+   * Gets partition information using lsblk - extends disk detection
    */
   async _getPartitions(device) {
     try {
@@ -1513,13 +1510,13 @@ class DisksService {
       const disk = data.blockdevices[0];
       const partitions = [];
 
-      // Fall 1: Disk hat Partitionen (normale Behandlung)
+      // Case 1: Disk has partitions (normal handling)
       if (disk.children) {
         for (let i = 0; i < disk.children.length; i++) {
           const partition = disk.children[i];
           const partDevice = `/dev/${partition.name}`;
 
-          // Hole Mount-Status (einheitliches Format wie bei Pools)
+          // Get Mount-Status (uniform format like pools)
           const mountStatus = await this._getPartitionMountStatus(partDevice, partition.mountpoint);
 
           partitions.push({
@@ -1534,9 +1531,9 @@ class DisksService {
           });
         }
       }
-      // Fall 2: Ganze Disk ist direkt formatiert (ohne Partitionen)
+      // Case 2: Whole disk is directly formatted (without partitions)
       else if (disk.fstype) {
-        // Hole Mount-Status für die ganze Disk
+        // Get Mount-Status for the whole disk
         const mountStatus = await this._getPartitionMountStatus(devicePath, disk.mountpoint);
 
         partitions.push({
@@ -1547,7 +1544,7 @@ class DisksService {
           mountpoint: disk.mountpoint || null,
           uuid: disk.uuid || null,
           label: disk.label || null,
-          isWholeDisk: true, // Markierung dass es die ganze Disk ist
+          isWholeDisk: true, // Mark as whole disk
           status: mountStatus
         });
       }
@@ -1559,11 +1556,11 @@ class DisksService {
   }
 
   /**
-   * Holt Mount-Status einer Partition im einheitlichen Format (wie bei Pools)
+   * Gets Mount-Status of a partition in the uniform format (like pools)
    */
   async _getPartitionMountStatus(device, mountpoint) {
     try {
-      // Wenn nicht gemountet
+      // If not mounted
       if (!mountpoint) {
         return {
           mounted: false,
@@ -1583,7 +1580,7 @@ class DisksService {
         };
       }
 
-      // Hole Space-Informationen für gemountete Partition
+      // Get Space-Informationen for mounted partition
       const fsInfo = await this._getFilesystemInfo(device);
 
       if (!fsInfo) {
@@ -1615,7 +1612,7 @@ class DisksService {
   }
 
   /**
-   * Konvertiert Size-Strings zu Bytes
+   * Converts size strings to bytes
    */
   _parseSize(sizeStr) {
     if (!sizeStr) return 0;
@@ -1639,7 +1636,7 @@ class DisksService {
   }
 
   /**
-   * Formatiert Bytes zu Human-Readable Format
+   * Formats bytes to human-readable format
    */
   _bytesToHumanReadable(bytes) {
     if (bytes === 0) return '0 B';
@@ -1651,7 +1648,7 @@ class DisksService {
   }
 
   /**
-   * Hauptmethode: Alle Disks auflisten
+   * Main method: List all disks
    * @param {Object} options - Options for disk listing
    * @param {Object} user - User object with byte_format preference
    */
@@ -1659,7 +1656,7 @@ class DisksService {
     const { skipStandby = true, includePerformance = false } = options;
 
     try {
-      // Hole alle Block-Devices
+      // Get all block devices
       const blockDevices = await si.blockDevices();
       const disks = [];
 
@@ -1671,10 +1668,10 @@ class DisksService {
 
         const device = `/dev/${disk.name}`;
 
-        // LIVE Power-Status Abfrage - KEIN Caching!
+        // Get LIVE Power-Status - no caching
         const powerStatus = await this._getLiveDiskPowerStatus(device);
 
-        // Skip Disks im Standby wenn gewünscht
+        // Skip Disks in Standby if desired
         if (skipStandby && powerStatus.status === 'standby') {
           disks.push({
             device,
@@ -1696,10 +1693,10 @@ class DisksService {
           continue;
         }
 
-        // Hole Partitions-Informationen
+        // Get Partitions-Informationen
         const partitions = await this._getPartitions(device);
 
-        // Performance-Daten nur wenn angefordert
+        // Get Performance-Daten only if requested
         let performance = null;
         if (includePerformance) {
           performance = await this._getDiskIOStats(device);
@@ -1747,7 +1744,7 @@ class DisksService {
             filesystem: ramdisk.filesystem,
             uuid: ramdisk.uuid
           },
-          preclearRunning: false // ZRAM devices cannot have preClear
+          preclearRunning: false // ZRAM devices cannot have preclear
         });
       }
 
@@ -1758,7 +1755,7 @@ class DisksService {
   }
 
   /**
-   * Disk-Usage für bestimmte Partition/Device
+   * Disk-Usage for specific partition/device
    * @param {string} device - Device path
    * @param {Object} user - User object with byte_format preference
    */
@@ -1787,7 +1784,7 @@ class DisksService {
   }
 
   /**
-   * I/O Statistiken
+   * I/O Statistics
    */
   async _getDiskIOStats(device) {
     try {
@@ -2143,14 +2140,14 @@ class DisksService {
   }
 
   /**
-   * SMART-Informationen
+   * SMART-Information
    */
   async getSmartInfo(device) {
     try {
       const devicePath = device.startsWith('/dev/') ? device : `/dev/${device}`;
       const { stdout } = await execPromise(`smartctl -a ${devicePath}`);
 
-      // Einfache SMART-Parsing
+      // Simple SMART parsing
       const lines = stdout.split('\n');
       const smartInfo = {
         device: devicePath,
@@ -2181,15 +2178,15 @@ class DisksService {
   }
 
   /**
-   * Disk aufwecken
+   * Wake up disk
    */
   async wakeDisk(device) {
     try {
       const devicePath = device.startsWith('/dev/') ? device : `/dev/${device}`;
       const deviceName = device.replace('/dev/', '');
 
-      // Einfache Prüfung: Nur NVMe, eMMC, md und nmd überspringen (ohne komplexe Disk-Typ-Erkennung)
-      // Diese einfache Prüfung weckt garantiert keine Disks auf
+      // Simple check: Skip NVMe, eMMC, md and nmd (without complex disk type detection)
+      // This simple check will never/should never wake up disks
       if (deviceName.includes('nvme') || deviceName.includes('mmc') ||
           devicePath.includes('/dev/md') || devicePath.includes('/dev/nmd')) {
         return {
@@ -2199,13 +2196,13 @@ class DisksService {
         };
       }
 
-      // Für alle anderen Disks: Mehrere Wake-Up-Methoden versuchen
-      // Das funktioniert für HDDs, SSDs, USB-Disks mit mSATA, etc.
+      // For all other disks: Try multiple wake-up methods
+      // This works for HDDs, SSDs, USB disks with mSATA, etc.
 
       let wakeMethod = 'unknown';
       let success = false;
 
-      // Methode 1: dd mit Direct I/O (umgeht Cache)
+      // Method 1: dd with Direct I/O (bypasses cache)
       try {
         await execPromise(`dd if=${devicePath} of=/dev/null bs=512 count=1 iflag=direct 2>/dev/null`);
         wakeMethod = 'dd direct I/O';
@@ -2213,16 +2210,16 @@ class DisksService {
       } catch (ddError) {
         console.warn(`dd direct I/O wake-up failed for ${devicePath}: ${ddError.message}`);
 
-        // Methode 2: dd mit randomisiertem Sektor (falls Direct I/O nicht unterstützt wird)
+        // Method 2: dd with random sector (if Direct I/O is not supported)
         try {
-          const randomSkip = Math.floor(Math.random() * 1000) + 1; // Skip 1-1000 Sektoren
+          const randomSkip = Math.floor(Math.random() * 1000) + 1; // Skip 1-1000 sectors
           await execPromise(`dd if=${devicePath} of=/dev/null bs=512 count=1 skip=${randomSkip} 2>/dev/null`);
           wakeMethod = `dd random sector (skip=${randomSkip})`;
           success = true;
         } catch (ddRandomError) {
           console.warn(`dd random sector wake-up failed for ${devicePath}: ${ddRandomError.message}`);
 
-          // Methode 3: hdparm -S 0 (Power Management deaktivieren/reaktivieren)
+          // Method 3: hdparm -S 0 (deactivate/reactivate Power Management)
           try {
             await execPromise(`hdparm -S 0 ${devicePath}`);
             wakeMethod = 'hdparm -S 0';
@@ -2230,7 +2227,7 @@ class DisksService {
           } catch (hdparmError) {
             console.warn(`hdparm wake-up failed for ${devicePath}: ${hdparmError.message}`);
 
-            // Methode 4: Einfacher blockdev --rereadpt (Partition Table neu lesen)
+            // Method 4: Simple blockdev --rereadpt (Partition Table reload)
             try {
               await execPromise(`blockdev --rereadpt ${devicePath} 2>/dev/null`);
               wakeMethod = 'blockdev rereadpt';
@@ -2243,12 +2240,12 @@ class DisksService {
       }
 
       if (success) {
-        // Prüfe nach dem Wake-Up-Versuch, ob die Disk wirklich aufgewacht ist
+        // Check if the disk is awake after the wake-up attempt
         try {
-          // Kurz warten, damit die Disk Zeit hat aufzuwachen
+          // Wait a moment for the disk to wake up
           await new Promise(resolve => setTimeout(resolve, 1000));
 
-          // Prüfe den aktuellen Power-Status mit smartctl
+          // Check the current power status with smartctl
           const powerStatus = await this._getLiveDiskPowerStatus(devicePath);
           const isAwake = powerStatus.status === 'active';
 
@@ -2261,7 +2258,7 @@ class DisksService {
               verified: true
             };
           } else {
-            // Wake-Up-Befehl lief durch, aber Disk ist noch im Standby
+            // Wake-up command completed but disk is still in standby
             return {
               success: false,
               message: `Wake-up command completed but disk is still in standby (${wakeMethod} failed to wake disk)`,
@@ -2272,7 +2269,7 @@ class DisksService {
             };
           }
         } catch (verifyError) {
-          // Konnte Status nicht prüfen - gehe davon aus, dass es funktioniert hat
+          // Could not verify status - assume it worked
           return {
             success: true,
             message: `Disk wake-up attempted using ${wakeMethod} (verification failed)`,
@@ -2291,7 +2288,7 @@ class DisksService {
   }
 
   /**
-   * Disk in Standby versetzen
+   * Set disk to standby
    * Wait for disk to go to standby (timeout 12s)
    */
   async sleepDisk(device, mode = 'standby') {
@@ -3103,7 +3100,7 @@ class DisksService {
       const devicePath = device.startsWith('/dev/') ? device : `/dev/${device}`;
 
       if (check) {
-        // Nur Status abrufen - LIVE ohne Caching!
+        // Only get status - LIVE without caching!
         const powerStatus = await this._getLiveDiskPowerStatus(devicePath);
         return {
           success: true,
@@ -3112,8 +3109,6 @@ class DisksService {
           message: 'Power status retrieved successfully'
         };
       }
-
-      // Hier könnten weitere Power-Management Einstellungen implementiert werden
 
       return {
         success: true,
@@ -3126,7 +3121,7 @@ class DisksService {
   }
 
   /**
-   * Prüft ob ein Mount-Point bereits verwendet wird
+   * Checks if a mount point is already in use
    */
   async _isMounted(mountPoint) {
     try {
@@ -3143,7 +3138,7 @@ class DisksService {
   }
 
   /**
-   * Holt UUID und Label einer Partition/Device
+   * Gets UUID and label of a partition/device
    */
   async _getDeviceUuidAndLabel(device) {
     try {
@@ -3169,18 +3164,18 @@ class DisksService {
   }
 
   /**
-   * Erstellt einen eindeutigen Mount-Point-Namen basierend auf Device-Informationen
+   * Creates a unique mount point name based on device information
    */
   async _generateMountPointName(device) {
     const deviceInfo = await this._getDeviceUuidAndLabel(device);
     const deviceName = device.replace('/dev/', '');
 
-    // Priorität: 1. Label, 2. UUID (kurz), 3. Device-Name
+    // Priority: 1. Label, 2. UUID (short), 3. Device-Name
     if (deviceInfo.label) {
-      // Sanitize label für Dateisystem
+      // Sanitize label for filesystem
       return deviceInfo.label.replace(/[^a-zA-Z0-9_-]/g, '_');
     } else if (deviceInfo.uuid) {
-      // Verwende die ersten 8 Zeichen der UUID
+      // Use the first 8 characters of the UUID
       return deviceInfo.uuid.substring(0, 8);
     } else {
       return deviceName;
@@ -3188,7 +3183,7 @@ class DisksService {
   }
 
   /**
-   * Mountet ein Device oder eine Partition mit integrierter Mountability-Prüfung
+   * Mounts a device or partition with integrated mountability checks
    */
   async mountDevice(device, options = {}) {
     try {
@@ -3196,27 +3191,27 @@ class DisksService {
 
       // === MOUNTABILITY CHECKS ===
 
-      // 1. Prüfe ob Device existiert
+      // 1. Check if device exists
       try {
         await fs.access(devicePath);
       } catch (error) {
         throw new Error(`Device ${devicePath} does not exist`);
       }
 
-      // 2. Prüfe ob System-Disk
+      // 2. Check if system disk
       const isSystem = await this._isSystemDisk(devicePath);
       if (isSystem) {
         throw new Error('Cannot mount system disk');
       }
 
-      // 3. Hole Device-Informationen
+      // 3. Get device information
       const deviceInfo = await this._getDeviceUuidAndLabel(devicePath);
 
       if (!deviceInfo.filesystem) {
         throw new Error(`Device ${devicePath} has no filesystem. Please format it first.`);
       }
 
-      // 4. Prüfe ob bereits gemountet
+      // 4. Check if already mounted
       const mounts = await this._getMountInfo();
       if (mounts.has(devicePath)) {
         const existingMount = mounts.get(devicePath);
@@ -3230,11 +3225,11 @@ class DisksService {
         };
       }
 
-      // 5. Spezielle BTRFS Multi-Device Prüfung (weniger restriktiv)
+      // 5. Special BTRFS Multi-Device Check (less restrictive)
       if (deviceInfo.filesystem === 'btrfs') {
         const btrfsUsage = await this._checkBtrfsUsage(devicePath);
         if (btrfsUsage.inUse) {
-          // BTRFS Multi-Device bereits gemountet - verwende bestehenden Mount-Point
+          // BTRFS Multi-Device already mounted - use existing mount point
           return {
             success: true,
             device: device,
@@ -3248,11 +3243,11 @@ class DisksService {
           };
         }
 
-        // Für BTRFS: Versuche degraded mount wenn andere Devices fehlen
-        // Dies ist wichtig für RAID1/10 wo einzelne Devices auch alleine mountbar sind
+        // For BTRFS: Try degraded mount if other devices are missing
+        // This is important for RAID1/10 where individual devices are also mountable
       }
 
-      // 6. Prüfe ob in Pool verwendet (für Non-BTRFS oder nicht-gemountete BTRFS)
+      // 6. Check if in use (for Non-BTRFS or non-mounted BTRFS)
       const usageInfo = await this._isDiskInUse(devicePath);
       if (usageInfo.inUse && usageInfo.reason !== 'btrfs_multi_device') {
         throw new Error(`Device is in use: ${usageInfo.reason}`);
@@ -3260,29 +3255,29 @@ class DisksService {
 
       // === MOUNT LOGIC ===
 
-      // Generiere Mount-Point-Namen
+      // Generate mount point name
       const mountName = await this._generateMountPointName(devicePath);
       const baseMountPoint = `/mnt/disks/${mountName}`;
 
-      // Erstelle Mount-Point-Verzeichnis
+      // Create mount point directory
       try {
         await fs.mkdir(baseMountPoint, { recursive: true });
       } catch (error) {
         throw new Error(`Failed to create mount point ${baseMountPoint}: ${error.message}`);
       }
 
-      // Prüfe ob Mount-Point bereits verwendet wird
+      // Check if mount point is already in use
       if (await this._isMounted(baseMountPoint)) {
         throw new Error(`Mount point ${baseMountPoint} is already in use`);
       }
 
-      // Führe Mount durch
+      // Perform mount
       const mountOptions = options.mountOptions || 'defaults';
 
-      // Für BTRFS: spezielle Behandlung mit degraded option für fehlende Devices
+      // For BTRFS: special handling with degraded option for missing devices
       let mountCommand;
       if (deviceInfo.filesystem === 'btrfs') {
-        // BTRFS mit degraded option - erlaubt mount auch bei fehlenden RAID-Devices
+        // BTRFS with degraded option - allows mount even with missing RAID devices
         mountCommand = `mount -o ${mountOptions},degraded ${devicePath} ${baseMountPoint}`;
       } else {
         mountCommand = `mount -o ${mountOptions} ${devicePath} ${baseMountPoint}`;
@@ -3290,11 +3285,11 @@ class DisksService {
 
       await execPromise(mountCommand);
 
-      // Setze Berechtigungen
+      // Set permissions
       try {
         await execPromise(`chmod 755 ${baseMountPoint}`);
       } catch (error) {
-        // Warnung aber kein Fehler
+        // Warning but no error
         console.warn(`Could not set permissions on ${baseMountPoint}: ${error.message}`);
       }
 
@@ -3315,13 +3310,13 @@ class DisksService {
   }
 
   /**
-   * Unmountet ein Device mit automatischem BTRFS Multi-Device Unmount
+   * Unmounts a device with automatic BTRFS Multi-Device Unmount
    */
   async unmountDevice(device, options = {}) {
     try {
       const devicePath = device.startsWith('/dev/') ? device : `/dev/${device}`;
 
-      // Finde Mount-Point des Devices
+      // Find mount point of device
       const mounts = await this._getMountInfo();
       if (!mounts.has(devicePath)) {
         return {
@@ -3337,23 +3332,23 @@ class DisksService {
 
       let unmountedDevices = [devicePath];
 
-      // Spezielle BTRFS Multi-Device Behandlung
+      // Special BTRFS Multi-Device Handling
       if (mountInfo.fstype === 'btrfs') {
         const deviceInfo = await this._getDeviceUuidAndLabel(devicePath);
         if (deviceInfo.uuid) {
-          // Finde alle Devices mit derselben BTRFS UUID
+          // Find all devices with the same BTRFS UUID
           const allBtrfsDevices = await this._getAllBtrfsDevicesWithSameUuid(deviceInfo.uuid);
 
           if (allBtrfsDevices.length > 1) {
             console.log(`Unmounting BTRFS multi-device filesystem with ${allBtrfsDevices.length} devices`);
 
-            // Unmount alle anderen BTRFS Devices automatisch
+            // Unmount all other BTRFS devices automatically
             for (const btrfsDevice of allBtrfsDevices) {
               if (btrfsDevice !== devicePath && mounts.has(btrfsDevice)) {
                 try {
                   const btrfsMountInfo = mounts.get(btrfsDevice);
                   if (btrfsMountInfo.mountpoint === mountPoint) {
-                    // Gleicher Mount-Point - wird automatisch mit-unmounted
+                    // Same mount point - will be automatically unmounted
                     unmountedDevices.push(btrfsDevice);
                   }
                 } catch (error) {
@@ -3365,22 +3360,22 @@ class DisksService {
         }
       }
 
-      // Führe Unmount durch
+      // Perform unmount
       const forceFlag = options.force ? ' -f' : '';
       const lazyFlag = options.lazy ? ' -l' : '';
 
       await execPromise(`umount${forceFlag}${lazyFlag} ${mountPoint}`);
 
-      // Entferne leeres Verzeichnis wenn es unter /mnt/disks liegt und leer ist
+      // Remove empty directory if it is under /mnt/disks and is empty
       if (mountPoint.startsWith('/mnt/disks/')) {
         try {
-          // Prüfe ob Verzeichnis leer ist
+          // Check if directory is empty
           const dirContents = await fs.readdir(mountPoint);
           if (dirContents.length === 0) {
             await fs.rmdir(mountPoint);
           }
         } catch (error) {
-          // Ignoriere Fehler beim Verzeichnis löschen
+          // Ignore error removing directory
           console.warn(`Could not remove mount directory ${mountPoint}: ${error.message}`);
         }
       }
@@ -3401,11 +3396,11 @@ class DisksService {
   }
 
   /**
-   * Prüft verfügbare Dateisysteme für die Formatierung
-   * @param {string} pooltype - Optional: Filter für Pool-Typ ('multi', 'nonraid', 'single', 'mergerfs')
-   *                            Bei 'multi' werden nur btrfs und zfs zurückgegeben
-   *                            Bei 'mergerfs' und 'nonraid' wird vfat ausgeschlossen (keine POSIX-Unterstützung)
-   *                            Bei 'single' oder ohne Parameter werden alle zurückgegeben
+   * Check available filesystems for formatting
+   * @param {string} pooltype - Optional: Filter for pool type ('multi', 'nonraid', 'single', 'mergerfs')
+   *                            'multi' returns only btrfs and zfs
+   *                            'mergerfs' and 'nonraid' exclude vfat (no POSIX support)
+   *                            'single' or no parameter returns all
    */
   async getAvailableFilesystems(pooltype = null) {
     const supportedFilesystems = [
@@ -3416,7 +3411,7 @@ class DisksService {
       { name: 'zfs', command: 'zfs' }
     ];
 
-    // Bei pooltype=multi nur btrfs und zfs prüfen
+    // For pooltype=multi only check btrfs and zfs
     const multiPoolFilesystems = ['btrfs', 'zfs'];
     const filesystemsToCheck = pooltype === 'multi'
       ? supportedFilesystems.filter(fs => multiPoolFilesystems.includes(fs.name))
@@ -3426,7 +3421,7 @@ class DisksService {
 
     for (const fs of filesystemsToCheck) {
       try {
-        // Spezielle Behandlung für ZFS (deaktiviert für jetzt)
+        // Special handling for ZFS (disabled for now)
         // if (fs.name === 'zfs') {
         //   try {
         //     await execPromise(`which zpool`);
@@ -3442,21 +3437,21 @@ class DisksService {
         //   availableFilesystems.push(fs.name);
         // }
 
-        // Ohne ZFS - nur normale mkfs-Tools prüfen
+        // Without ZFS - only normal mkfs-tools
         if (fs.name === 'zfs') continue;
-        // vfat bei mergerfs und nonraid ausschließen
+        // vfat bei mergerfs and nonraid exclude
         if (fs.name === 'vfat' && (pooltype === 'mergerfs' || pooltype === 'nonraid')) continue;
         await execPromise(`which ${fs.command}`);
         availableFilesystems.push(fs.name);
       } catch (error) {
-        // Tool nicht verfügbar - ignorieren
+        // Tool not available - ignore
       }
     }
 
     return availableFilesystems;
   }
 
-  // Dummy-Methoden für Kompatibilität mit bestehenden Routes
+  // Dummy methods for compatibility with existing routes
   getCacheStatus() {
     return {
       initialized: false,
