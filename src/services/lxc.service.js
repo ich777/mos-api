@@ -1178,14 +1178,14 @@ class LxcService {
             };
           }
 
-          // Check if this is amd64 architecture
-          if (arch === 'amd64') {
+          // Check if this is amd64 & arm64 architecture
+          if (arch === 'amd64' || arch === 'arm64') {
             // Add architecture if not already present
             if (!distributions[dist][release].architectures.includes(arch)) {
               distributions[dist][release].architectures.push(arch);
             }
           } else {
-            // Store non-amd64 architectures in filtered array
+            // Store non-amd64/arm64 architectures in filtered array
             const filteredEntry = {
               distribution: dist,
               release: release,
@@ -1213,7 +1213,7 @@ class LxcService {
         }
       });
 
-      // Remove distributions/releases that have no amd64 architectures
+      // Remove distributions/releases that have no amd64/arm64 architectures
       const cleanedDistributions = {};
       Object.keys(distributions).forEach(dist => {
         const cleanedReleases = {};

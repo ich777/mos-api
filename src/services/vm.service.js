@@ -2634,6 +2634,26 @@ class VmService {
       throw new Error(`Failed to cleanup VirtIO ISOs: ${error.message}`);
     }
   }
+
+  /**
+   * Get available binfmt architectures from installed qemu-*-static binaries
+   * @returns {Promise<string[]>} Array of architecture names (e.g., ['aarch64', 'arm', 'riscv64'])
+   */
+  async getBinfmtArchitectures() {
+    try {
+      const files = await fs.readdir('/usr/bin');
+      const architectures = files
+        .filter(f => f.startsWith('qemu-') && f.endsWith('-static'))
+        .map(f => f.replace('qemu-', '').replace('-static', ''))
+        .sort();
+      return architectures;
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        return [];
+      }
+      throw new Error(`Failed to list binfmt architectures: ${error.message}`);
+    }
+  }
 }
 
 module.exports = new VmService();

@@ -1387,6 +1387,20 @@ router.get('/settings/system', async (req, res) => {
  *                         type: integer
  *                         description: Accept threshold percentage (default 90)
  *                         example: 90
+ *               binfmt:
+ *                 type: object
+ *                 description: binfmt_misc configuration for running foreign architecture binaries via QEMU user-mode emulation
+ *                 properties:
+ *                   enabled:
+ *                     type: boolean
+ *                     description: Enable binfmt_misc support
+ *                     example: true
+ *                   architectures:
+ *                     type: array
+ *                     items:
+ *                       type: string
+ *                     description: List of architectures to enable (e.g., aarch64, arm, riscv64). Use GET /vm/binfmt_architectures to see available architectures.
+ *                     example: ["aarch64"]
  *     responses:
  *       200:
  *         description: System settings updated successfully

@@ -871,6 +871,56 @@ router.get('/capabilities', async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /vm/binfmt_architectures:
+ *   get:
+ *     summary: Get available binfmt architectures
+ *     description: |
+ *       Returns a list of available architectures for binfmt_misc emulation.
+ *       These are determined by installed qemu-*-static binaries in /usr/bin.
+ *       Use these values in the binfmt_architectures field when updating system settings.
+ *     tags: [VM]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: List of available binfmt architectures
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: string
+ *               example: ["aarch64", "arm", "riscv64", "x86_64"]
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+router.get('/binfmt_architectures', async (req, res) => {
+  try {
+    const architectures = await vmService.getBinfmtArchitectures();
+    res.json(architectures);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ============================================================
 // VM Creation & Deletion
 // ============================================================

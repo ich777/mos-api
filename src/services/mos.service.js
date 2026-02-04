@@ -2332,7 +2332,11 @@ class MosService {
         max_speed: 0,
         min_speed: 0
       },
-      swapfile: swapService.getDefaultConfig()
+      swapfile: swapService.getDefaultConfig(),
+      binfmt: {
+        enabled: false,
+        architectures: []
+      }
     };
   }
 
@@ -2391,7 +2395,7 @@ class MosService {
         if (error.code !== 'ENOENT') throw error;
       }
       // Only allowed fields are updated
-      const allowed = ['hostname', 'global_spindown', 'keymap', 'timezone', 'display', 'persist_history', 'ntp', 'notification_sound', 'cpufreq', 'swapfile'];
+      const allowed = ['hostname', 'global_spindown', 'keymap', 'timezone', 'display', 'persist_history', 'ntp', 'notification_sound', 'cpufreq', 'swapfile', 'binfmt'];
       let ntpChanged = false;
       let swapfileUpdate = null;
       let keymapChanged = false;
@@ -2400,6 +2404,7 @@ class MosService {
       let persistHistoryChanged = false;
       let persistHistoryValue = null;
       let cpufreqChanged = false;
+      let binfmtChanged = false;
 
       for (const key of Object.keys(updates)) {
         if (!allowed.includes(key)) {
@@ -2527,6 +2532,33 @@ class MosService {
           if (typeof updates.swapfile === 'object' && updates.swapfile !== null) {
             swapfileUpdate = updates.swapfile;
           }
+        } else if (key === 'binfmt') {
+          // Initialize binfmt with defaults if not present
+          if (!current.binfmt) {
+            current.binfmt = {
+              enabled: false,
+              architectures: []
+            };
+          }
+
+          // Update binfmt settings
+          if (typeof updates.binfmt === 'object' && updates.binfmt !== null) {
+            // Check if enabled changed from false to true
+            if (updates.binfmt.enabled === true && current.binfmt.enabled === false) {
+              binfmtChanged = true;
+            }
+            // Check if architectures changed while enabled
+            if (Array.isArray(updates.binfmt.architectures) &&
+                JSON.stringify(updates.binfmt.architectures) !== JSON.stringify(current.binfmt.architectures) &&
+                (updates.binfmt.enabled === true || current.binfmt.enabled === true)) {
+              binfmtChanged = true;
+            }
+
+            current.binfmt = {
+              enabled: updates.binfmt.enabled !== undefined ? updates.binfmt.enabled : current.binfmt.enabled,
+              architectures: Array.isArray(updates.binfmt.architectures) ? updates.binfmt.architectures : current.binfmt.architectures
+            };
+          }
         } else {
           current[key] = updates[key];
         }
@@ -2611,6 +2643,15 @@ class MosService {
           await execPromise('/etc/init.d/cpupower start');
         } catch (error) {
           console.warn('Warning: Could not apply cpufreq settings with cpupower:', error.message);
+        }
+      }
+
+      // Apply binfmt settings when enabled or architectures changed
+      if (binfmtChanged) {
+        try {
+          await execPromise('/usr/local/bin/mos-start "binfmt"');
+        } catch (error) {
+          console.warn('Warning: Could not apply binfmt settings:', error.message);
         }
       }
 
