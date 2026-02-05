@@ -43,6 +43,10 @@ const { checkRole } = require('../middleware/auth.middleware');
  *         unprivileged:
  *           type: boolean
  *           description: Unprivileged container
+ *         architecture:
+ *           type: string
+ *           nullable: true
+ *           description: Container architecture (e.g., amd64, arm64)
  *         distribution:
  *           type: string
  *           nullable: true
@@ -92,6 +96,11 @@ const { checkRole } = require('../middleware/auth.middleware');
  *           description: Whether to start the container immediately after creation (defaults to false)
  *           default: false
  *           example: true
+ *         unprivileged:
+ *           type: boolean
+ *           description: Whether to create an unprivileged container (defaults to false)
+ *           default: false
+ *           example: false
  *     ImageInfo:
  *       type: object
  *       properties:
@@ -613,14 +622,14 @@ router.post('/containers/:name/unfreeze', async (req, res) => {
  */
 router.post('/containers/create', async (req, res) => {
   try {
-    const { name, distribution, release, arch, autostart, description, start_after_creation } = req.body;
+    const { name, distribution, release, arch, autostart, description, start_after_creation, unprivileged } = req.body;
 
     // Validate required fields
     if (!name || !distribution || !release) {
       return res.status(400).json({ error: 'Name, distribution and release are required' });
     }
 
-    const result = await lxcService.createContainer(name, distribution, release, arch, autostart, description, start_after_creation);
+    const result = await lxcService.createContainer(name, distribution, release, arch, autostart, description, start_after_creation, unprivileged);
     res.json(result);
   } catch (error) {
     // Check for specific validation errors

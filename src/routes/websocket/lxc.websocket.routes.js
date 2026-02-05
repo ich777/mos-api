@@ -25,6 +25,11 @@ const { authenticateToken } = require('../../middleware/auth.middleware');
  *           type: boolean
  *           description: Whether container is unprivileged
  *           example: true
+ *         architecture:
+ *           type: string
+ *           nullable: true
+ *           description: Container architecture (e.g., amd64, arm64)
+ *           example: "amd64"
  *         cpu:
  *           type: object
  *           properties:
@@ -102,6 +107,9 @@ const { authenticateToken } = require('../../middleware/auth.middleware');
  *               unprivileged:
  *                 type: boolean
  *                 example: true
+ *               architecture:
+ *                 type: string
+ *                 example: "amd64"
  *               index:
  *                 type: integer
  *                 example: 1
@@ -227,6 +235,7 @@ router.get('/websocket/events', (req, res) => {
                 state: 'running',
                 autostart: true,
                 unprivileged: true,
+                architecture: 'amd64',
                 cpu: { usage: 15.2, unit: '%' },
                 memory: { bytes: 536870912, formatted: '512.00 MiB' },
                 network: {
@@ -241,6 +250,7 @@ router.get('/websocket/events', (req, res) => {
                 state: 'stopped',
                 autostart: false,
                 unprivileged: true,
+                architecture: 'amd64',
                 cpu: { usage: 0, unit: '%' },
                 memory: { bytes: 0, formatted: '0 Bytes' },
                 network: { ipv4: [], ipv6: [], docker: [], all: [] }
@@ -259,6 +269,7 @@ router.get('/websocket/events', (req, res) => {
                 state: 'running',
                 autostart: true,
                 unprivileged: true,
+                architecture: 'amd64',
                 index: 1,
                 description: 'Web Server'
               }

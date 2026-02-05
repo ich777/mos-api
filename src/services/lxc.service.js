@@ -34,6 +34,10 @@ let cachedLxcPath = null;
 let cacheTimestamp = 0;
 const CACHE_DURATION = 60000; // 1 minute
 
+// Cache for container metadata (distribution, architecture) - these rarely change
+const containerMetadataCache = new Map();
+const METADATA_CACHE_DURATION = 300000; // 5 minutes
+
 // Track active backup/restore operations
 const activeOperations = new Map();
 
@@ -106,33 +110,85 @@ class LxcService {
   }
 
   /**
-   * Get distribution information for a specific container from its config file
+   * Get cached container metadata (distribution, architecture)
+   * Reads from cache if available and not expired, otherwise reads from config file
    * @param {string} containerName - Name of the container
-   * @returns {Promise<string|null>} Distribution name or null if not found
+   * @returns {Promise<Object>} Object with distribution and architecture
    */
-  async getContainerDistribution(containerName) {
+  async getContainerMetadata(containerName) {
+    // Check cache first
+    const cached = containerMetadataCache.get(containerName);
+    if (cached && Date.now() - cached.timestamp < METADATA_CACHE_DURATION) {
+      return cached.data;
+    }
+
+    // Read from config file
     try {
       const lxcPath = await this.getLxcPath();
       const configPath = `${lxcPath}/${containerName}/config`;
 
-      // Check if config file exists
       if (!fs.existsSync(configPath)) {
-        return null;
+        return { distribution: null, architecture: null };
       }
 
       const configContent = fs.readFileSync(configPath, 'utf8');
 
-      // Look for the template parameters line - more flexible regex
-      const distMatch = configContent.match(/# Parameters passed to the template:.*?--dist\s+(\S+)/);
+      // Extract distribution
+      const distMatch = configContent.match(/# Parameters passed to the template:[\s\S]*?(?:--dist|-d)\s+(\S+)/);
+      const distribution = distMatch ? distMatch[1] : null;
 
-      if (distMatch && distMatch[1]) {
-        return distMatch[1];
-      }
+      // Extract architecture
+      const archMatch = configContent.match(/# Parameters passed to the template:[\s\S]*?(?:--arch|-a)\s+(\S+)/);
+      const architecture = archMatch ? archMatch[1] : null;
 
-      return null;
+      const data = { distribution, architecture };
+
+      // Cache the result
+      containerMetadataCache.set(containerName, {
+        data,
+        timestamp: Date.now()
+      });
+
+      return data;
     } catch (error) {
-      return null;
+      return { distribution: null, architecture: null };
     }
+  }
+
+  /**
+   * Get distribution information for a specific container (cached)
+   * @param {string} containerName - Name of the container
+   * @returns {Promise<string|null>} Distribution name or null if not found
+   */
+  async getContainerDistribution(containerName) {
+    const metadata = await this.getContainerMetadata(containerName);
+    return metadata.distribution;
+  }
+
+  /**
+   * Get architecture information for a specific container (cached)
+   * @param {string} containerName - Name of the container
+   * @returns {Promise<string|null>} Architecture (e.g., amd64, arm64) or null if not found
+   */
+  async getContainerArchitecture(containerName) {
+    const metadata = await this.getContainerMetadata(containerName);
+    return metadata.architecture;
+  }
+
+  /**
+   * Invalidate metadata cache for a specific container
+   * Call this when a container is created, destroyed, or modified
+   * @param {string} containerName - Name of the container
+   */
+  invalidateContainerMetadataCache(containerName) {
+    containerMetadataCache.delete(containerName);
+  }
+
+  /**
+   * Clear all container metadata cache
+   */
+  clearContainerMetadataCache() {
+    containerMetadataCache.clear();
   }
 
   /**
@@ -207,8 +263,9 @@ class LxcService {
         const unprivileged = unprivText === 'true';
 
         // Get configuration values from config file
-        const [distribution, autostart, description, webui, isBtrfs] = await Promise.all([
+        const [distribution, architecture, autostart, description, webui, isBtrfs] = await Promise.all([
           this.getContainerDistribution(name),
+          this.getContainerArchitecture(name),
           this.getContainerAutostart(name),
           this.getContainerDescription(name),
           this.getContainerWebui(name),
@@ -227,6 +284,7 @@ class LxcService {
           ipv6,
           unprivileged,
           distribution,
+          architecture,
           description,
           webui,
           backing_storage: isBtrfs ? 'btrfs' : 'directory',
@@ -387,9 +445,10 @@ class LxcService {
    * @param {boolean} autostart - Whether container should autostart (defaults to false)
    * @param {string} containerDescription - Optional description for the container
    * @param {boolean} startAfterCreation - Whether to start container after creation (defaults to false)
+   * @param {boolean} unprivileged - Whether to create an unprivileged container (defaults to false)
    * @returns {Promise<Object>} Result of the operation
    */
-  async createContainer(containerName, distribution, release, arch = 'amd64', autostart = false, containerDescription = null, startAfterCreation = false) {
+  async createContainer(containerName, distribution, release, arch = 'amd64', autostart = false, containerDescription = null, startAfterCreation = false, unprivileged = false) {
     try {
       // Check if container already exists
       const exists = await this.containerExists(containerName);
@@ -449,6 +508,17 @@ class LxcService {
         console.warn(`Warning: Could not assign index to container ${containerName}: ${indexError.message}`);
       }
 
+      // Setup unprivileged container if requested
+      // This must happen before starting the container
+      if (unprivileged === true) {
+        try {
+          await this.setupUnprivilegedContainer(containerName);
+        } catch (unprivError) {
+          // Don't fail container creation but warn
+          console.warn(`Warning: Could not setup unprivileged container ${containerName}: ${unprivError.message}`);
+        }
+      }
+
       let startResult = null;
 
       // Start container if requested
@@ -464,10 +534,11 @@ class LxcService {
 
       const result = {
         success: true,
-        message: `Container ${containerName} created successfully with ${distribution} ${release} (${arch}) using ${backingStorage} backing storage`,
+        message: `Container ${containerName} created successfully with ${distribution} ${release} (${arch}) using ${backingStorage} backing storage${unprivileged === true ? ' (unprivileged)' : ''}`,
         autostart,
         description: containerDescription,
-        backing_storage: backingStorage
+        backing_storage: backingStorage,
+        unprivileged: unprivileged === true
       };
 
       // Add start information if container was started or start was attempted
@@ -516,6 +587,52 @@ class LxcService {
       fs.writeFileSync(configPath, configContent);
     } catch (error) {
       throw new Error(`Failed to set autostart for container ${containerName}: ${error.message}`);
+    }
+  }
+
+  /**
+   * Setup an unprivileged container by injecting idmap and setting permissions
+   * This must be called after container creation but before starting
+   * @param {string} containerName - Name of the container
+   * @returns {Promise<void>}
+   */
+  async setupUnprivilegedContainer(containerName) {
+    try {
+      const lxcPath = await this.getLxcPath();
+      const configPath = `${lxcPath}/${containerName}/config`;
+      const containerDir = `${lxcPath}/${containerName}`;
+
+      if (!fs.existsSync(configPath)) {
+        throw new Error(`Config file not found for container ${containerName}`);
+      }
+
+      let configContent = fs.readFileSync(configPath, 'utf8');
+
+      // Check if idmap already exists
+      if (configContent.includes('lxc.idmap')) {
+        // Container already has idmap configured
+        return;
+      }
+
+      // Add idmap lines for unprivileged container
+      const idmapLines = `
+# Unprivileged container id mapping
+lxc.idmap = u 0 100000 65536
+lxc.idmap = g 0 100000 65536
+`;
+
+      // Append to config
+      configContent += idmapLines;
+      fs.writeFileSync(configPath, configContent);
+
+      // Set permissions on container directory
+      // chmod 755 /var/lib/lxc/CONTAINERNAME/
+      await execPromise(`chmod 755 "${containerDir}"`);
+
+      // chown -R 100000:100000 /var/lib/lxc/CONTAINERNAME/
+      await execPromise(`chown -R 100000:100000 "${containerDir}"`);
+    } catch (error) {
+      throw new Error(`Failed to setup unprivileged container ${containerName}: ${error.message}`);
     }
   }
 
@@ -1053,6 +1170,9 @@ class LxcService {
         console.warn(`Warning: Could not reindex container indices after deletion: ${reindexError.message}`);
       }
 
+      // Invalidate metadata cache for this container
+      this.invalidateContainerMetadataCache(containerName);
+
       return {
         success: true,
         message: `Container ${containerName} destroyed successfully`
@@ -1428,6 +1548,7 @@ class LxcService {
             state: container.state,
             autostart: container.autostart,
             unprivileged: container.unprivileged,
+            architecture: container.architecture,
             active_operation: container.active_operation,
             cpu: {
               usage: cpuUsage,
@@ -2189,11 +2310,17 @@ class LxcService {
         await execPromise(`lxc-start -n ${newName}`);
       }
 
+      // Invalidate metadata cache for both source and new container
+      this.invalidateContainerMetadataCache(sourceContainer);
+      this.invalidateContainerMetadataCache(newName);
+
       activeOperations.delete(newName);
       await sendNotification('LXC Restore', `Container ${newName} restored successfully from ${backupFilename}`, 'normal');
 
     } catch (error) {
       activeOperations.delete(newName);
+      // Also invalidate cache on error in case partial restore happened
+      this.invalidateContainerMetadataCache(newName);
       await sendNotification('LXC Restore', `Restore of ${newName} failed: ${error.message}`, 'alert');
     }
   }
@@ -2675,11 +2802,16 @@ class LxcService {
         await execPromise(`lxc-start -n ${containerName}`);
       }
 
+      // Invalidate metadata cache after snapshot restore
+      this.invalidateContainerMetadataCache(containerName);
+
       activeOperations.delete(containerName);
       await sendNotification('LXC Snapshot', `Snapshot ${snapshotName} restored to ${containerName}`, 'normal');
 
     } catch (error) {
       activeOperations.delete(containerName);
+      // Invalidate cache on error in case partial restore happened
+      this.invalidateContainerMetadataCache(containerName);
       // Try to start container if it was running
       if (wasRunning) {
         await execPromise(`lxc-start -n ${containerName}`).catch(() => {});
