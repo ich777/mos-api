@@ -1242,6 +1242,20 @@ lxc.idmap = g 0 100000 65536
       const cacheFile = path.join(cacheDir, 'container_index.json');
       const oneHourAgo = Date.now() - (60 * 60 * 1000); // 1 hour in milliseconds
 
+      // Check if arm64 emulation is available via binfmt
+      let arm64Enabled = false;
+      try {
+        const systemSettings = await getMosService().getSystemSettings();
+        if (systemSettings.binfmt &&
+            systemSettings.binfmt.enabled === true &&
+            Array.isArray(systemSettings.binfmt.architectures) &&
+            systemSettings.binfmt.architectures.includes('aarch64')) {
+          arm64Enabled = true;
+        }
+      } catch (e) {
+        // If we can't read system settings, default to not showing arm64
+      }
+
       let needsUpdate = true;
 
       // Check if cache file exists and is not older than 1 hour
@@ -1298,14 +1312,14 @@ lxc.idmap = g 0 100000 65536
             };
           }
 
-          // Check if this is amd64 & arm64 architecture
-          if (arch === 'amd64' || arch === 'arm64') {
+          // Check if this is amd64 or arm64 (arm64 only if binfmt aarch64 is enabled)
+          if (arch === 'amd64' || (arch === 'arm64' && arm64Enabled)) {
             // Add architecture if not already present
             if (!distributions[dist][release].architectures.includes(arch)) {
               distributions[dist][release].architectures.push(arch);
             }
           } else {
-            // Store non-amd64/arm64 architectures in filtered array
+            // Store unsupported architectures in filtered array (includes arm64 when binfmt not enabled)
             const filteredEntry = {
               distribution: dist,
               release: release,
@@ -1333,7 +1347,7 @@ lxc.idmap = g 0 100000 65536
         }
       });
 
-      // Remove distributions/releases that have no amd64/arm64 architectures
+      // Remove distributions/releases that have no supported architectures
       const cleanedDistributions = {};
       Object.keys(distributions).forEach(dist => {
         const cleanedReleases = {};
