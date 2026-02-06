@@ -1813,7 +1813,8 @@ class MosService {
           enabled: false,
           update_check: false,
           netbird_service_params: ''
-        }
+        },
+        dnsmasq: { enabled: false }
       }
     };
   }
@@ -2079,6 +2080,7 @@ class MosService {
       let tailscaleChanged = false, tailscaleValue = null;
       let netbirdChanged = false, netbirdValue = null;
       let remoteMountingChanged = false, remoteMountingValue = null;
+      let dnsmasqChanged = false, dnsmasqValue = null;
 
       // Handle remote_mounting setting
       if (services.remote_mounting && typeof services.remote_mounting === 'object') {
@@ -2193,6 +2195,17 @@ class MosService {
           current.services.netbird.netbird_service_params = services.netbird.netbird_service_params;
       }
 
+      // Handle dnsmasq service
+      if (services.dnsmasq && typeof services.dnsmasq.enabled === 'boolean') {
+        if (!current.services) current.services = {};
+        if (!current.services.dnsmasq) current.services.dnsmasq = {};
+        if (current.services.dnsmasq.enabled !== services.dnsmasq.enabled) {
+          dnsmasqChanged = true;
+          dnsmasqValue = services.dnsmasq.enabled;
+        }
+        current.services.dnsmasq.enabled = services.dnsmasq.enabled;
+      }
+
       // Write updated settings
       await fs.writeFile('/boot/config/network.json', JSON.stringify(current, null, 2), 'utf8');
 
@@ -2261,6 +2274,13 @@ class MosService {
           await execPromise('/etc/init.d/netbird stop');
         } else if (netbirdValue === true) {
           await execPromise('/etc/init.d/netbird start');
+        }
+      }
+      if (dnsmasqChanged) {
+        if (dnsmasqValue === false) {
+          await execPromise('/etc/init.d/dnsmasq stop');
+        } else if (dnsmasqValue === true) {
+          await execPromise('/etc/init.d/dnsmasq start');
         }
       }
 
