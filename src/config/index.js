@@ -50,7 +50,7 @@ class Config {
         // Create new env file if it doesn't exist
         const jwtSecret = crypto.randomBytes(32).toString('hex');
         envVars = {
-          PORT: '3000',
+          PORT: '998',
           JWT_SECRET: jwtSecret,
           JWT_EXPIRY_DAYS: '1',
           RATE_LIMIT_WINDOW: '1',
@@ -61,7 +61,7 @@ class Config {
 
       // Ensure all required env vars exist with defaults
       const requiredEnvVars = {
-        PORT: '3000',
+        PORT: '998',
         JWT_SECRET: crypto.randomBytes(32).toString('hex'),
         JWT_EXPIRY_DAYS: '1',
         RATE_LIMIT_WINDOW: '1',

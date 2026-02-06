@@ -262,7 +262,7 @@ async function startServer() {
     });
   });
 
-  const PORT = process.env.PORT || 3000;
+  const PORT = process.env.PORT || 998;
 
   // Create HTTP server for Socket.io
   const server = http.createServer(app);

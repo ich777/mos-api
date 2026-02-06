@@ -124,7 +124,7 @@ const options = {
           description: 'Current Host (relative)'
         },
         {
-        url: 'http://{host}:3000/api/v1',
+        url: 'http://{host}:998/api/v1',
         description: 'Custom Host',
         variables: {
           host: {
