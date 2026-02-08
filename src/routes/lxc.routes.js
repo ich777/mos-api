@@ -1347,7 +1347,7 @@ router.get('/containers/:name/backups', async (req, res) => {
 
 /**
  * @swagger
- * /lxc/containers/{name}/backup:
+ * /lxc/containers/{name}/backups:
  *   post:
  *     summary: Create a backup of a container
  *     description: Starts an async backup operation. Container will be stopped during backup (unless use_snapshot is enabled).
@@ -1405,7 +1405,7 @@ router.get('/containers/:name/backups', async (req, res) => {
  *       500:
  *         description: Error starting backup
  */
-router.post('/containers/:name/backup', async (req, res) => {
+router.post('/containers/:name/backups', async (req, res) => {
   try {
     const { name } = req.params;
     const options = req.body || {};
@@ -1423,7 +1423,7 @@ router.post('/containers/:name/backup', async (req, res) => {
 
 /**
  * @swagger
- * /lxc/containers/{name}/backup/abort:
+ * /lxc/containers/{name}/backups/abort:
  *   post:
  *     summary: Abort an active backup operation
  *     tags: [LXC]
@@ -1442,7 +1442,7 @@ router.post('/containers/:name/backup', async (req, res) => {
  *       400:
  *         description: No active operation for container
  */
-router.post('/containers/:name/backup/abort', async (req, res) => {
+router.post('/containers/:name/backups/abort', async (req, res) => {
   try {
     const { name } = req.params;
     const result = await lxcService.abortBackup(name);
@@ -1497,7 +1497,7 @@ router.delete('/containers/:name/backups/:filename', async (req, res) => {
 
 /**
  * @swagger
- * /lxc/containers/{name}/restore:
+ * /lxc/containers/{name}/backups/restore:
  *   post:
  *     summary: Restore a container from backup
  *     description: Starts an async restore operation. If new_name matches existing container, it will be replaced.
@@ -1533,7 +1533,7 @@ router.delete('/containers/:name/backups/:filename', async (req, res) => {
  *       400:
  *         description: Invalid parameters or backup not found
  */
-router.post('/containers/:name/restore', async (req, res) => {
+router.post('/containers/:name/backups/restore', async (req, res) => {
   try {
     const { name } = req.params;
     const { backup_file, new_name } = req.body;
