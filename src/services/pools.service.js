@@ -2584,13 +2584,14 @@ class PoolsService {
     // Check for partition patterns:
     // /dev/sdb1, /dev/sdc2, etc. (SATA/SCSI)
     // /dev/nvme0n1p1, /dev/nvme0n1p2, etc. (NVMe)
+    // /dev/bcache0p1, /dev/bcache0p2, etc. (bcache)
     // /dev/mapper/asdf_1 (LUKS mappers are treated as partitions - format directly, no partitioning)
 
     if (device.includes('/dev/mapper/')) {
       return true; // LUKS mappers are treated like partitions (formatted directly)
     }
 
-    return /\/dev\/(sd[a-z]+\d+|nvme\d+n\d+p\d+|hd[a-z]+\d+|vd[a-z]+\d+)$/.test(device);
+    return /\/dev\/(sd[a-z]+\d+|nvme\d+n\d+p\d+|bcache\d+p\d+|hd[a-z]+\d+|vd[a-z]+\d+)$/.test(device);
   }
 
   /**
@@ -2598,8 +2599,9 @@ class PoolsService {
    */
   _getPartitionPath(device, partitionNumber) {
     // Handle NVMe devices (e.g., /dev/nvme0n1 -> /dev/nvme0n1p1)
+    // Handle bcache devices (e.g., /dev/bcache0 -> /dev/bcache0p1)
     // Handle LUKS mapped devices (e.g., /dev/mapper/luks_0 -> /dev/mapper/luks_0p1)
-    if (device.includes('nvme') || device.includes('/dev/mapper/')) {
+    if (device.includes('nvme') || device.includes('bcache') || device.includes('/dev/mapper/')) {
       return `${device}p${partitionNumber}`;
     }
     // Handle regular SATA/SCSI devices (e.g., /dev/sdb -> /dev/sdb1)
@@ -8247,6 +8249,11 @@ class PoolsService {
 
     // NVMe devices: /dev/nvme2n1p1 -> /dev/nvme2n1
     if (devicePath.includes('nvme') && devicePath.match(/p\d+$/)) {
+      return devicePath.replace(/p\d+$/, '');
+    }
+
+    // bcache devices: /dev/bcache0p1 -> /dev/bcache0
+    if (devicePath.includes('bcache') && devicePath.match(/p\d+$/)) {
       return devicePath.replace(/p\d+$/, '');
     }
 

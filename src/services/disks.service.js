@@ -1962,10 +1962,46 @@ class DisksService {
         }
       }
 
+      // Build set of devices used as bcache backing or cache devices
+      // These physical disks are "consumed" by bcache and should not be shown as unassigned
+      const bcacheBackingDevices = new Set();
+      try {
+        // Check /sys/block/*/bcache for backing devices
+        const { stdout: blockDevices } = await execPromise('ls /sys/block/ 2>/dev/null || true');
+        const devices = blockDevices.trim().split('\n').filter(d => d && !d.startsWith('bcache'));
+
+        for (const device of devices) {
+          try {
+            // Check if this device is a bcache backing device
+            await fs.access(`/sys/block/${device}/bcache/backing_dev_uuid`);
+            bcacheBackingDevices.add(`/dev/${device}`);
+          } catch {
+            // Not a bcache backing device
+          }
+
+          try {
+            // Check if this device is a bcache cache device (SSD)
+            await fs.access(`/sys/block/${device}/bcache/set`);
+            bcacheBackingDevices.add(`/dev/${device}`);
+          } catch {
+            // Not a bcache cache device
+          }
+        }
+
+      } catch {
+        // bcache not in use or sysfs not available
+      }
+
       // Check each disk
       for (const disk of allDisks) {
         // Skip ZRAM devices (handled separately - swaps filtered, ramdisks via pools)
         if (this.isZramDevice(disk.device)) {
+          continue;
+        }
+
+        // Skip bcache backing and cache devices (the physical disks consumed by bcache)
+        // The bcache* virtual devices will be shown instead
+        if (bcacheBackingDevices.has(disk.device)) {
           continue;
         }
 
@@ -2127,6 +2163,11 @@ class DisksService {
 
     // NVMe: nvme0n1p1 -> nvme0n1
     if (deviceName.match(/^nvme\d+n\d+p\d+$/)) {
+      return '/dev/' + deviceName.replace(/p\d+$/, '');
+    }
+
+    // bcache: bcache0p1 -> bcache0
+    if (deviceName.match(/^bcache\d+p\d+$/)) {
       return '/dev/' + deviceName.replace(/p\d+$/, '');
     }
 
@@ -2892,7 +2933,8 @@ class DisksService {
 
         // Determine partition path
         let partitionPath;
-        if (deviceName.includes('nvme') || deviceName.includes('mmc')) {
+        if (deviceName.includes('nvme') || deviceName.includes('mmc') || deviceName.includes('bcache')) {
+          // NVMe, MMC, and bcache devices use 'p' prefix for partitions
           partitionPath = `${devicePath}p1`;
         } else {
           partitionPath = `${devicePath}1`;

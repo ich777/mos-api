@@ -10,7 +10,8 @@ class PoolHelpers {
    * Check if a device path is a partition
    */
   static isPartitionPath(device) {
-    // Check if device ends with a number (partition) or has 'p' + number (NVMe/mapper partitions)
+    // Check if device ends with a number (partition) or has 'p' + number (NVMe/bcache/mapper partitions)
+    // Standard: /dev/sdb1, NVMe: /dev/nvme0n1p1, bcache: /dev/bcache0p1
     return /\d+$/.test(device) || /p\d+$/.test(device);
   }
 
@@ -19,8 +20,9 @@ class PoolHelpers {
    */
   static getPartitionPath(device, partitionNumber) {
     // Handle NVMe devices (e.g., /dev/nvme0n1 -> /dev/nvme0n1p1)
+    // Handle bcache devices (e.g., /dev/bcache0 -> /dev/bcache0p1)
     // Handle LUKS mapped devices (e.g., /dev/mapper/luks_0 -> /dev/mapper/luks_0p1)
-    if (device.includes('nvme') || device.includes('/dev/mapper/')) {
+    if (device.includes('nvme') || device.includes('bcache') || device.includes('/dev/mapper/')) {
       return `${device}p${partitionNumber}`;
     }
     // Handle regular SATA/SCSI devices (e.g., /dev/sdb -> /dev/sdb1)
@@ -35,6 +37,11 @@ class PoolHelpers {
 
     // Handle NVMe devices: /dev/nvme0n1p1 -> /dev/nvme0n1
     if (devicePath.includes('nvme')) {
+      return devicePath.replace(/p\d+$/, '');
+    }
+
+    // Handle bcache devices: /dev/bcache0p1 -> /dev/bcache0
+    if (devicePath.includes('bcache')) {
       return devicePath.replace(/p\d+$/, '');
     }
 
