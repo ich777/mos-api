@@ -22,6 +22,39 @@ class MosService {
     this._sensorsConfigCache = null;
   }
 
+  /**
+   * Checks if a ZFS dataset is mounted at the given path
+   * This allows using ZFS pools that are not registered in pools.json
+   * @param {string} mountPath - The mount path to check (e.g., /mnt/poolname)
+   * @returns {Promise<Object>} Object with { isMounted: boolean, poolName?: string, datasetName?: string }
+   */
+  async _checkZfsMountedAt(mountPath) {
+    try {
+      // Use zfs list to get all mounted datasets with their mountpoints
+      // Example output: "zfspool\t/mnt/zfs" or "tank/data\t/mnt/tank/data"
+      const { stdout: zfsOutput } = await execPromise('zfs list -H -o name,mountpoint 2>/dev/null');
+      const lines = zfsOutput.trim().split('\n').filter(l => l);
+
+      for (const line of lines) {
+        const [datasetName, zfsMountPoint] = line.split('\t');
+        // Check if the requested path is on this ZFS mountpoint
+        if (zfsMountPoint && zfsMountPoint !== '-' && mountPath.startsWith(zfsMountPoint)) {
+          return {
+            isMounted: true,
+            poolName: datasetName.split('/')[0], // First part is pool name
+            datasetName: datasetName,
+            mountPoint: zfsMountPoint
+          };
+        }
+      }
+
+      return { isMounted: false };
+    } catch {
+      // ZFS not installed or command failed - no ZFS pools available
+      return { isMounted: false };
+    }
+  }
+
   // ============================================================
   // SENSOR MAPPING METHODS
   // ============================================================
@@ -1081,6 +1114,23 @@ class MosService {
 
       } catch (poolError) {
         if (poolError.message.includes('not found')) {
+          // Pool not found in pools.json - check if there's a ZFS pool mounted at this path
+          // This allows using externally managed ZFS pools that are not registered in pools.json
+          const zfsCheck = await this._checkZfsMountedAt(poolPath);
+
+          if (zfsCheck.isMounted) {
+            // ZFS pool is mounted at this path - allow it
+            return {
+              isOnPool: true,
+              isValid: true,
+              poolName: zfsCheck.poolName,
+              poolPath: zfsCheck.mountPoint,
+              userPath: normalizedPath,
+              poolType: 'zfs',
+              message: `ZFS dataset "${zfsCheck.datasetName}" is mounted at ${zfsCheck.mountPoint} - Path is available (external ZFS pool)`
+            };
+          }
+
           return {
             isOnPool: true,
             isValid: false,
