@@ -143,11 +143,13 @@ class LxcService {
 
       const data = { distribution, architecture };
 
-      // Cache the result
-      containerMetadataCache.set(containerName, {
-        data,
-        timestamp: Date.now()
-      });
+      // Only cache if we have valid data (don't cache null values)
+      if (distribution || architecture) {
+        containerMetadataCache.set(containerName, {
+          data,
+          timestamp: Date.now()
+        });
+      }
 
       return data;
     } catch (error) {
@@ -1398,6 +1400,56 @@ lxc.idmap = g 0 100000 65536
   }
 
   /**
+   * Get CPU usage snapshot for a container (first reading)
+   * @param {string} containerName - Name of the container
+   * @returns {Object|null} CPU info with usage1 and cpuCount, or null if unavailable
+   */
+  getContainerCpuSnapshot(containerName) {
+    try {
+      const basePath = `/sys/fs/cgroup/lxc.payload.${containerName}`;
+      const cpuStatPath = `${basePath}/cpu.stat`;
+
+      if (!fs.existsSync(cpuStatPath)) return null;
+
+      // Get CPU count: try container cpuset, fallback to host
+      let cpuCount = os.cpus().length || 1;
+      try {
+        const cpuset = fs.readFileSync(`${basePath}/cpuset.cpus.effective`, 'utf8').trim();
+        if (cpuset) {
+          cpuCount = cpuset.split(',').reduce((sum, part) => {
+            const [a, b] = part.split('-').map(Number);
+            return sum + (b !== undefined ? b - a + 1 : 1);
+          }, 0) || cpuCount;
+        }
+      } catch (e) { /* use host count */ }
+
+      const match = fs.readFileSync(cpuStatPath, 'utf8').match(/usage_usec\s+(\d+)/);
+      const usage1 = match ? parseInt(match[1]) : 0;
+
+      return { usage1, cpuCount, cpuStatPath };
+    } catch (error) {
+      return null;
+    }
+  }
+
+  /**
+   * Calculate CPU usage from two snapshots
+   * @param {Object} snapshot - Snapshot from getContainerCpuSnapshot
+   * @returns {number} CPU usage percentage (0-100)
+   */
+  calculateCpuUsage(snapshot) {
+    if (!snapshot) return 0;
+    try {
+      const match = fs.readFileSync(snapshot.cpuStatPath, 'utf8').match(/usage_usec\s+(\d+)/);
+      const usage2 = match ? parseInt(match[1]) : 0;
+      const cpuUsage = (usage2 - snapshot.usage1) / (snapshot.cpuCount * 10000);
+      return Math.min(100, Math.max(0, cpuUsage));
+    } catch (error) {
+      return 0;
+    }
+  }
+
+  /**
    * Get CPU usage for a container (0-100%), normalized to available cores
    * @param {string} containerName - Name of the container
    * @returns {Promise<number>} CPU usage percentage (0-100)
@@ -1540,47 +1592,69 @@ lxc.idmap = g 0 100000 65536
       // Get list of all containers
       const containers = await this.listContainers();
 
-      // Get detailed resource information for each container
-      const containerData = await Promise.all(
-        containers.map(async (container) => {
-          let cpuUsage = 0;
-          let memoryUsage = { bytes: 0, formatted: '0 Bytes' };
+      // Identify running containers
+      const runningContainers = containers.filter(c => c.state === 'running');
 
-          // Only collect CPU and memory data for running containers
-          if (container.state === 'running') {
-            [cpuUsage, memoryUsage] = await Promise.all([
-              this.getContainerCpuUsage(container.name),
-              this.getContainerMemoryUsage(container.name)
-            ]);
+      // Take CPU snapshots for all running containers simultaneously (instant)
+      const cpuSnapshots = new Map();
+      for (const container of runningContainers) {
+        cpuSnapshots.set(container.name, this.getContainerCpuSnapshot(container.name));
+      }
+
+      // Get memory and IP data for all containers in parallel (doesn't need waiting)
+      const [memoryData, ipData] = await Promise.all([
+        Promise.all(runningContainers.map(c => this.getContainerMemoryUsage(c.name))),
+        Promise.all(containers.map(c => this.getContainerIpAddresses(c.name)))
+      ]);
+
+      // Create memory lookup map
+      const memoryMap = new Map();
+      runningContainers.forEach((c, i) => memoryMap.set(c.name, memoryData[i]));
+
+      // Create IP lookup map
+      const ipMap = new Map();
+      containers.forEach((c, i) => ipMap.set(c.name, ipData[i]));
+
+      // Wait 1 second ONCE for all CPU measurements
+      if (runningContainers.length > 0) {
+        await new Promise(r => setTimeout(r, 1000));
+      }
+
+      // Calculate CPU usage for all running containers
+      const cpuMap = new Map();
+      for (const container of runningContainers) {
+        cpuMap.set(container.name, this.calculateCpuUsage(cpuSnapshots.get(container.name)));
+      }
+
+      // Build final result
+      const containerData = containers.map(container => {
+        const cpuUsage = cpuMap.get(container.name) || 0;
+        const memoryUsage = memoryMap.get(container.name) || { bytes: 0, formatted: '0 Bytes' };
+        const ipAddresses = ipMap.get(container.name) || { ipv4: [], ipv6: [], docker: [] };
+
+        return {
+          name: container.name,
+          state: container.state,
+          autostart: container.autostart,
+          unprivileged: container.unprivileged,
+          architecture: container.architecture,
+          active_operation: container.active_operation,
+          cpu: {
+            usage: cpuUsage,
+            unit: '%'
+          },
+          memory: {
+            bytes: memoryUsage.bytes,
+            formatted: memoryUsage.formatted
+          },
+          network: {
+            ipv4: ipAddresses.ipv4,
+            ipv6: ipAddresses.ipv6,
+            docker: ipAddresses.docker,
+            all: [...ipAddresses.ipv4, ...ipAddresses.docker, ...ipAddresses.ipv6]
           }
-
-          // Always get IP addresses (even for stopped containers, in case they have static IPs)
-          const ipAddresses = await this.getContainerIpAddresses(container.name);
-
-          return {
-            name: container.name,
-            state: container.state,
-            autostart: container.autostart,
-            unprivileged: container.unprivileged,
-            architecture: container.architecture,
-            active_operation: container.active_operation,
-            cpu: {
-              usage: cpuUsage,
-              unit: '%'
-            },
-            memory: {
-              bytes: memoryUsage.bytes,
-              formatted: memoryUsage.formatted
-            },
-            network: {
-              ipv4: ipAddresses.ipv4,
-              ipv6: ipAddresses.ipv6,
-              docker: ipAddresses.docker,
-              all: [...ipAddresses.ipv4, ...ipAddresses.docker, ...ipAddresses.ipv6]
-            }
-          };
-        })
-      );
+        };
+      });
 
       // Sort by container name and return directly
       return containerData.sort((a, b) => a.name.localeCompare(b.name));
