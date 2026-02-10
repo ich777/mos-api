@@ -2124,14 +2124,25 @@ lxc.idmap = g 0 100000 65536
   async listBackups(containerName = null, user = null) {
     const settings = await this.getBackupSettings();
     if (!settings.backup_path) {
-      return [];
+      // If no backup path configured, return empty array for single container
+      // or empty array with all containers for all
+      if (containerName) {
+        return [];
+      } else {
+        try {
+          const containers = await this.listContainers();
+          return containers.map(c => ({ container: c.name, orphan: false, backups: [] }))
+            .sort((a, b) => a.container.localeCompare(b.container));
+        } catch (e) {
+          return [];
+        }
+      }
     }
-
-    const backups = [];
 
     try {
       if (containerName) {
-        // List backups for specific container
+        // List backups for specific container - return flat array of backups
+        const backups = [];
         const containerBackupPath = path.join(settings.backup_path, containerName);
         if (fs.existsSync(containerBackupPath)) {
           const files = await fsPromises.readdir(containerBackupPath);
@@ -2140,7 +2151,6 @@ lxc.idmap = g 0 100000 65536
               const filePath = path.join(containerBackupPath, file);
               const stats = await fsPromises.stat(filePath);
               backups.push({
-                container: containerName,
                 filename: file,
                 size: stats.size,
                 size_human: getSystemService().formatBytes(stats.size, user),
@@ -2149,38 +2159,79 @@ lxc.idmap = g 0 100000 65536
             }
           }
         }
+        // Sort by creation date descending and return (empty array if no backups)
+        return backups.sort((a, b) => new Date(b.created) - new Date(a.created));
       } else {
-        // List backups for all containers
+        // List all backups by scanning backup directory completely
+        // This includes orphaned backups (containers that no longer exist)
+        const containers = await this.listContainers();
+        const containerNames = new Set(containers.map(c => c.name));
+        const result = [];
+        const processedDirs = new Set();
+
+        // First, scan the backup directory for all backup folders
         if (fs.existsSync(settings.backup_path)) {
           const dirs = await fsPromises.readdir(settings.backup_path);
           for (const dir of dirs) {
             const containerBackupPath = path.join(settings.backup_path, dir);
             const stat = await fsPromises.stat(containerBackupPath);
+
             if (stat.isDirectory()) {
-              const files = await fsPromises.readdir(containerBackupPath);
-              for (const file of files) {
-                if (file.endsWith('.tar.xz')) {
-                  const filePath = path.join(containerBackupPath, file);
-                  const stats = await fsPromises.stat(filePath);
-                  backups.push({
-                    container: dir,
-                    filename: file,
-                    size: stats.size,
-                    size_human: getSystemService().formatBytes(stats.size, user),
-                    created: stats.mtime.toISOString()
-                  });
+              const backups = [];
+              const isOrphan = !containerNames.has(dir);
+              processedDirs.add(dir);
+
+              try {
+                const files = await fsPromises.readdir(containerBackupPath);
+                for (const file of files) {
+                  if (file.endsWith('.tar.xz')) {
+                    const filePath = path.join(containerBackupPath, file);
+                    const stats = await fsPromises.stat(filePath);
+                    backups.push({
+                      filename: file,
+                      size: stats.size,
+                      size_human: getSystemService().formatBytes(stats.size, user),
+                      created: stats.mtime.toISOString()
+                    });
+                  }
                 }
+              } catch (e) {
+                // Error reading backups for this container, keep empty array
+              }
+
+              // Only add if there are actual backups (skip empty directories)
+              if (backups.length > 0) {
+                // Sort backups by creation date descending
+                backups.sort((a, b) => new Date(b.created) - new Date(a.created));
+
+                result.push({
+                  container: dir,
+                  orphan: isOrphan,
+                  backups: backups
+                });
               }
             }
           }
         }
+
+        // Add existing containers that don't have backup folders yet
+        for (const container of containers) {
+          if (!processedDirs.has(container.name)) {
+            result.push({
+              container: container.name,
+              orphan: false,
+              backups: []
+            });
+          }
+        }
+
+        // Sort by container name
+        return result.sort((a, b) => a.container.localeCompare(b.container));
       }
     } catch (error) {
       console.warn(`Warning: Error listing backups: ${error.message}`);
+      return containerName ? [] : [];
     }
-
-    // Sort by creation date descending
-    return backups.sort((a, b) => new Date(b.created) - new Date(a.created));
   }
 
   /**
@@ -2523,34 +2574,28 @@ lxc.idmap = g 0 100000 65536
   /**
    * List all snapshots for all containers
    * @param {Object} user - Optional user object for byte_format preference
-   * @returns {Promise<Array>} List of all snapshots grouped by container
+   * @returns {Promise<Array>} List of containers with their snapshots
    */
   async listAllSnapshots(user = null) {
     try {
       const containers = await this.listContainers();
-      const allSnapshots = [];
+      const result = [];
 
       for (const container of containers) {
+        let snapshots = [];
         try {
-          const snapshots = await this.listSnapshots(container.name, user);
-          for (const snapshot of snapshots) {
-            allSnapshots.push({
-              container: container.name,
-              ...snapshot
-            });
-          }
+          snapshots = await this.listSnapshots(container.name, user);
         } catch (e) {
-          // Container might not support snapshots, skip
+          // Container might not support snapshots, return empty array
         }
+        result.push({
+          container: container.name,
+          snapshots: snapshots
+        });
       }
 
-      // Sort by container name, then by snapshot name
-      return allSnapshots.sort((a, b) => {
-        if (a.container !== b.container) {
-          return a.container.localeCompare(b.container);
-        }
-        return a.name.localeCompare(b.name);
-      });
+      // Sort by container name
+      return result.sort((a, b) => a.container.localeCompare(b.container));
     } catch (error) {
       throw new Error(`Failed to list all snapshots: ${error.message}`);
     }
@@ -2577,18 +2622,30 @@ lxc.idmap = g 0 100000 65536
       const snapshots = [];
       for (const line of lines) {
         // Format: "snap0 (/var/lib/lxc/container/snaps/snap0) 2024-01-20 21:30:00"
+        // Skip lines that indicate no snapshots (e.g. "No snapshots")
+        if (line.toLowerCase().startsWith('no ')) {
+          continue;
+        }
         const parts = line.split(/\s+/);
         if (parts.length >= 1) {
           const name = parts[0];
           const snapsPath = `${lxcPath}/${containerName}/snaps/${name}`;
+
+          // Verify snapshot directory exists before adding
+          if (!fs.existsSync(snapsPath)) {
+            continue;
+          }
 
           // Try to get timestamp from ts file
           let timestamp = null;
           try {
             const tsPath = `${snapsPath}/ts`;
             if (fs.existsSync(tsPath)) {
-              const ts = await fsPromises.readFile(tsPath, 'utf8');
-              timestamp = ts.trim();
+              let ts = (await fsPromises.readFile(tsPath, 'utf8')).trim();
+              // LXC stores timestamp as "YYYY:MM:DD HH:MM:SS" - fix date part to use dashes
+              // Match pattern like "2024:01:20" and replace colons with dashes in date part
+              ts = ts.replace(/^(\d{4}):(\d{2}):(\d{2})/, '$1-$2-$3');
+              timestamp = ts;
             }
           } catch (e) { /* ignore */ }
 
@@ -2630,12 +2687,6 @@ lxc.idmap = g 0 100000 65536
     const exists = await this.containerExists(containerName);
     if (!exists) {
       throw new Error(`Container ${containerName} does not exist`);
-    }
-
-    // Check if container uses BTRFS backing storage
-    const isBtrfs = await this.isContainerBtrfs(containerName);
-    if (!isBtrfs) {
-      throw new Error(`Snapshots require BTRFS backing storage. Container ${containerName} uses directory backing storage.`);
     }
 
     // Check for active operation

@@ -1281,13 +1281,14 @@ router.post('/mos/containers', async (req, res) => {
  * @swagger
  * /lxc/backups:
  *   get:
- *     summary: List all available LXC container backups
+ *     summary: List all containers with their backups
+ *     description: Returns all containers with their backups. Includes orphaned backups (containers that no longer exist). Containers without backups have an empty backups array.
  *     tags: [LXC]
  *     security:
  *       - bearerAuth: []
  *     responses:
  *       200:
- *         description: List of all backups
+ *         description: List of containers with their backups
  *         content:
  *           application/json:
  *             schema:
@@ -1297,15 +1298,25 @@ router.post('/mos/containers', async (req, res) => {
  *                 properties:
  *                   container:
  *                     type: string
- *                   filename:
- *                     type: string
- *                   size:
- *                     type: integer
- *                   size_human:
- *                     type: string
- *                   created:
- *                     type: string
- *                     format: date-time
+ *                     description: Container name
+ *                   orphan:
+ *                     type: boolean
+ *                     description: True if the container no longer exists (orphaned backup)
+ *                   backups:
+ *                     type: array
+ *                     description: Array of backups (empty if no backups)
+ *                     items:
+ *                       type: object
+ *                       properties:
+ *                         filename:
+ *                           type: string
+ *                         size:
+ *                           type: integer
+ *                         size_human:
+ *                           type: string
+ *                         created:
+ *                           type: string
+ *                           format: date-time
  */
 router.get('/backups', async (req, res) => {
   try {
@@ -1321,6 +1332,7 @@ router.get('/backups', async (req, res) => {
  * /lxc/containers/{name}/backups:
  *   get:
  *     summary: List backups for a specific container
+ *     description: Returns backups for a specific container. Returns empty array if no backups exist.
  *     tags: [LXC]
  *     security:
  *       - bearerAuth: []
@@ -1333,7 +1345,23 @@ router.get('/backups', async (req, res) => {
  *         description: Container name
  *     responses:
  *       200:
- *         description: List of backups for the container
+ *         description: List of backups for the container (empty array if no backups)
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: object
+ *                 properties:
+ *                   filename:
+ *                     type: string
+ *                   size:
+ *                     type: integer
+ *                   size_human:
+ *                     type: string
+ *                   created:
+ *                     type: string
+ *                     format: date-time
  */
 router.get('/containers/:name/backups', async (req, res) => {
   try {
@@ -1597,13 +1625,14 @@ router.post('/containers/:name/convert-btrfs', async (req, res) => {
  * @swagger
  * /lxc/snapshots:
  *   get:
- *     summary: List all snapshots from all containers
+ *     summary: List all containers with their snapshots
+ *     description: Returns all containers with their snapshots. Containers without snapshots have an empty snapshots array.
  *     tags: [LXC]
  *     security:
  *       - bearerAuth: []
  *     responses:
  *       200:
- *         description: List of all snapshots
+ *         description: List of containers with their snapshots
  *         content:
  *           application/json:
  *             schema:
@@ -1614,15 +1643,21 @@ router.post('/containers/:name/convert-btrfs', async (req, res) => {
  *                   container:
  *                     type: string
  *                     description: Container name
- *                   name:
- *                     type: string
- *                     description: Snapshot name
- *                   timestamp:
- *                     type: string
- *                   size:
- *                     type: integer
- *                   size_human:
- *                     type: string
+ *                   snapshots:
+ *                     type: array
+ *                     description: Array of snapshots (empty if no snapshots)
+ *                     items:
+ *                       type: object
+ *                       properties:
+ *                         name:
+ *                           type: string
+ *                           description: Snapshot name
+ *                         timestamp:
+ *                           type: string
+ *                         size:
+ *                           type: integer
+ *                         size_human:
+ *                           type: string
  */
 router.get('/snapshots', async (req, res) => {
   try {
@@ -1638,6 +1673,7 @@ router.get('/snapshots', async (req, res) => {
  * /lxc/containers/{name}/snapshots:
  *   get:
  *     summary: List all snapshots for a container
+ *     description: Returns snapshots for a specific container. Returns empty array if no snapshots exist.
  *     tags: [LXC]
  *     security:
  *       - bearerAuth: []
@@ -1650,7 +1686,7 @@ router.get('/snapshots', async (req, res) => {
  *         description: Container name
  *     responses:
  *       200:
- *         description: List of snapshots
+ *         description: List of snapshots for the container (empty array if no snapshots)
  *         content:
  *           application/json:
  *             schema:
