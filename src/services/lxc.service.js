@@ -1126,9 +1126,12 @@ lxc.idmap = g 0 100000 65536
   /**
    * Destroy (delete) an LXC container
    * @param {string} containerName - Name of the container to destroy
+   * @param {Object} options - Options
+   * @param {boolean} options.force - Also delete all snapshots (default: false)
    * @returns {Promise<Object>} Result of the operation
    */
-  async destroyContainer(containerName) {
+  async destroyContainer(containerName, options = {}) {
+    const { force = false } = options;
     try {
       // Check for active backup/restore operation
       const activeOp = activeOperations.get(containerName);
@@ -1150,8 +1153,64 @@ lxc.idmap = g 0 100000 65536
         await execPromise(`find "${varEmptyPath}" -exec chattr -i {} \\;`).catch(() => {});
       }
 
-      // Destroy the container (--force will stop it first if running)
-      await execPromise(`lxc-destroy --force -n ${containerName}`);
+      const containerPath = `${lxcPath}/${containerName}`;
+
+      // Try to destroy the container (--force will stop it first if running, -s deletes snapshots)
+      const snapshotsFlag = force ? '-s' : '';
+      try {
+        await execPromise(`lxc-destroy --force ${snapshotsFlag} -n ${containerName}`);
+      } catch (destroyError) {
+        // lxc-destroy failed, try manual cleanup (often needed after snapshot restore on BTRFS)
+        console.warn(`lxc-destroy failed, attempting manual cleanup: ${destroyError.message}`);
+
+        // Stop container if running
+        await execPromise(`lxc-stop -n ${containerName} -k 2>/dev/null`).catch(() => {});
+
+        // Delete all BTRFS subvolumes in the container directory (including snapshots)
+        try {
+          // Find and delete all btrfs subvolumes (deepest first)
+          const { stdout: subvols } = await execPromise(
+            `btrfs subvolume list -o "${containerPath}" 2>/dev/null | awk '{print $NF}' | sort -r`
+          ).catch(() => ({ stdout: '' }));
+
+          for (const subvol of subvols.split('\n').filter(s => s.trim())) {
+            const subvolPath = `/${subvol}`;
+            if (subvolPath.startsWith(containerPath)) {
+              await execPromise(`btrfs subvolume delete "${subvolPath}" 2>/dev/null`).catch(() => {});
+            }
+          }
+
+          // Delete main rootfs subvolume if it exists
+          const rootfsPath = `${containerPath}/rootfs`;
+          if (fs.existsSync(rootfsPath)) {
+            await execPromise(`btrfs subvolume delete "${rootfsPath}" 2>/dev/null`).catch(() => {});
+          }
+
+          // Delete snapshot subvolumes
+          const snapsPath = `${containerPath}/snaps`;
+          if (fs.existsSync(snapsPath)) {
+            const snapDirs = await fsPromises.readdir(snapsPath).catch(() => []);
+            for (const snap of snapDirs) {
+              const snapRootfs = `${snapsPath}/${snap}/rootfs`;
+              if (fs.existsSync(snapRootfs)) {
+                await execPromise(`btrfs subvolume delete "${snapRootfs}" 2>/dev/null`).catch(() => {});
+              }
+            }
+          }
+        } catch (btrfsError) {
+          console.warn(`BTRFS cleanup warning: ${btrfsError.message}`);
+        }
+
+        // Finally remove the container directory
+        if (fs.existsSync(containerPath)) {
+          await execPromise(`rm -rf "${containerPath}"`);
+        }
+
+        // Verify deletion
+        if (fs.existsSync(containerPath)) {
+          throw new Error('Manual cleanup failed - container directory still exists');
+        }
+      }
 
       // Remove custom icon if it exists
       const iconPath = `${lxcPath}/custom_icons/${containerName}.png`;
@@ -1770,7 +1829,6 @@ lxc.idmap = g 0 100000 65536
     const threads = options.threads !== undefined ? options.threads : settings.threads;
     let useSnapshot = options.use_snapshot !== undefined ? options.use_snapshot : settings.use_snapshot;
     const backupsToKeep = options.backups_to_keep !== undefined ? options.backups_to_keep : settings.backups_to_keep;
-    const allowRunning = options.allow_running !== undefined ? options.allow_running : false;
 
     // Check if container uses BTRFS backing storage - snapshots only work efficiently with BTRFS
     const isBtrfs = await this.isContainerBtrfs(containerName);
@@ -1822,7 +1880,6 @@ lxc.idmap = g 0 100000 65536
       actualThreads,
       useSnapshot,
       wasRunning,
-      allowRunning,
       backupsToKeep,
       abortController
     });
@@ -1833,8 +1890,7 @@ lxc.idmap = g 0 100000 65536
       backup_file: backupFilename,
       use_snapshot: useSnapshot,
       is_btrfs: isBtrfs,
-      was_running: wasRunning,
-      allow_running: allowRunning
+      was_running: wasRunning
     };
   }
 
@@ -1851,13 +1907,9 @@ lxc.idmap = g 0 100000 65536
       actualThreads,
       useSnapshot,
       wasRunning,
-      allowRunning,
       backupsToKeep,
       abortController
     } = opts;
-
-    // Track if we stopped the container (for restart in finally/catch)
-    const shouldStop = wasRunning && !allowRunning;
 
     // Define outside try block so they're accessible in catch for cleanup
     let tempSnapshot = null;
@@ -1871,13 +1923,13 @@ lxc.idmap = g 0 100000 65536
       const containerPath = `${lxcPath}/${containerName}`;
       let sourcePath = containerPath;
 
-      // Stop container if not allow_running
-      if (shouldStop) {
+      // Stop container if it's running
+      if (wasRunning) {
         await execPromise(`lxc-stop -n ${containerName}`);
       }
 
       if (abortController.aborted) {
-        if (shouldStop) await execPromise(`lxc-start -n ${containerName}`).catch(() => {});
+        if (wasRunning) await execPromise(`lxc-start -n ${containerName}`).catch(() => {});
         throw new Error('Backup aborted by user');
       }
 
@@ -1906,7 +1958,7 @@ lxc.idmap = g 0 100000 65536
         }
 
         // Start container again immediately after snapshot
-        if (shouldStop) {
+        if (wasRunning) {
           await execPromise(`lxc-start -n ${containerName}`);
         }
       }
@@ -2036,7 +2088,7 @@ lxc.idmap = g 0 100000 65536
       }
 
       // Start container if we stopped it and didn't use snapshot (snapshot already restarted it)
-      if (shouldStop && !useSnapshot) {
+      if (wasRunning && !useSnapshot) {
         await execPromise(`lxc-start -n ${containerName}`);
       }
 
@@ -2063,7 +2115,7 @@ lxc.idmap = g 0 100000 65536
       }
 
       // Restart container if we stopped it (catch any error, container might already be running)
-      if (shouldStop) {
+      if (wasRunning) {
         await execPromise(`lxc-start -n ${containerName}`).catch(() => {});
       }
 
@@ -2675,14 +2727,9 @@ lxc.idmap = g 0 100000 65536
   /**
    * Create a snapshot of a container
    * @param {string} containerName - Container name
-   * @param {string} snapshotName - Optional snapshot name (auto-generated if not provided)
-   * @param {Object} options - Options
-   * @param {boolean} options.allowRunning - Allow snapshot of running container (default: false)
    * @returns {Promise<Object>} Result
    */
-  async createSnapshot(containerName, snapshotName = null, options = {}) {
-    const { allowRunning = false } = options;
-
+  async createSnapshot(containerName) {
     // Check if container exists
     const exists = await this.containerExists(containerName);
     if (!exists) {
@@ -2700,8 +2747,8 @@ lxc.idmap = g 0 100000 65536
     const container = containers.find(c => c.name === containerName);
     const wasRunning = container && container.state === 'running';
 
-    // Stop container if running and allowRunning is false
-    if (wasRunning && !allowRunning) {
+    // Stop container if running (lxc-snapshot doesn't support live snapshots)
+    if (wasRunning) {
       await execPromise(`lxc-stop -n ${containerName}`);
     }
 
@@ -2709,17 +2756,8 @@ lxc.idmap = g 0 100000 65536
       // Get current snapshots to determine new snapshot name
       const currentSnaps = await this.listSnapshots(containerName);
 
-      // Create snapshot
-      let cmd = `lxc-snapshot -n ${containerName}`;
-      if (snapshotName) {
-        // Validate snapshot name
-        if (!/^[a-zA-Z0-9_-]+$/.test(snapshotName)) {
-          throw new Error('Snapshot name can only contain letters, numbers, hyphens and underscores');
-        }
-        cmd += ` -N ${snapshotName}`;
-      }
-
-      await execPromise(cmd);
+      // Create snapshot (name is auto-generated by lxc-snapshot: snap0, snap1, etc.)
+      await execPromise(`lxc-snapshot -n ${containerName}`);
 
       // Find the new snapshot name
       const newSnaps = await this.listSnapshots(containerName);
@@ -2728,11 +2766,11 @@ lxc.idmap = g 0 100000 65536
       return {
         success: true,
         message: `Snapshot created for container ${containerName}`,
-        snapshot: newSnapshot ? newSnapshot.name : snapshotName || 'snap0'
+        snapshot: newSnapshot ? newSnapshot.name : 'snap0'
       };
     } finally {
       // Restart container if it was running before
-      if (wasRunning && !allowRunning) {
+      if (wasRunning) {
         await execPromise(`lxc-start -n ${containerName}`).catch(() => {});
       }
     }
@@ -2898,8 +2936,60 @@ lxc.idmap = g 0 100000 65536
     try {
       await sendNotification('LXC Snapshot', `Cloning ${newName} from ${sourceContainer}/${snapshotName}`, 'normal');
 
-      // Use lxc-copy to create new container from snapshot
-      await execPromise(`lxc-copy -n ${sourceContainer} -N ${newName} -s -S ${snapshotName}`);
+      const lxcPath = await this.getLxcPath();
+      const snapshotPath = `${lxcPath}/${sourceContainer}/snaps/${snapshotName}`;
+      const newContainerPath = `${lxcPath}/${newName}`;
+
+      // Check if snapshot exists
+      if (!fs.existsSync(snapshotPath)) {
+        throw new Error(`Snapshot ${snapshotName} not found`);
+      }
+
+      // Check if new container already exists
+      if (fs.existsSync(newContainerPath)) {
+        throw new Error(`Container ${newName} already exists`);
+      }
+
+      // Check if source uses BTRFS
+      const isBtrfs = await this.isContainerBtrfs(sourceContainer);
+
+      if (isBtrfs) {
+        // For BTRFS: create subvolume snapshot (instant, copy-on-write)
+        await execPromise(`mkdir -p "${newContainerPath}"`);
+
+        // Snapshot the rootfs subvolume
+        const snapshotRootfs = `${snapshotPath}/rootfs`;
+        const newRootfs = `${newContainerPath}/rootfs`;
+        await execPromise(`btrfs subvolume snapshot "${snapshotRootfs}" "${newRootfs}"`);
+
+        // Copy config file
+        await execPromise(`cp "${snapshotPath}/config" "${newContainerPath}/config"`);
+      } else {
+        // For directory backing: full copy
+        await execPromise(`cp -a "${snapshotPath}" "${newContainerPath}"`);
+      }
+
+      // Update config file with new container name and correct rootfs path
+      const configPath = `${newContainerPath}/config`;
+      let config = await fsPromises.readFile(configPath, 'utf8');
+
+      // Determine backing storage type from original config
+      const isBtrfsConfig = config.includes('lxc.rootfs.path = btrfs:');
+      const newRootfsPath = `${newContainerPath}/rootfs`;
+
+      // Update rootfs path to point to container's own rootfs (not snapshot path!)
+      if (isBtrfsConfig) {
+        config = config.replace(/^lxc\.rootfs\.path\s*=.*/m, `lxc.rootfs.path = btrfs:${newRootfsPath}`);
+      } else {
+        config = config.replace(/^lxc\.rootfs\.path\s*=.*/m, `lxc.rootfs.path = dir:${newRootfsPath}`);
+      }
+
+      // Update container name
+      config = config.replace(/^lxc\.uts\.name\s*=.*/m, `lxc.uts.name = ${newName}`);
+      // Also update old-style lxc.utsname if present
+      config = config.replace(/^lxc\.utsname\s*=.*/m, `lxc.utsname = ${newName}`);
+
+      await fsPromises.writeFile(configPath, config);
 
       // Assign next available index
       try {
@@ -2915,8 +3005,9 @@ lxc.idmap = g 0 100000 65536
     } catch (error) {
       activeOperations.delete(sourceContainer);
       // Cleanup on error
-      await execPromise(`lxc-destroy -n ${newName} 2>/dev/null`).catch(() => {});
-      await sendNotification('LXC Snapshot', `Clone failed: ${error.message}`, 'alert');
+      const lxcPath = await this.getLxcPath().catch(() => '/var/lib/lxc');
+      await execPromise(`rm -rf "${lxcPath}/${newName}" 2>/dev/null`).catch(() => {});
+      await sendNotification('LXC Snapshot', `Clone failed: ${error.message}`, 'error');
     }
   }
 
@@ -2928,13 +3019,52 @@ lxc.idmap = g 0 100000 65536
     try {
       await sendNotification('LXC Snapshot', `Restoring ${containerName} from snapshot ${snapshotName}`, 'normal');
 
+      const lxcPath = await this.getLxcPath();
+      const containerPath = `${lxcPath}/${containerName}`;
+      const snapshotPath = `${containerPath}/snaps/${snapshotName}`;
+      const rootfsPath = `${containerPath}/rootfs`;
+      const snapshotRootfs = `${snapshotPath}/rootfs`;
+
       // Stop container if running
       if (wasRunning) {
         await execPromise(`lxc-stop -n ${containerName}`);
       }
 
-      // Restore snapshot
-      await execPromise(`lxc-snapshot -n ${containerName} -r ${snapshotName}`);
+      // Check if using BTRFS
+      const isBtrfs = await this.isContainerBtrfs(containerName);
+
+      if (isBtrfs) {
+        // For BTRFS: manually restore to avoid lxc-snapshot issues
+        // Delete current rootfs subvolume
+        await execPromise(`btrfs subvolume delete "${rootfsPath}" 2>/dev/null`).catch(() => {
+          // If not a subvolume, remove as directory
+          execPromise(`rm -rf "${rootfsPath}"`).catch(() => {});
+        });
+
+        // Create new rootfs as snapshot from the snapshot's rootfs
+        await execPromise(`btrfs subvolume snapshot "${snapshotRootfs}" "${rootfsPath}"`);
+
+        // Copy config from snapshot (but keep container name correct)
+        const snapshotConfig = await fsPromises.readFile(`${snapshotPath}/config`, 'utf8');
+        let newConfig = snapshotConfig;
+        // Ensure rootfs path points to container's rootfs, not snapshot
+        newConfig = newConfig.replace(/^lxc\.rootfs\.path\s*=.*/m, `lxc.rootfs.path = btrfs:${rootfsPath}`);
+        // Ensure container name is correct
+        newConfig = newConfig.replace(/^lxc\.uts\.name\s*=.*/m, `lxc.uts.name = ${containerName}`);
+        newConfig = newConfig.replace(/^lxc\.utsname\s*=.*/m, `lxc.utsname = ${containerName}`);
+        await fsPromises.writeFile(`${containerPath}/config`, newConfig);
+      } else {
+        // For directory backing: use lxc-snapshot -r (or manual copy)
+        try {
+          await execPromise(`lxc-snapshot -n ${containerName} -r ${snapshotName}`);
+        } catch (e) {
+          // Fallback: manual copy
+          await execPromise(`rm -rf "${rootfsPath}"`);
+          await execPromise(`cp -a "${snapshotRootfs}" "${rootfsPath}"`);
+          // Copy config
+          await execPromise(`cp "${snapshotPath}/config" "${containerPath}/config"`);
+        }
+      }
 
       // Start container if it was running
       if (wasRunning) {
@@ -2955,7 +3085,7 @@ lxc.idmap = g 0 100000 65536
       if (wasRunning) {
         await execPromise(`lxc-start -n ${containerName}`).catch(() => {});
       }
-      await sendNotification('LXC Snapshot', `Snapshot restore failed for ${containerName}: ${error.message}`, 'alert');
+      await sendNotification('LXC Snapshot', `Snapshot restore failed for ${containerName}: ${error.message}`, 'error');
     }
   }
 }

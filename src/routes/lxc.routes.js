@@ -747,6 +747,13 @@ router.get('/images', async (req, res) => {
  *           type: string
  *         description: Container Name
  *         example: "my-ubuntu-container"
+ *       - in: query
+ *         name: force
+ *         required: false
+ *         schema:
+ *           type: boolean
+ *           default: false
+ *         description: Also delete all snapshots of the container
  *     responses:
  *       200:
  *         description: Container successfully destroyed
@@ -758,7 +765,7 @@ router.get('/images', async (req, res) => {
  *               success: true
  *               message: "Container my-ubuntu-container destroyed successfully"
  *       400:
- *         description: Container does not exist
+ *         description: Container does not exist or has snapshots (use force=true to delete with snapshots)
  *         content:
  *           application/json:
  *             schema:
@@ -783,6 +790,11 @@ router.get('/images', async (req, res) => {
  *           application/json:
  *             schema:
  *               $ref: '#/components/schemas/Error'
+ */
+
+/**
+ * @swagger
+ * /lxc/containers/{name}:
  *   put:
  *     summary: Update container configuration
  *     description: Update autostart and/or description settings for an existing container
@@ -866,7 +878,8 @@ router.get('/images', async (req, res) => {
 router.delete('/containers/:name', async (req, res) => {
   try {
     const { name } = req.params;
-    const result = await lxcService.destroyContainer(name);
+    const force = req.query.force === 'true';
+    const result = await lxcService.destroyContainer(name, { force });
     res.json(result);
   } catch (error) {
     // Check if it's a "container does not exist" error
@@ -1406,10 +1419,6 @@ router.get('/containers/:name/backups', async (req, res) => {
  *               threads:
  *                 type: integer
  *                 description: Number of threads (0 = auto)
- *               allow_running:
- *                 type: boolean
- *                 default: false
- *                 description: Allow backup while container is running (may cause inconsistent data)
  *     responses:
  *       200:
  *         description: Backup started
@@ -1714,19 +1723,6 @@ router.get('/snapshots', async (req, res) => {
  *         schema:
  *           type: string
  *         description: Container name
- *     requestBody:
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               snapshot_name:
- *                 type: string
- *                 description: Optional custom snapshot name
- *               allow_running:
- *                 type: boolean
- *                 default: false
- *                 description: Allow snapshot while container is running (default stops container first)
  *     responses:
  *       200:
  *         description: Snapshot created
@@ -1749,13 +1745,11 @@ router.get('/containers/:name/snapshots', async (req, res) => {
 router.post('/containers/:name/snapshots', async (req, res) => {
   try {
     const { name } = req.params;
-    const { snapshot_name, allow_running } = req.body || {};
-    const result = await lxcService.createSnapshot(name, snapshot_name, { allowRunning: allow_running || false });
+    const result = await lxcService.createSnapshot(name);
     res.json(result);
   } catch (error) {
     if (error.message.includes('does not exist') ||
-        error.message.includes('operation in progress') ||
-        error.message.includes('can only contain')) {
+        error.message.includes('operation in progress')) {
       return res.status(400).json({ error: error.message });
     }
     res.status(500).json({ error: error.message });
