@@ -292,6 +292,37 @@ const { checkRole } = require('../middleware/auth.middleware');
  *                 items:
  *                   type: object
  *                 example: []
+ *               vlans:
+ *                 type: array
+ *                 description: VLAN configurations for this interface
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     vlan_id:
+ *                       type: integer
+ *                       description: VLAN ID (1-4094)
+ *                       example: 100
+ *                     ipv4:
+ *                       type: array
+ *                       description: IPv4 configuration for this VLAN
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           dhcp:
+ *                             type: boolean
+ *                             example: true
+ *                           address:
+ *                             type: string
+ *                             example: "192.168.100.1/24"
+ *                           gateway:
+ *                             type: string
+ *                             example: "192.168.100.254"
+ *                     ipv6:
+ *                       type: array
+ *                       description: IPv6 configuration for this VLAN
+ *                       items:
+ *                         type: object
+ *                 example: []
  *         services:
  *           type: object
  *           properties:
@@ -993,6 +1024,179 @@ router.post('/settings/network/interfaces', async (req, res) => {
     const updated = await mosService.updateNetworkInterfaces(req.body);
     res.json(updated);
   } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /mos/settings/network/interfaces/{interfaceName}/vlans:
+ *   post:
+ *     summary: Add VLAN to interface
+ *     description: Add a new VLAN to a network interface (admin only)
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: interfaceName
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Name of the interface (e.g., eth0)
+ *         example: eth0
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - vlan_id
+ *             properties:
+ *               vlan_id:
+ *                 type: integer
+ *                 description: VLAN ID (1-4094)
+ *                 example: 100
+ *               ipv4:
+ *                 type: array
+ *                 description: IPv4 configuration
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     dhcp:
+ *                       type: boolean
+ *                       example: true
+ *                     address:
+ *                       type: string
+ *                       example: "192.168.100.1"
+ *                     netmask:
+ *                       type: string
+ *                       example: "255.255.255.0"
+ *                     gateway:
+ *                       type: string
+ *                       example: "192.168.100.254"
+ *               ipv6:
+ *                 type: array
+ *                 description: IPv6 configuration
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     address:
+ *                       type: string
+ *                       example: "fd00::1"
+ *                     prefix:
+ *                       type: integer
+ *                       example: 64
+ *           example:
+ *             vlan_id: 100
+ *             ipv4:
+ *               - dhcp: true
+ *             ipv6: []
+ *     responses:
+ *       200:
+ *         description: VLAN added successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 vlan_id:
+ *                   type: integer
+ *                 ipv4:
+ *                   type: array
+ *                 ipv6:
+ *                   type: array
+ *       400:
+ *         description: Invalid request
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+
+// POST: Add VLAN to interface
+router.post('/settings/network/interfaces/:interfaceName/vlans', async (req, res) => {
+  try {
+    const { interfaceName } = req.params;
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      return res.status(400).json({ error: 'Request body must be a VLAN configuration object.' });
+    }
+    const vlan = await mosService.addVlan(interfaceName, req.body);
+    res.json(vlan);
+  } catch (error) {
+    if (error.message.includes('not found') || error.message.includes('already exists')) {
+      return res.status(400).json({ error: error.message });
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /mos/settings/network/interfaces/{interfaceName}/vlans/{vlanId}:
+ *   delete:
+ *     summary: Delete VLAN from interface
+ *     description: Delete a VLAN from a network interface (admin only)
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: interfaceName
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Name of the interface (e.g., eth0)
+ *         example: eth0
+ *       - in: path
+ *         name: vlanId
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: VLAN ID to delete
+ *         example: 100
+ *     responses:
+ *       200:
+ *         description: VLAN deleted successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *       400:
+ *         description: Invalid request or VLAN not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+
+// DELETE: Delete VLAN from interface
+router.delete('/settings/network/interfaces/:interfaceName/vlans/:vlanId', async (req, res) => {
+  try {
+    const { interfaceName, vlanId } = req.params;
+    await mosService.deleteVlan(interfaceName, vlanId);
+    res.json({ success: true });
+  } catch (error) {
+    if (error.message.includes('not found') || error.message.includes('No VLANs')) {
+      return res.status(400).json({ error: error.message });
+    }
     res.status(500).json({ error: error.message });
   }
 });

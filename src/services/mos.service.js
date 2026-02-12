@@ -1842,7 +1842,8 @@ class MosService {
           mode: null,
           interfaces: [],
           ipv4: [{ dhcp: true }],
-          ipv6: []
+          ipv6: [],
+          vlans: []
         }
       ],
       services: {
@@ -2095,6 +2096,147 @@ class MosService {
       return current.interfaces;
     } catch (error) {
       throw new Error(`Error updating network interfaces: ${error.message}`);
+    }
+  }
+
+  /**
+   * Adds a VLAN to a network interface.
+   * @param {string} interfaceName - Name of the interface (e.g., 'eth0')
+   * @param {Object} vlanConfig - VLAN configuration object
+   * @param {number} vlanConfig.vlan_id - VLAN ID (1-4094)
+   * @param {Array} [vlanConfig.ipv4] - IPv4 configuration array
+   * @param {Array} [vlanConfig.ipv6] - IPv6 configuration array
+   * @returns {Promise<Object>} The created VLAN configuration
+   */
+  async addVlan(interfaceName, vlanConfig) {
+    try {
+      if (!interfaceName || typeof interfaceName !== 'string') {
+        throw new Error('interfaceName must be a string');
+      }
+
+      if (!vlanConfig || typeof vlanConfig !== 'object') {
+        throw new Error('vlanConfig must be an object');
+      }
+
+      const vlanId = parseInt(vlanConfig.vlan_id, 10);
+      if (isNaN(vlanId) || vlanId < 1 || vlanId > 4094) {
+        throw new Error('vlan_id must be a number between 1 and 4094');
+      }
+
+      // Read current settings
+      const defaults = this._getDefaultNetworkSettings();
+      let current = { ...defaults };
+
+      try {
+        const data = await fs.readFile('/boot/config/network.json', 'utf8');
+        const loadedSettings = JSON.parse(data);
+        current = this._deepMerge(defaults, loadedSettings);
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
+
+      // Find the interface
+      const iface = current.interfaces.find(i => i.name === interfaceName);
+      if (!iface) {
+        throw new Error(`Interface '${interfaceName}' not found`);
+      }
+
+      // Ensure vlans array exists
+      if (!Array.isArray(iface.vlans)) {
+        iface.vlans = [];
+      }
+
+      // Check if VLAN already exists
+      if (iface.vlans.some(v => v.vlan_id === vlanId)) {
+        throw new Error(`VLAN ${vlanId} already exists on interface '${interfaceName}'`);
+      }
+
+      // Create VLAN config with defaults
+      const newVlan = {
+        vlan_id: vlanId,
+        ipv4: Array.isArray(vlanConfig.ipv4) ? vlanConfig.ipv4 : [{ dhcp: true }],
+        ipv6: Array.isArray(vlanConfig.ipv6) ? vlanConfig.ipv6 : []
+      };
+
+      // Validate IPv4 configuration
+      for (const ipv4Config of newVlan.ipv4) {
+        if (ipv4Config.dhcp === false && !ipv4Config.address) {
+          throw new Error(`VLAN ${vlanId}: address is required when dhcp=false`);
+        }
+      }
+
+      // Add VLAN to interface
+      iface.vlans.push(newVlan);
+
+      // Write updated settings
+      await fs.writeFile('/boot/config/network.json', JSON.stringify(current, null, 2), 'utf8');
+
+      // Restart networking
+      await execPromise('/etc/init.d/networking restart');
+
+      return newVlan;
+    } catch (error) {
+      throw new Error(`Error adding VLAN: ${error.message}`);
+    }
+  }
+
+  /**
+   * Deletes a VLAN from a network interface.
+   * @param {string} interfaceName - Name of the interface (e.g., 'eth0')
+   * @param {number} vlanId - VLAN ID to delete
+   * @returns {Promise<boolean>} True if VLAN was deleted
+   */
+  async deleteVlan(interfaceName, vlanId) {
+    try {
+      if (!interfaceName || typeof interfaceName !== 'string') {
+        throw new Error('interfaceName must be a string');
+      }
+
+      const parsedVlanId = parseInt(vlanId, 10);
+      if (isNaN(parsedVlanId) || parsedVlanId < 1 || parsedVlanId > 4094) {
+        throw new Error('vlanId must be a number between 1 and 4094');
+      }
+
+      // Read current settings
+      const defaults = this._getDefaultNetworkSettings();
+      let current = { ...defaults };
+
+      try {
+        const data = await fs.readFile('/boot/config/network.json', 'utf8');
+        const loadedSettings = JSON.parse(data);
+        current = this._deepMerge(defaults, loadedSettings);
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
+
+      // Find the interface
+      const iface = current.interfaces.find(i => i.name === interfaceName);
+      if (!iface) {
+        throw new Error(`Interface '${interfaceName}' not found`);
+      }
+
+      // Check if vlans array exists
+      if (!Array.isArray(iface.vlans) || iface.vlans.length === 0) {
+        throw new Error(`No VLANs configured on interface '${interfaceName}'`);
+      }
+
+      // Find and remove VLAN
+      const vlanIndex = iface.vlans.findIndex(v => v.vlan_id === parsedVlanId);
+      if (vlanIndex === -1) {
+        throw new Error(`VLAN ${parsedVlanId} not found on interface '${interfaceName}'`);
+      }
+
+      iface.vlans.splice(vlanIndex, 1);
+
+      // Write updated settings
+      await fs.writeFile('/boot/config/network.json', JSON.stringify(current, null, 2), 'utf8');
+
+      // Restart networking
+      await execPromise('/etc/init.d/networking restart');
+
+      return true;
+    } catch (error) {
+      throw new Error(`Error deleting VLAN: ${error.message}`);
     }
   }
 
