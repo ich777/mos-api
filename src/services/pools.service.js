@@ -2406,6 +2406,16 @@ class PoolsService {
       const mergerfsOptions = pool.config.global_options?.join(',') ||
         `defaults,allow_other,use_ino,cache.files=partial,dropcacheonclose=true,category.create=${createPolicy},category.search=${searchPolicy}`;
       await execPromise(`mergerfs -o ${mergerfsOptions} ${allMountPoints} ${mountPoint}`);
+
+      // Make the mount point a shared mount if configured (for bind mount propagation)
+      if (pool.config?.shared === true) {
+        try {
+          await execPromise(`mount --make-shared "${mountPoint}"`);
+          console.log(`Made pool mount point shared: ${mountPoint}`);
+        } catch (sharedError) {
+          console.warn(`Warning: Could not make mount shared: ${sharedError.message}`);
+        }
+      }
     } else {
       // Pool should stay unmounted - cleanup the new disk mounts we just created
       console.log(`Pool was not mounted, cleaning up new disk mounts...`);
@@ -3244,6 +3254,17 @@ class PoolsService {
         await execPromise(`chown mos:mos "${poolMountPoint}"`);
       } catch (chownError) {
         console.warn(`Warning: Could not chown mount point: ${chownError.message}`);
+      }
+
+      // Make the mount point a shared mount if configured (for bind mount propagation)
+      if (pool.config?.shared === true) {
+        try {
+          await execPromise(`mount --make-shared "${poolMountPoint}"`);
+          console.log(`Made pool mount point shared: ${poolMountPoint}`);
+        } catch (sharedError) {
+          console.warn(`Warning: Could not make mount shared: ${sharedError.message}`);
+          // Don't fail the mount if --make-shared fails
+        }
       }
 
       return result;
@@ -5454,6 +5475,16 @@ class PoolsService {
           `defaults,allow_other,use_ino,cache.files=partial,dropcacheonclose=true,category.create=${createPolicy},category.search=${searchPolicy}`;
 
         await execPromise(`mergerfs -o ${mergerfsOptions} ${mountPoints} ${mainMountPoint}`);
+
+        // Make the mount point a shared mount if configured (for bind mount propagation)
+        if (pool.config?.shared === true) {
+          try {
+            await execPromise(`mount --make-shared "${mainMountPoint}"`);
+            console.log(`Made pool mount point shared: ${mainMountPoint}`);
+          } catch (sharedError) {
+            console.warn(`Warning: Could not make mount shared: ${sharedError.message}`);
+          }
+        }
       } catch (error) {
         console.warn(`Warning: Could not remount MergerFS pool: ${error.message}`);
       }
@@ -6096,6 +6127,16 @@ class PoolsService {
       // Mount the mergerfs pool
       await execPromise(`mergerfs -o ${mergerfsOptions} ${mountPoints} ${mountPoint}`);
 
+      // Make the mount point a shared mount if configured (for bind mount propagation)
+      if (options.config?.shared === true) {
+        try {
+          await execPromise(`mount --make-shared "${mountPoint}"`);
+          console.log(`Made pool mount point shared: ${mountPoint}`);
+        } catch (sharedError) {
+          console.warn(`Warning: Could not make mount shared: ${sharedError.message}`);
+        }
+      }
+
       // Create pool configuration for MergerFS with provided policies
       const mergerfsConfig = {
         policies: {
@@ -6572,6 +6613,16 @@ class PoolsService {
 
       // Mount the mergerfs pool
       await execPromise(`mergerfs -o ${mergerfsOptions} ${mountPoints} ${mountPoint}`);
+
+      // Make the mount point a shared mount if configured (for bind mount propagation)
+      if (options.config?.shared === true) {
+        try {
+          await execPromise(`mount --make-shared "${mountPoint}"`);
+          console.log(`Made pool mount point shared: ${mountPoint}`);
+        } catch (sharedError) {
+          console.warn(`Warning: Could not make mount shared: ${sharedError.message}`);
+        }
+      }
 
       // Create pool configuration for NonRAID with provided policies
       const nonraidConfig = {

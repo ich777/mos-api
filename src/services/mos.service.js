@@ -2612,6 +2612,8 @@ class MosService {
       let swapfileUpdate = null;
       let keymapChanged = false;
       let timezoneChanged = false;
+      let hostnameChanged = false;
+      let newHostname = null;
       let displayChanged = false;
       let persistHistoryChanged = false;
       let persistHistoryValue = null;
@@ -2771,6 +2773,12 @@ class MosService {
               architectures: Array.isArray(updates.binfmt.architectures) ? updates.binfmt.architectures : current.binfmt.architectures
             };
           }
+        } else if (key === 'hostname') {
+          if (updates.hostname !== current.hostname) {
+            hostnameChanged = true;
+            newHostname = updates.hostname;
+          }
+          current[key] = updates[key];
         } else {
           current[key] = updates[key];
         }
@@ -2791,6 +2799,11 @@ class MosService {
             await execPromise('/etc/init.d/ntpsec start');
           }
         }
+      }
+
+      // Set hostname directly if changed
+      if (hostnameChanged && newHostname) {
+        await execPromise(`hostname ${newHostname}`);
       }
 
       // Keymap directly into system load

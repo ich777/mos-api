@@ -597,6 +597,15 @@ class RemotesService {
         throw new Error(`Unable to mount ${remote.type.toUpperCase()} share //${remote.server}/${remote.share}`);
       }
 
+      // Make the mount point a shared mount (for bind mount propagation)
+      try {
+        await execPromise(`mount --make-shared "${mountPath}"`);
+        console.log(`Made mount point shared: ${mountPath}`);
+      } catch (sharedError) {
+        console.warn(`Warning: Could not make mount shared: ${sharedError.message}`);
+        // Don't fail the mount if --make-shared fails
+      }
+
       return {
         success: true,
         message: `Remote '${remote.name}' mounted successfully`,

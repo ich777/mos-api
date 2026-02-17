@@ -3327,6 +3327,15 @@ class DisksService {
 
       await execPromise(mountCommand);
 
+      // Make the mount point a shared mount (for bind mount propagation)
+      try {
+        await execPromise(`mount --make-shared "${baseMountPoint}"`);
+        console.log(`Made mount point shared: ${baseMountPoint}`);
+      } catch (sharedError) {
+        console.warn(`Warning: Could not make mount shared: ${sharedError.message}`);
+        // Don't fail the mount if --make-shared fails
+      }
+
       // Set permissions
       try {
         await execPromise(`chmod 755 ${baseMountPoint}`);
