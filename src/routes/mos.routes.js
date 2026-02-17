@@ -468,6 +468,18 @@ const { checkRole } = require('../middleware/auth.middleware');
      *                   type: integer
      *                   description: Accept threshold percentage
      *                   example: 90
+     *         webui:
+     *           type: object
+     *           description: WebUI configuration settings
+     *           properties:
+     *             ports:
+     *               type: object
+     *               description: WebUI port configuration
+     *               properties:
+     *                 http:
+     *                   type: integer
+     *                   description: HTTP port for the WebUI (default 80)
+     *                   example: 80
  *     Keymap:
  *       type: object
  *       properties:
@@ -1348,6 +1360,9 @@ router.post('/settings/network/services', async (req, res) => {
  *                 powersave: "on"
  *                 powerdown: 60
  *               persist_history: false
+ *               webui:
+ *                 ports:
+ *                   http: 80
  *       401:
  *         description: Not authenticated
  *         content:
@@ -1605,6 +1620,18 @@ router.get('/settings/system', async (req, res) => {
  *                       type: string
  *                     description: List of architectures to enable (e.g., aarch64, arm, riscv64). Use GET /vm/binfmt_architectures to see available architectures.
  *                     example: ["aarch64"]
+ *               webui:
+ *                 type: object
+ *                 description: WebUI configuration settings. Changing the HTTP port triggers nginx restart.
+ *                 properties:
+ *                   ports:
+ *                     type: object
+ *                     description: WebUI port configuration
+ *                     properties:
+ *                       http:
+ *                         type: integer
+ *                         description: HTTP port for the WebUI (default 80). Changing this triggers nginx restart.
+ *                         example: 80
  *     responses:
  *       200:
  *         description: System settings updated successfully

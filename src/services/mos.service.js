@@ -2548,6 +2548,11 @@ class MosService {
       binfmt: {
         enabled: false,
         architectures: []
+      },
+      webui: {
+        ports: {
+          http: 80
+        }
       }
     };
   }
@@ -2607,7 +2612,7 @@ class MosService {
         if (error.code !== 'ENOENT') throw error;
       }
       // Only allowed fields are updated
-      const allowed = ['hostname', 'global_spindown', 'keymap', 'timezone', 'display', 'persist_history', 'ntp', 'notification_sound', 'cpufreq', 'swapfile', 'binfmt'];
+      const allowed = ['hostname', 'global_spindown', 'keymap', 'timezone', 'display', 'persist_history', 'ntp', 'notification_sound', 'cpufreq', 'swapfile', 'binfmt', 'webui'];
       let ntpChanged = false;
       let swapfileUpdate = null;
       let keymapChanged = false;
@@ -2619,6 +2624,7 @@ class MosService {
       let persistHistoryValue = null;
       let cpufreqChanged = false;
       let binfmtChanged = false;
+      let webuiHttpPortChanged = false;
 
       for (const key of Object.keys(updates)) {
         if (!allowed.includes(key)) {
@@ -2773,6 +2779,32 @@ class MosService {
               architectures: Array.isArray(updates.binfmt.architectures) ? updates.binfmt.architectures : current.binfmt.architectures
             };
           }
+        } else if (key === 'webui') {
+          // Initialize webui with defaults if not present
+          if (!current.webui) {
+            current.webui = {
+              ports: {
+                http: 80
+              }
+            };
+          }
+          if (!current.webui.ports) {
+            current.webui.ports = { http: 80 };
+          }
+
+          // Update webui settings
+          if (typeof updates.webui === 'object' && updates.webui !== null) {
+            if (typeof updates.webui.ports === 'object' && updates.webui.ports !== null) {
+              // Check if http port changed
+              if (updates.webui.ports.http !== undefined && updates.webui.ports.http !== current.webui.ports.http) {
+                webuiHttpPortChanged = true;
+              }
+
+              current.webui.ports = {
+                http: updates.webui.ports.http !== undefined ? updates.webui.ports.http : current.webui.ports.http
+              };
+            }
+          }
         } else if (key === 'hostname') {
           if (updates.hostname !== current.hostname) {
             hostnameChanged = true;
@@ -2877,6 +2909,15 @@ class MosService {
           await execPromise('/usr/local/bin/mos-start "binfmt"');
         } catch (error) {
           console.warn('Warning: Could not apply binfmt settings:', error.message);
+        }
+      }
+
+      // Restart nginx if webui http port changed
+      if (webuiHttpPortChanged) {
+        try {
+          await execPromise('/etc/init.d/nginx restart');
+        } catch (error) {
+          console.warn('Warning: Could not restart nginx:', error.message);
         }
       }
 
