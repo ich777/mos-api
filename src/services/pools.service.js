@@ -5039,6 +5039,14 @@ class PoolsService {
 
       await this._writePools(pools);
 
+      // Execute mos-cron_update after pool configuration changes (schedule updates)
+      try {
+        console.log('Executing mos-cron_update after pool configuration update');
+        await execPromise('mos-cron_update');
+      } catch (cronError) {
+        console.warn(`Failed to execute mos-cron_update: ${cronError.message}`);
+      }
+
       return {
         success: true,
         message: `Configuration updated for pool "${pool.name}" (ID: ${poolId})`,
