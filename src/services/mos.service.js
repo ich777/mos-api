@@ -4617,15 +4617,11 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
     // Read directory contents
     const entries = await fs.readdir(dirPath, { withFileTypes: true });
 
-    // Filter: Only directories or all
-    let filteredEntries = entries;
-    if (type === 'directories') {
-      filteredEntries = entries.filter(e => e.isDirectory());
-    }
-
     // Filter out hidden files/folders (starting with .) unless includeHidden is true
+    // But keep ALL types for now (filter by type AFTER symlink resolution)
+    let filteredEntries = entries;
     if (!includeHidden) {
-      filteredEntries = filteredEntries.filter(e => !e.name.startsWith('.'));
+      filteredEntries = entries.filter(e => !e.name.startsWith('.'));
     }
 
     // Local cache only for this directory call
@@ -4636,28 +4632,61 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
     const items = await Promise.all(
       filteredEntries.map(async (entry) => {
         const fullPath = path.join(dirPath, entry.name);
-        let itemStats;
+        let itemStats, linkStats;
+        let isSymlink = false;
+        let symlinkTarget = null;
+        let resolvedType = null;
+
         try {
-          itemStats = await fs.stat(fullPath);
+          // First, get lstat to detect symlinks (without following them)
+          linkStats = await fs.lstat(fullPath);
+          isSymlink = linkStats.isSymbolicLink();
+
+          if (isSymlink) {
+            // Get the symlink target
+            try {
+              symlinkTarget = await fs.readlink(fullPath);
+              
+              // Resolve relative symlinks to absolute paths
+              if (!path.isAbsolute(symlinkTarget)) {
+                symlinkTarget = path.resolve(path.dirname(fullPath), symlinkTarget);
+              }
+
+              // Get stats of the target to determine final type
+              itemStats = await fs.stat(fullPath); // This follows the symlink
+              resolvedType = itemStats.isDirectory() ? 'directory' : 'file';
+            } catch (error) {
+              // Broken symlink - use lstat data and mark as broken
+              itemStats = linkStats;
+              resolvedType = 'file'; // Default for broken symlinks
+              symlinkTarget = symlinkTarget + ' (broken)';
+            }
+          } else {
+            // Not a symlink, use regular stat
+            itemStats = linkStats;
+            resolvedType = entry.isDirectory() ? 'directory' : 'file';
+          }
         } catch (error) {
           // Skip items that can't be accessed
           return null;
         }
 
-        // Get permissions information
-        const mode = itemStats.mode;
+        // Get permissions information (from the symlink itself, not the target)
+        const mode = linkStats.mode;
         const octalPermissions = (mode & parseInt('777', 8)).toString(8).padStart(3, '0');
-        
-        // Get owner and group information with local caching
-        const owner = await this._getLocalUserName(itemStats.uid, localUserCache);
-        const group = await this._getLocalGroupName(itemStats.gid, localGroupCache);
+
+        // Get owner and group information with local caching (from the symlink itself)
+        const owner = await this._getLocalUserName(linkStats.uid, localUserCache);
+        const group = await this._getLocalGroupName(linkStats.gid, localGroupCache);
 
         return {
           name: entry.name,
           path: fullPath,
-          type: entry.isDirectory() ? 'directory' : 'file',
-          size: entry.isFile() ? itemStats.size : null,
+          type: resolvedType,
+          size: (resolvedType === 'file' && itemStats.isFile()) ? itemStats.size : null,
           modified: itemStats.mtime,
+          isSymlink: isSymlink,
+          symlinkTarget: symlinkTarget,
           permissions: {
             octal: octalPermissions,
             owner: owner,
@@ -4668,7 +4697,12 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
     );
 
     // Filter out null entries (inaccessible items)
-    const validItems = items.filter(item => item !== null);
+    let validItems = items.filter(item => item !== null);
+
+    // Apply type filtering AFTER symlink resolution
+    if (type === 'directories') {
+      validItems = validItems.filter(item => item.type === 'directory');
+    }
 
     // Sort: directories first, then alphabetically
     validItems.sort((a, b) => {
@@ -4741,11 +4775,11 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
     let username;
     try {
       const { execSync } = require('child_process');
-      username = execSync(`getent passwd ${uid} | cut -d: -f1`, { 
-        encoding: 'utf8', 
-        timeout: 1000 
+      username = execSync(`getent passwd ${uid} | cut -d: -f1`, {
+        encoding: 'utf8',
+        timeout: 1000
       }).trim();
-      
+
       if (!username) {
         username = uid.toString();
       }
@@ -4769,11 +4803,11 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
     let groupname;
     try {
       const { execSync } = require('child_process');
-      groupname = execSync(`getent group ${gid} | cut -d: -f1`, { 
-        encoding: 'utf8', 
-        timeout: 1000 
+      groupname = execSync(`getent group ${gid} | cut -d: -f1`, {
+        encoding: 'utf8',
+        timeout: 1000
       }).trim();
-      
+
       if (!groupname) {
         groupname = gid.toString();
       }

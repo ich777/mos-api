@@ -4511,6 +4511,15 @@ router.post('/dashboard', async (req, res) => {
  *                         format: date-time
  *                         description: Last modified timestamp
  *                         example: "2024-11-25T14:30:00.000Z"
+ *                       isSymlink:
+ *                         type: boolean
+ *                         description: Whether this item is a symbolic link
+ *                         example: false
+ *                       symlinkTarget:
+ *                         type: string
+ *                         nullable: true
+ *                         description: Target path if this is a symlink (null if not a symlink)
+ *                         example: null
  *                       permissions:
  *                         type: object
  *                         description: File/directory permissions information
@@ -4557,6 +4566,8 @@ router.post('/dashboard', async (req, res) => {
  *                       type: "directory"
  *                       size: null
  *                       modified: "2024-11-25T14:30:00.000Z"
+ *                       isSymlink: false
+ *                       symlinkTarget: null
  *                       permissions:
  *                         octal: "755"
  *                         owner: "root"
@@ -4566,10 +4577,23 @@ router.post('/dashboard', async (req, res) => {
  *                       type: "directory"
  *                       size: null
  *                       modified: "2024-11-20T10:15:00.000Z"
+ *                       isSymlink: false
+ *                       symlinkTarget: null
  *                       permissions:
  *                         octal: "755"
  *                         owner: "user"
  *                         group: "users"
+ *                     - name: "bin"
+ *                       path: "/bin"
+ *                       type: "directory"
+ *                       size: null
+ *                       modified: "2024-11-15T08:20:00.000Z"
+ *                       isSymlink: true
+ *                       symlinkTarget: "/usr/bin"
+ *                       permissions:
+ *                         octal: "777"
+ *                         owner: "root"
+ *                         group: "root"
  *       400:
  *         description: Invalid type parameter
  *         content:
