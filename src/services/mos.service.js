@@ -12,6 +12,8 @@ const swapService = require('./swap.service');
 
 class MosService {
   constructor() {
+    this.dbPath = path.join(process.cwd(), 'mos_db.sqlite');
+    this.pools = [];
     this.settingsPath = '/boot/config/docker.json';
     this.dashboardPath = '/boot/config/dashboard.json';
     this.sensorsConfigPath = '/boot/config/system/sensors.json';
@@ -4528,9 +4530,10 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
    * @param {string} requestPath - Path to browse
    * @param {string} type - "directories" or "all"
    * @param {Array<string>} allowedRoots - Optional array of allowed root directories for virtual root
+   * @param {boolean} includeHidden - Whether to include hidden files/folders
    * @returns {Promise<Object>} Directory listing with items and navigation info
    */
-  async browseFilesystem(requestPath, type = 'directories', allowedRoots = null) {
+  async browseFilesystem(requestPath, type = 'directories', allowedRoots = null, includeHidden = false) {
     const normalizedPath = requestPath?.trim() || '/';
 
     // If allowedRoots are specified, create a virtual root
@@ -4548,14 +4551,14 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
       }
 
       // Browse real directory with virtual root boundary
-      return await this._browseDirectory(resolvedPath, type, allowedRoots);
+      return await this._browseDirectory(resolvedPath, type, allowedRoots, includeHidden);
     }
 
     // No roots specified: Browse filesystem normally (full access)
     const resolvedPath = path.resolve(normalizedPath);
 
     // Browse without restrictions
-    return await this._browseDirectory(resolvedPath, type, null);
+    return await this._browseDirectory(resolvedPath, type, null, includeHidden);
   }
 
   /**
@@ -4595,7 +4598,7 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
    * Browse a real directory
    * @private
    */
-  async _browseDirectory(dirPath, type, fsNavigatorRoots) {
+  async _browseDirectory(dirPath, type, fsNavigatorRoots, includeHidden = false) {
     // Check if path exists
     let stats;
     try {
@@ -4620,8 +4623,14 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
       filteredEntries = entries.filter(e => e.isDirectory());
     }
 
-    // Filter out hidden files/folders (starting with .)
-    filteredEntries = filteredEntries.filter(e => !e.name.startsWith('.'));
+    // Filter out hidden files/folders (starting with .) unless includeHidden is true
+    if (!includeHidden) {
+      filteredEntries = filteredEntries.filter(e => !e.name.startsWith('.'));
+    }
+
+    // Local cache only for this directory call
+    const localUserCache = new Map();
+    const localGroupCache = new Map();
 
     // Create items with metadata
     const items = await Promise.all(
@@ -4635,12 +4644,25 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
           return null;
         }
 
+        // Get permissions information
+        const mode = itemStats.mode;
+        const octalPermissions = (mode & parseInt('777', 8)).toString(8).padStart(3, '0');
+        
+        // Get owner and group information with local caching
+        const owner = await this._getLocalUserName(itemStats.uid, localUserCache);
+        const group = await this._getLocalGroupName(itemStats.gid, localGroupCache);
+
         return {
           name: entry.name,
           path: fullPath,
           type: entry.isDirectory() ? 'directory' : 'file',
           size: entry.isFile() ? itemStats.size : null,
-          modified: itemStats.mtime
+          modified: itemStats.mtime,
+          permissions: {
+            octal: octalPermissions,
+            owner: owner,
+            group: group
+          }
         };
       })
     );
@@ -4705,6 +4727,62 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
 
     // Parent is outside allowed roots → go back to virtual root
     return '/';
+  }
+
+  /**
+   * Get username with local caching (only for current directory call)
+   * @private
+   */
+  async _getLocalUserName(uid, localCache) {
+    if (localCache.has(uid)) {
+      return localCache.get(uid);
+    }
+
+    let username;
+    try {
+      const { execSync } = require('child_process');
+      username = execSync(`getent passwd ${uid} | cut -d: -f1`, { 
+        encoding: 'utf8', 
+        timeout: 1000 
+      }).trim();
+      
+      if (!username) {
+        username = uid.toString();
+      }
+    } catch {
+      username = uid.toString();
+    }
+
+    localCache.set(uid, username);
+    return username;
+  }
+
+  /**
+   * Get group name with local caching (only for current directory call)
+   * @private
+   */
+  async _getLocalGroupName(gid, localCache) {
+    if (localCache.has(gid)) {
+      return localCache.get(gid);
+    }
+
+    let groupname;
+    try {
+      const { execSync } = require('child_process');
+      groupname = execSync(`getent group ${gid} | cut -d: -f1`, { 
+        encoding: 'utf8', 
+        timeout: 1000 
+      }).trim();
+      
+      if (!groupname) {
+        groupname = gid.toString();
+      }
+    } catch {
+      groupname = gid.toString();
+    }
+
+    localCache.set(gid, groupname);
+    return groupname;
   }
 
   // ============================================================

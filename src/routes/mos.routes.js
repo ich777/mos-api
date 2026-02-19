@@ -4442,6 +4442,21 @@ router.post('/dashboard', async (req, res) => {
  *           single:
  *             value: "/mnt"
  *             summary: Restrict to /mnt only
+ *       - in: query
+ *         name: includeHidden
+ *         required: false
+ *         schema:
+ *           type: string
+ *           enum: [true, false]
+ *           default: false
+ *         description: Whether to include hidden files and folders (starting with .)
+ *         examples:
+ *           show_hidden:
+ *             value: "true"
+ *             summary: Show hidden files and folders
+ *           hide_hidden:
+ *             value: "false"
+ *             summary: Hide hidden files and folders (default)
  *     responses:
  *       200:
  *         description: Directory listing with navigation info
@@ -4496,6 +4511,22 @@ router.post('/dashboard', async (req, res) => {
  *                         format: date-time
  *                         description: Last modified timestamp
  *                         example: "2024-11-25T14:30:00.000Z"
+ *                       permissions:
+ *                         type: object
+ *                         description: File/directory permissions information
+ *                         properties:
+ *                           octal:
+ *                             type: string
+ *                             description: Octal representation of permissions (e.g. 755, 644)
+ *                             example: "755"
+ *                           owner:
+ *                             type: string
+ *                             description: Owner username or UID
+ *                             example: "root"
+ *                           group:
+ *                             type: string
+ *                             description: Group name or GID
+ *                             example: "root"
  *             examples:
  *               virtualRoot:
  *                 summary: Virtual root response
@@ -4526,11 +4557,19 @@ router.post('/dashboard', async (req, res) => {
  *                       type: "directory"
  *                       size: null
  *                       modified: "2024-11-25T14:30:00.000Z"
+ *                       permissions:
+ *                         octal: "755"
+ *                         owner: "root"
+ *                         group: "root"
  *                     - name: "backup"
  *                       path: "/mnt/nvme/backup"
  *                       type: "directory"
  *                       size: null
  *                       modified: "2024-11-20T10:15:00.000Z"
+ *                       permissions:
+ *                         octal: "755"
+ *                         owner: "user"
+ *                         group: "users"
  *       400:
  *         description: Invalid type parameter
  *         content:
@@ -4572,7 +4611,7 @@ router.post('/dashboard', async (req, res) => {
 // GET: Filesystem Navigator - Browse directories and files
 router.get('/fsnavigator', async (req, res) => {
   try {
-    const { path = '/', type = 'directories', roots } = req.query;
+    const { path = '/', type = 'directories', roots, includeHidden = 'false' } = req.query;
 
     // Validate type parameter
     if (type !== 'directories' && type !== 'all') {
@@ -4596,7 +4635,7 @@ router.get('/fsnavigator', async (req, res) => {
       }
     }
 
-    const result = await mosService.browseFilesystem(path, type, allowedRoots);
+    const result = await mosService.browseFilesystem(path, type, allowedRoots, includeHidden === 'true');
     res.json(result);
   } catch (error) {
     if (error.message.includes('outside allowed directories')) {
