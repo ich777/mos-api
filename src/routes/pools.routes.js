@@ -1341,8 +1341,8 @@ router.post('/mergerfs', checkRole(['admin']), async (req, res) => {
  *                       create:
  *                         type: string
  *                         description: MergerFS create policy
- *                         default: epmfs
- *                         example: epmfs
+ *                         default: mspmfs
+ *                         example: mspmfs
  *                       search:
  *                         type: string
  *                         description: MergerFS search policy

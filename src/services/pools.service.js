@@ -2401,7 +2401,7 @@ class PoolsService {
       await this._createDirectoryWithOwnership(mountPoint, ownershipOptions);
 
       // Remount with all devices
-      const createPolicy = pool.config.policies?.create || 'epmfs';
+      const createPolicy = pool.config.policies?.create || 'mspmfs';
       const searchPolicy = pool.config.policies?.search || 'ff';
       const mergerfsOptions = pool.config.global_options?.join(',') ||
         `defaults,allow_other,use_ino,cache.files=partial,dropcacheonclose=true,category.create=${createPolicy},category.search=${searchPolicy}`;
@@ -5476,7 +5476,7 @@ class PoolsService {
         const mountPoints = pool.data_devices.map((_, index) =>
           path.join(baseDir, `disk${pool.data_devices[index].slot}`)
         ).join(':');
-        const createPolicy = pool.config.policies?.create || 'epmfs';
+        const createPolicy = pool.config.policies?.create || 'mspmfs';
         const searchPolicy = pool.config.policies?.search || 'ff';
         const mergerfsOptions = pool.config.global_options ?
           pool.config.global_options.join(',') :
@@ -6125,7 +6125,7 @@ class PoolsService {
       const mountPoints = dataDevices.map(device => path.join(mergerfsBasePath, `disk${device.slot}`)).join(':');
 
       // Extract policies from options or use defaults
-      const createPolicy = options.policies?.create || 'epmfs';
+      const createPolicy = options.policies?.create || 'mspmfs';
       const searchPolicy = options.policies?.search || 'ff';
 
       // Build MergerFS options with custom policies
@@ -6612,7 +6612,7 @@ class PoolsService {
       const mountPoints = dataDevices.map(device => path.join(nonraidBasePath, `disk${device.slot}`)).join(':');
 
       // Extract policies from options or use defaults
-      const createPolicy = options.policies?.create || 'epmfs';
+      const createPolicy = options.policies?.create || 'mspmfs';
       const searchPolicy = options.policies?.search || 'ff';
 
       // Build MergerFS options with custom policies
@@ -8963,7 +8963,7 @@ class PoolsService {
     await this._createDirectoryWithOwnership(mountPoint);
 
     // Mount MergerFS
-    const createPolicy = pool.config?.policies?.create || 'epmfs';
+    const createPolicy = pool.config?.policies?.create || 'mspmfs';
     const searchPolicy = pool.config?.policies?.search || 'ff';
     const mergerfsOptions = `defaults,allow_other,use_ino,cache.files=off,dropcacheonclose=true,category.create=${createPolicy},category.search=${searchPolicy}`;
     const mergerfsCommand = `mergerfs ${mountedDevices.join(':')} ${mountPoint} -o ${mergerfsOptions}`;
@@ -9209,7 +9209,7 @@ class PoolsService {
       await this._createDirectoryWithOwnership(mountPoint);
 
       // Mount MergerFS
-      const createPolicy = pool.config?.policies?.create || 'epmfs';
+      const createPolicy = pool.config?.policies?.create || 'mspmfs';
       const searchPolicy = pool.config?.policies?.search || 'ff';
       const mergerfsOptions = `defaults,allow_other,use_ino,cache.files=off,dropcacheonclose=true,category.create=${createPolicy},category.search=${searchPolicy}`;
       const mergerfsCommand = `mergerfs ${mountedDevices.join(':')} ${mountPoint} -o ${mergerfsOptions}`;
