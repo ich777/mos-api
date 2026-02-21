@@ -303,31 +303,57 @@ class DisksWebSocketManager {
     const room = this.io.adapter.rooms.get('disks');
     if (!room) return;
 
-    for (const socketId of room) {
-      const socket = this.io.sockets.get(socketId);
-      if (!socket) continue;
+    try {
+      // Collect all unique devices that any client wants temperature for
+      const allRequestedDevices = new Set();
+      const clientDeviceMap = new Map(); // socketId -> devices[]
 
-      const subscription = this.clientSubscriptions.get(socketId);
-      if (!subscription || !subscription.includeTemperature) continue;
+      for (const socketId of room) {
+        const subscription = this.clientSubscriptions.get(socketId);
+        if (!subscription || !subscription.includeTemperature) continue;
 
-      try {
         let devices = subscription.devices;
-
-        // If no specific devices, get all tracked devices
         if (devices.length === 0) {
+          // Get all tracked devices (from /proc/diskstats, no disk access)
           const allDisks = this.disksService.getAllDisksThroughput();
           devices = allDisks.map(d => d.device);
         }
 
-        const temperatureData = await this.disksService.getMultipleDisksTemperature(devices);
+        clientDeviceMap.set(socketId, devices);
+        devices.forEach(d => allRequestedDevices.add(d));
+      }
+
+      if (allRequestedDevices.size === 0) return;
+
+      // Query ALL unique temperatures ONCE (parallel via Promise.all internally)
+      // Standby handling preserved: getDiskTemperature() uses smartctl -n standby
+      const allDevicesArray = Array.from(allRequestedDevices);
+      const allTemperatures = await this.disksService.getMultipleDisksTemperature(allDevicesArray);
+
+      // Create lookup map for fast filtering
+      const tempMap = new Map();
+      for (const temp of allTemperatures) {
+        if (temp && temp.device) {
+          tempMap.set(temp.device, temp);
+        }
+      }
+
+      // Send filtered results to each client
+      for (const [socketId, devices] of clientDeviceMap) {
+        const socket = this.io.sockets.get(socketId);
+        if (!socket) continue;
+
+        const clientTemps = devices
+          .map(d => tempMap.get(d) || tempMap.get(d.replace('/dev/', '')))
+          .filter(t => t !== undefined);
 
         socket.emit('disks-temperature-update', {
-          temperatures: temperatureData,
+          temperatures: clientTemps,
           timestamp: Date.now()
         });
-      } catch (error) {
-        console.error(`Error getting temperature for client ${socketId}:`, error.message);
       }
+    } catch (error) {
+      console.error('Error broadcasting temperature updates:', error.message);
     }
   }
 

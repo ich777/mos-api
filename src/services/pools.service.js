@@ -33,6 +33,14 @@ class PoolsService {
       gid: 500
     };
 
+    // Short-lived cache for disk info map (model, serial, name)
+    // These are static properties that don't change between calls
+    // 30s TTL: short enough to detect hot-swapped disks, long enough to avoid
+    // calling getAllDisks() (which runs smartctl per disk) on every listPools()
+    this._diskInfoMapCache = null;
+    this._diskInfoMapCacheTimestamp = 0;
+    this._diskInfoMapCacheTTL = 30000; // 30 seconds
+
     // NonRAID operation monitor state
     this._nonRaidMonitor = {
       active: false,
@@ -4793,17 +4801,21 @@ class PoolsService {
         // Inject real device paths for API display
         await this._injectRealDevicePaths(pool);
 
-        // Enrich device information with disk type details
+        // Enrich device information with disk type details (parallel per pool)
+        // These only read from /sys filesystem, no disk wake-up
+        const enrichPromises = [];
         if (pool.data_devices && pool.data_devices.length > 0) {
-          for (let i = 0; i < pool.data_devices.length; i++) {
-            pool.data_devices[i] = await this._enrichDeviceWithDiskTypeInfo(pool.data_devices[i]);
-          }
+          enrichPromises.push(...pool.data_devices.map(async (dev, i) => {
+            pool.data_devices[i] = await this._enrichDeviceWithDiskTypeInfo(dev);
+          }));
         }
-
         if (pool.parity_devices && pool.parity_devices.length > 0) {
-          for (let i = 0; i < pool.parity_devices.length; i++) {
-            pool.parity_devices[i] = await this._enrichDeviceWithDiskTypeInfo(pool.parity_devices[i]);
-          }
+          enrichPromises.push(...pool.parity_devices.map(async (dev, i) => {
+            pool.parity_devices[i] = await this._enrichDeviceWithDiskTypeInfo(dev);
+          }));
+        }
+        if (enrichPromises.length > 0) {
+          await Promise.all(enrichPromises);
         }
 
         // Update mount status and space info
@@ -4820,14 +4832,15 @@ class PoolsService {
           }
         }
 
-        // Inject storage information directly into device objects
+        // Inject storage info first (needed before power status for context)
         await this._injectStorageInfoIntoDevices(pool, user);
 
-        // Inject power status into individual device objects
-        await this._injectPowerStatusIntoDevices(pool);
-
-        // Inject disk information into individual device objects
-        await this._injectDiskInfoIntoDevices(pool);
+        // Run power status and disk info injection in parallel
+        // Both are independent read-only operations, standby handling preserved
+        await Promise.all([
+          this._injectPowerStatusIntoDevices(pool),
+          this._injectDiskInfoIntoDevices(pool)
+        ]);
 
         // Inject parity operation status (API-only, not persisted)
         await this._injectParityOperationStatus(pool, user);
@@ -4866,17 +4879,21 @@ class PoolsService {
       // Inject real device paths for API display
       await this._injectRealDevicePaths(pool);
 
-      // Enrich device information with disk type details
+      // Enrich device information with disk type details (parallel)
+      // These only read from /sys filesystem, no disk wake-up
+      const enrichPromises = [];
       if (pool.data_devices && pool.data_devices.length > 0) {
-        for (let i = 0; i < pool.data_devices.length; i++) {
-          pool.data_devices[i] = await this._enrichDeviceWithDiskTypeInfo(pool.data_devices[i]);
-        }
+        enrichPromises.push(...pool.data_devices.map(async (dev, i) => {
+          pool.data_devices[i] = await this._enrichDeviceWithDiskTypeInfo(dev);
+        }));
       }
-
       if (pool.parity_devices && pool.parity_devices.length > 0) {
-        for (let i = 0; i < pool.parity_devices.length; i++) {
-          pool.parity_devices[i] = await this._enrichDeviceWithDiskTypeInfo(pool.parity_devices[i]);
-        }
+        enrichPromises.push(...pool.parity_devices.map(async (dev, i) => {
+          pool.parity_devices[i] = await this._enrichDeviceWithDiskTypeInfo(dev);
+        }));
+      }
+      if (enrichPromises.length > 0) {
+        await Promise.all(enrichPromises);
       }
 
       // Update pool status
@@ -4885,14 +4902,15 @@ class PoolsService {
         const spaceInfo = await this.getDeviceSpace(mountPoint, user);
         pool.status = spaceInfo;
 
-        // Inject storage information directly into device objects
+        // Inject storage info first (needed before power status for context)
         await this._injectStorageInfoIntoDevices(pool, user);
 
-        // Inject power status into individual device objects
-        await this._injectPowerStatusIntoDevices(pool);
-
-        // Inject disk information into individual device objects
-        await this._injectDiskInfoIntoDevices(pool);
+        // Run power status and disk info injection in parallel
+        // Both are independent read-only operations, standby handling preserved
+        await Promise.all([
+          this._injectPowerStatusIntoDevices(pool),
+          this._injectDiskInfoIntoDevices(pool)
+        ]);
 
         // Inject parity operation status (API-only, not persisted)
         await this._injectParityOperationStatus(pool, user);
@@ -8247,11 +8265,18 @@ class PoolsService {
    * Inject power status information directly into pool devices
    */
   async _injectPowerStatusIntoDevices(pool) {
-    // Inject power status into data devices
-    for (const device of pool.data_devices || []) {
+    // Collect all devices that need power status checks
+    const allDevices = [
+      ...(pool.data_devices || []),
+      ...(pool.parity_devices || [])
+    ];
+
+    // Query all power statuses in parallel (each smartctl call is independent)
+    // Standby handling is preserved: _getLiveDiskPowerStatus() still returns 'standby' correctly
+    await Promise.all(allDevices.map(async (device) => {
       if (!device.device) {
         device.powerStatus = 'unknown';
-        continue;
+        return;
       }
 
       // Check if this is a mapper device (LUKS encrypted)
@@ -8269,31 +8294,7 @@ class PoolsService {
       } catch (error) {
         device.powerStatus = 'unknown';
       }
-    }
-
-    // Inject power status into parity devices
-    for (const device of pool.parity_devices || []) {
-      if (!device.device) {
-        device.powerStatus = 'unknown';
-        continue;
-      }
-
-      // Check if this is a mapper device (LUKS encrypted)
-      let targetDevice = device.device;
-      if (device.device.startsWith('/dev/mapper/')) {
-        const underlying = await this._getPhysicalDeviceFromMapper(device.device);
-        if (underlying) {
-          targetDevice = underlying;
-        }
-      }
-
-      try {
-        const diskPowerInfo = await this.disksService._getLiveDiskPowerStatus(targetDevice);
-        device.powerStatus = diskPowerInfo.status;
-      } catch (error) {
-        device.powerStatus = 'unknown';
-      }
-    }
+    }));
   }
 
   /**
@@ -8341,19 +8342,28 @@ class PoolsService {
       // Note: disks.service exports an instance
       const disksService = require('./disks.service');
 
-      // Get all disks with their information
-      // skipStandby: true ensures that standby disks are not woken up
-      // They will still be included in the result with basic info (model, serial) but without partitions
-      const allDisks = await disksService.getAllDisks({ skipStandby: true, includePerformance: false });
+      // Use cached disk info map if available (model/serial are static, 30s TTL)
+      // This avoids calling getAllDisks() (which runs smartctl per disk) on every listPools()
+      let diskMap = this._diskInfoMapCache;
+      if (!diskMap || (Date.now() - this._diskInfoMapCacheTimestamp) > this._diskInfoMapCacheTTL) {
+        // Get all disks with their information
+        // skipStandby: true ensures that standby disks are not woken up
+        // They will still be included in the result with basic info (model, serial) but without partitions
+        const allDisks = await disksService.getAllDisks({ skipStandby: true, includePerformance: false });
 
-      // Create a map for quick lookup by device path
-      const diskMap = {};
-      for (const disk of allDisks) {
-        diskMap[disk.device] = {
-          diskName: disk.name,
-          diskModel: disk.model,
-          diskSerial: disk.serial
-        };
+        // Create a map for quick lookup by device path
+        diskMap = {};
+        for (const disk of allDisks) {
+          diskMap[disk.device] = {
+            diskName: disk.name,
+            diskModel: disk.model,
+            diskSerial: disk.serial
+          };
+        }
+
+        // Cache the disk info map
+        this._diskInfoMapCache = diskMap;
+        this._diskInfoMapCacheTimestamp = Date.now();
       }
 
       // Inject disk info into data devices

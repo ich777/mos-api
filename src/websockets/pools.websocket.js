@@ -454,8 +454,9 @@ class PoolWebSocketManager {
       // Get first user for byte format preference
       const firstUser = this.getFirstConnectedUser();
 
-      // Get all pools with user's byte format preference
-      const pools = await this.poolsService.listPools({}, firstUser);
+      // Use cached pools structure (8s TTL) to avoid calling expensive listPools() every 2 seconds
+      // Performance data from diskStatsHistory (/proc/diskstats) is always live
+      const pools = await this.getPoolsDataWithCache(false, {}, firstUser);
 
       // Calculate performance for each pool
       const poolsPerformance = [];

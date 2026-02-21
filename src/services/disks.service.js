@@ -17,7 +17,7 @@ class DisksService {
   constructor() {
     // Cache for power status (prevents multiple smartctl calls within short time)
     this.powerStatusCache = new Map();
-    this.powerStatusCacheTTL = 10000; // 10 seconds cache
+    this.powerStatusCacheTTL = 15000; // 15 seconds cache (slightly longer to reduce smartctl pressure under I/O load)
 
     // Background I/O Stats Sampling
     this.diskStatsHistory = new Map(); // device -> { timestamp, readBytes, writeBytes, readSpeed, writeSpeed }
@@ -1658,22 +1658,29 @@ class DisksService {
     try {
       // Get all block devices
       const blockDevices = await si.blockDevices();
-      const disks = [];
 
-      for (const disk of blockDevices) {
-        // Only physical disks, no partitions, loop devices, md partitions or ZRAM (ZRAM handled separately)
-        if (disk.type !== 'disk' || disk.name.includes('loop') || disk.name.match(/md\d+p\d+/) || disk.name.match(/^zram\d+/)) {
-          continue;
-        }
+      // Filter to physical disks only
+      const physicalDisks = blockDevices.filter(disk =>
+        disk.type === 'disk' &&
+        !disk.name.includes('loop') &&
+        !disk.name.match(/md\d+p\d+/) &&
+        !disk.name.match(/^zram\d+/)
+      );
 
+      // Phase 1: Query ALL power statuses in parallel (each smartctl call is independent)
+      const powerStatuses = await Promise.all(
+        physicalDisks.map(disk => this._getLiveDiskPowerStatus(`/dev/${disk.name}`))
+      );
+
+      // Phase 2: For active disks, query partitions + performance in parallel
+      // Standby disks are skipped (no disk access, no wake-up)
+      const disks = await Promise.all(physicalDisks.map(async (disk, index) => {
         const device = `/dev/${disk.name}`;
+        const powerStatus = powerStatuses[index];
 
-        // Get LIVE Power-Status - no caching
-        const powerStatus = await this._getLiveDiskPowerStatus(device);
-
-        // Skip Disks in Standby if desired
+        // Skip Disks in Standby if desired (standby handling preserved exactly as before)
         if (skipStandby && powerStatus.status === 'standby') {
-          disks.push({
+          return {
             device,
             name: disk.name,
             model: disk.model || 'Unknown',
@@ -1689,11 +1696,10 @@ class DisksService {
             performance: null,
             standbySkipped: true,
             preclearRunning: this.isPreclearRunning(device)
-          });
-          continue;
+          };
         }
 
-        // Get Partitions-Informationen
+        // Get Partitions-Informationen (lsblk + df calls, safe for active disks)
         const partitions = await this._getPartitions(device);
 
         // Get Performance-Daten only if requested
@@ -1702,7 +1708,7 @@ class DisksService {
           performance = await this._getDiskIOStats(device);
         }
 
-        disks.push({
+        return {
           device,
           name: disk.name,
           model: disk.model || 'Unknown',
@@ -1718,8 +1724,8 @@ class DisksService {
           performance,
           standbySkipped: false,
           preclearRunning: this.isPreclearRunning(device)
-        });
-      }
+        };
+      }));
 
       // Add ZRAM ramdisks (not swaps) to the list
       const zramRamdisks = await this.getZramRamdisks(user);

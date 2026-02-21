@@ -29,6 +29,13 @@ class SystemLoadWebSocketManager {
     // Client preferences for pools
     this.clientPoolsPreferences = new Map(); // socketId -> { includePools, includePerformance }
 
+    // Short-lived pools structure cache for performance broadcasts (8s TTL)
+    // Prevents calling the expensive listPools() (which runs smartctl per disk) every 2 seconds
+    // 8s is short enough to reflect pool changes promptly
+    this.poolsStructureCache = null;
+    this.poolsStructureCacheTimestamp = 0;
+    this.poolsStructureCacheTTL = 8000; // 8 seconds
+
     // Start cache cleanup timer (every 10 minutes)
     setInterval(() => this.cleanupExpiredCaches(), 10 * 60 * 1000);
   }
@@ -352,6 +359,8 @@ class SystemLoadWebSocketManager {
     this.staticDataCache.clear();
     this.clientStaticDataSent.clear();
     this.clientPoolsPreferences.clear();
+    this.poolsStructureCache = null;
+    this.poolsStructureCacheTimestamp = 0;
 
     // Debug logging
     //console.log('System load monitoring stopped');
@@ -382,7 +391,10 @@ class SystemLoadWebSocketManager {
       const user = prefs?.user || socket.user;
 
       // Get all pools with user's byte format preference
+      // Also populate the pools structure cache so performance broadcasts reuse it
       const pools = await this.poolsService.listPools({}, user);
+      this.poolsStructureCache = pools;
+      this.poolsStructureCacheTimestamp = Date.now();
 
       // Add performance and temperature data to each disk and pool total
       const poolsWithData = await Promise.all(pools.map(async pool => {
@@ -623,31 +635,34 @@ class SystemLoadWebSocketManager {
    */
   async refreshPoolsTemperatureCache() {
     try {
-      const pools = await this.poolsService.listPools();
+      // Use cached pools structure to avoid expensive listPools() call
+      let pools;
+      if (this.poolsStructureCache && (Date.now() - this.poolsStructureCacheTimestamp) < this.poolsStructureCacheTTL) {
+        pools = this.poolsStructureCache;
+      } else {
+        pools = await this.poolsService.listPools();
+        this.poolsStructureCache = pools;
+        this.poolsStructureCacheTimestamp = Date.now();
+      }
 
-      // Refresh temperature cache for all disks (use base disk name for cache key consistency)
+      // Collect unique disks to query temperature for
       const processedDisks = new Set();
+      const disksToQuery = [];
       for (const pool of pools) {
-        if (pool.data_devices) {
-          for (const disk of pool.data_devices) {
-            if (!disk.device) continue;
-            const baseDisk = this.disksService._getBaseDisk(disk.device).replace('/dev/', '');
-            if (!processedDisks.has(baseDisk)) {
-              processedDisks.add(baseDisk);
-              await this.disksService.getDiskTemperature(baseDisk);
-            }
+        for (const disk of [...(pool.data_devices || []), ...(pool.parity_devices || [])]) {
+          if (!disk.device) continue;
+          const baseDisk = this.disksService._getBaseDisk(disk.device).replace('/dev/', '');
+          if (!processedDisks.has(baseDisk)) {
+            processedDisks.add(baseDisk);
+            disksToQuery.push(baseDisk);
           }
         }
-        if (pool.parity_devices) {
-          for (const disk of pool.parity_devices) {
-            if (!disk.device) continue;
-            const baseDisk = this.disksService._getBaseDisk(disk.device).replace('/dev/', '');
-            if (!processedDisks.has(baseDisk)) {
-              processedDisks.add(baseDisk);
-              await this.disksService.getDiskTemperature(baseDisk);
-            }
-          }
-        }
+      }
+
+      // Query all disk temperatures in parallel (each smartctl call is independent)
+      // Standby handling preserved: getDiskTemperature() returns status:'standby' without waking
+      if (disksToQuery.length > 0) {
+        await Promise.all(disksToQuery.map(disk => this.disksService.getDiskTemperature(disk)));
       }
     } catch (error) {
       console.error('Error refreshing pools temperature cache:', error);
@@ -666,8 +681,17 @@ class SystemLoadWebSocketManager {
       // Get first user from room for byte format (all clients get same pool size format)
       const firstUser = this.getFirstConnectedUser();
 
-      // Get all pools with user's byte format preference
-      const pools = await this.poolsService.listPools({}, firstUser);
+      // Use cached pools structure to avoid calling expensive listPools() every 2 seconds
+      // listPools() runs smartctl per disk - under I/O load this takes seconds
+      // Performance data from diskStatsHistory is always live (read from /proc/diskstats)
+      let pools;
+      if (this.poolsStructureCache && (Date.now() - this.poolsStructureCacheTimestamp) < this.poolsStructureCacheTTL) {
+        pools = this.poolsStructureCache;
+      } else {
+        pools = await this.poolsService.listPools({}, firstUser);
+        this.poolsStructureCache = pools;
+        this.poolsStructureCacheTimestamp = Date.now();
+      }
 
       // Send to each client
       for (const socketId of room) {

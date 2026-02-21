@@ -208,6 +208,59 @@ class LxcService {
   }
 
   /**
+   * Read container config file ONCE and extract all fields in a single pass
+   * Replaces multiple individual sync reads of the same config file
+   * @param {string} containerName - Name of the container
+   * @param {string} lxcPath - LXC directory path
+   * @returns {Promise<Object>} All parsed config fields
+   * @private
+   */
+  async _parseContainerConfig(containerName, lxcPath) {
+    const defaults = {
+      autostart: false,
+      description: null,
+      webui: null,
+      isBtrfs: false
+    };
+
+    try {
+      const configPath = `${lxcPath}/${containerName}/config`;
+      const configContent = await fsPromises.readFile(configPath, 'utf8');
+
+      // Parse autostart
+      const autostartMatch = configContent.match(/^lxc\.start\.auto\s*=\s*(.+)$/m);
+      let autostart = false;
+      if (autostartMatch && autostartMatch[1]) {
+        const value = autostartMatch[1].trim().toLowerCase();
+        autostart = value === '1' || value === 'true' || value === 'yes' || value === 'on';
+      }
+
+      // Parse description
+      const descriptionMatch = configContent.match(/^#container_description=(.*)$/m);
+      const description = descriptionMatch ? descriptionMatch[1].trim() : null;
+
+      // Parse webui
+      const webuiMatch = configContent.match(/^#container_webui=(.*)$/m);
+      let webui = null;
+      if (webuiMatch && webuiMatch[1]) {
+        webui = webuiMatch[1].trim();
+        if (webui.includes('[IP]')) {
+          webui = webui.replace(/\[IP\]/g, '[ADDRESS]');
+        }
+        webui = webui || null;
+      }
+
+      // Parse rootfs for btrfs detection
+      const rootfsMatch = configContent.match(/^lxc\.rootfs\.path\s*=\s*(.+)$/m);
+      const isBtrfs = rootfsMatch ? rootfsMatch[1].trim().startsWith('btrfs:') : false;
+
+      return { autostart, description, webui, isBtrfs };
+    } catch (error) {
+      return defaults;
+    }
+  }
+
+  /**
    * List all LXC containers with their status and IP addresses
    * @returns {Promise<Array>} Array of container objects with name, state, and IP addresses
    */
@@ -236,7 +289,8 @@ class LxcService {
       // Get LXC path once for all containers
       const lxcPath = await this.getLxcPath();
 
-      // Process each container line
+      // Parse all container lines first (pure string parsing, no I/O)
+      const parsedLines = [];
       for (let i = 1; i < lines.length; i++) {
         const line = lines[i];
         if (!line.trim()) continue; // Skip empty lines
@@ -264,39 +318,41 @@ class LxcService {
         const unprivText = line.substring(unprivPos).trim().toLowerCase();
         const unprivileged = unprivText === 'true';
 
-        // Get configuration values from config file
-        const [distribution, architecture, autostart, description, webui, isBtrfs] = await Promise.all([
-          this.getContainerDistribution(name),
-          this.getContainerArchitecture(name),
-          this.getContainerAutostart(name),
-          this.getContainerDescription(name),
-          this.getContainerWebui(name),
-          this.isContainerBtrfs(name)
+        parsedLines.push({ name, state, ipv4, ipv6, unprivileged });
+      }
+
+      // Enrich all containers in parallel (config reads + metadata lookups)
+      // Each container's config is read ONCE via _parseContainerConfig() instead of 4-5 separate sync reads
+      const enrichedContainers = await Promise.all(parsedLines.map(async (parsed) => {
+        // Read config file once (async) and get cached metadata in parallel
+        const [configData, metadata] = await Promise.all([
+          this._parseContainerConfig(parsed.name, lxcPath),
+          this.getContainerMetadata(parsed.name)
         ]);
 
         // Check for active backup/restore operation - return only type or null
-        const activeOp = activeOperations.get(name);
+        const activeOp = activeOperations.get(parsed.name);
         const active_operation = activeOp ? activeOp.type : null;
 
-        containers.push({
-          name,
-          state,
-          autostart,
-          ipv4,
-          ipv6,
-          unprivileged,
-          distribution,
-          architecture,
-          description,
-          webui,
-          backing_storage: isBtrfs ? 'btrfs' : 'directory',
-          custom_icon: this.hasCustomIcon(name),
-          config: `${lxcPath}/${name}/config`,
+        return {
+          name: parsed.name,
+          state: parsed.state,
+          autostart: configData.autostart,
+          ipv4: parsed.ipv4,
+          ipv6: parsed.ipv6,
+          unprivileged: parsed.unprivileged,
+          distribution: metadata.distribution,
+          architecture: metadata.architecture,
+          description: configData.description,
+          webui: configData.webui,
+          backing_storage: configData.isBtrfs ? 'btrfs' : 'directory',
+          custom_icon: this.hasCustomIcon(parsed.name),
+          config: `${lxcPath}/${parsed.name}/config`,
           active_operation
-        });
-      }
+        };
+      }));
 
-      return containers;
+      return enrichedContainers;
     } catch (error) {
       throw new Error(`Failed to list LXC containers: ${error.message}`);
     }
@@ -1463,17 +1519,22 @@ lxc.idmap = g 0 100000 65536
    * @param {string} containerName - Name of the container
    * @returns {Object|null} CPU info with usage1 and cpuCount, or null if unavailable
    */
-  getContainerCpuSnapshot(containerName) {
+  async getContainerCpuSnapshot(containerName) {
     try {
       const basePath = `/sys/fs/cgroup/lxc.payload.${containerName}`;
       const cpuStatPath = `${basePath}/cpu.stat`;
 
-      if (!fs.existsSync(cpuStatPath)) return null;
+      // Use async file access to avoid blocking the event loop
+      try {
+        await fsPromises.access(cpuStatPath);
+      } catch (e) {
+        return null;
+      }
 
       // Get CPU count: try container cpuset, fallback to host
       let cpuCount = os.cpus().length || 1;
       try {
-        const cpuset = fs.readFileSync(`${basePath}/cpuset.cpus.effective`, 'utf8').trim();
+        const cpuset = (await fsPromises.readFile(`${basePath}/cpuset.cpus.effective`, 'utf8')).trim();
         if (cpuset) {
           cpuCount = cpuset.split(',').reduce((sum, part) => {
             const [a, b] = part.split('-').map(Number);
@@ -1482,7 +1543,8 @@ lxc.idmap = g 0 100000 65536
         }
       } catch (e) { /* use host count */ }
 
-      const match = fs.readFileSync(cpuStatPath, 'utf8').match(/usage_usec\s+(\d+)/);
+      const content = await fsPromises.readFile(cpuStatPath, 'utf8');
+      const match = content.match(/usage_usec\s+(\d+)/);
       const usage1 = match ? parseInt(match[1]) : 0;
 
       return { usage1, cpuCount, cpuStatPath };
@@ -1496,10 +1558,11 @@ lxc.idmap = g 0 100000 65536
    * @param {Object} snapshot - Snapshot from getContainerCpuSnapshot
    * @returns {number} CPU usage percentage (0-100)
    */
-  calculateCpuUsage(snapshot) {
+  async calculateCpuUsage(snapshot) {
     if (!snapshot) return 0;
     try {
-      const match = fs.readFileSync(snapshot.cpuStatPath, 'utf8').match(/usage_usec\s+(\d+)/);
+      const content = await fsPromises.readFile(snapshot.cpuStatPath, 'utf8');
+      const match = content.match(/usage_usec\s+(\d+)/);
       const usage2 = match ? parseInt(match[1]) : 0;
       const cpuUsage = (usage2 - snapshot.usage1) / (snapshot.cpuCount * 10000);
       return Math.min(100, Math.max(0, cpuUsage));
@@ -1518,12 +1581,17 @@ lxc.idmap = g 0 100000 65536
       const basePath = `/sys/fs/cgroup/lxc.payload.${containerName}`;
       const cpuStatPath = `${basePath}/cpu.stat`;
 
-      if (!fs.existsSync(cpuStatPath)) return 0;
+      // Use async file access to avoid blocking the event loop
+      try {
+        await fsPromises.access(cpuStatPath);
+      } catch (e) {
+        return 0;
+      }
 
       // Get CPU count: try container cpuset, fallback to host
       let cpuCount = os.cpus().length || 1;
       try {
-        const cpuset = fs.readFileSync(`${basePath}/cpuset.cpus.effective`, 'utf8').trim();
+        const cpuset = (await fsPromises.readFile(`${basePath}/cpuset.cpus.effective`, 'utf8')).trim();
         if (cpuset) {
           // Parse "0-3" or "0,2,4" format
           cpuCount = cpuset.split(',').reduce((sum, part) => {
@@ -1533,15 +1601,16 @@ lxc.idmap = g 0 100000 65536
         }
       } catch (e) { /* use host count */ }
 
-      // Measure CPU usage over 1 second
-      const getUsage = () => {
-        const match = fs.readFileSync(cpuStatPath, 'utf8').match(/usage_usec\s+(\d+)/);
+      // Measure CPU usage over 1 second (async reads)
+      const getUsage = async () => {
+        const content = await fsPromises.readFile(cpuStatPath, 'utf8');
+        const match = content.match(/usage_usec\s+(\d+)/);
         return match ? parseInt(match[1]) : 0;
       };
 
-      const usage1 = getUsage();
+      const usage1 = await getUsage();
       await new Promise(r => setTimeout(r, 1000));
-      const usage2 = getUsage();
+      const usage2 = await getUsage();
 
       // Normalize: delta_usec / (cpuCount * 1_000_000) * 100 = delta_usec / (cpuCount * 10000)
       const cpuUsage = (usage2 - usage1) / (cpuCount * 10000);
@@ -1560,12 +1629,13 @@ lxc.idmap = g 0 100000 65536
     try {
       const memoryStatPath = `/sys/fs/cgroup/lxc.payload.${containerName}/memory.stat`;
 
-      // Check if path exists
-      if (!fs.existsSync(memoryStatPath)) {
+      // Use async file access to avoid blocking the event loop
+      let memoryStats;
+      try {
+        memoryStats = await fsPromises.readFile(memoryStatPath, 'utf8');
+      } catch (e) {
         return { bytes: 0, formatted: '0 Bytes' };
       }
-
-      const memoryStats = fs.readFileSync(memoryStatPath, 'utf8');
 
       // Sum up the relevant memory fields
       const relevantFields = ['anon', 'kernel', 'kernel_stack', 'pagetables', 'sec_pagetables', 'percpu', 'sock', 'vmalloc', 'shmem'];
@@ -1654,11 +1724,12 @@ lxc.idmap = g 0 100000 65536
       // Identify running containers
       const runningContainers = containers.filter(c => c.state === 'running');
 
-      // Take CPU snapshots for all running containers simultaneously (instant)
+      // Take CPU snapshots for all running containers in parallel (async cgroup reads)
+      const cpuSnapshotResults = await Promise.all(
+        runningContainers.map(c => this.getContainerCpuSnapshot(c.name))
+      );
       const cpuSnapshots = new Map();
-      for (const container of runningContainers) {
-        cpuSnapshots.set(container.name, this.getContainerCpuSnapshot(container.name));
-      }
+      runningContainers.forEach((c, i) => cpuSnapshots.set(c.name, cpuSnapshotResults[i]));
 
       // Get memory and IP data for all containers in parallel (doesn't need waiting)
       const [memoryData, ipData] = await Promise.all([
@@ -1679,11 +1750,12 @@ lxc.idmap = g 0 100000 65536
         await new Promise(r => setTimeout(r, 1000));
       }
 
-      // Calculate CPU usage for all running containers
+      // Calculate CPU usage for all running containers in parallel (async cgroup reads)
+      const cpuUsageResults = await Promise.all(
+        runningContainers.map(c => this.calculateCpuUsage(cpuSnapshots.get(c.name)))
+      );
       const cpuMap = new Map();
-      for (const container of runningContainers) {
-        cpuMap.set(container.name, this.calculateCpuUsage(cpuSnapshots.get(container.name)));
-      }
+      runningContainers.forEach((c, i) => cpuMap.set(c.name, cpuUsageResults[i]));
 
       // Build final result
       const containerData = containers.map(container => {
