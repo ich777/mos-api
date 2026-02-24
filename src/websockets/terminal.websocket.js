@@ -276,6 +276,8 @@ class TerminalWebSocketManager {
           return;
         }
 
+        console.log(`Terminal resize request for session ${socket.terminalSessionId}:`, JSON.stringify(data));
+
         const { cols, rows, width, height } = data;
 
         // Support both pixel dimensions and cols/rows

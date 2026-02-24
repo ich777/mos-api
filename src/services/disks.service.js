@@ -1178,6 +1178,143 @@ class DisksService {
   }
 
   /**
+   * Loads pools from config and resolves device paths from UUIDs via symlinks.
+   * Safe: reads only pools.json + /dev/disk/by-uuid/ symlinks, no disk access.
+   * Does NOT instantiate PoolsService (which triggers _initNonRaidMonitor + listPools).
+   * @returns {Promise<Array>} Pools with resolved device paths
+   */
+  async _loadPoolsWithResolvedPaths() {
+    const poolsFile = '/boot/config/pools.json';
+
+    // Read pools.json directly (no PoolsService instantiation needed)
+    let pools = [];
+    try {
+      const data = await fs.readFile(poolsFile, 'utf8');
+      pools = JSON.parse(data);
+    } catch (error) {
+      // File doesn't exist or invalid JSON -> no pools
+      return [];
+    }
+
+    // Resolve ALL device paths to real /dev/xxx paths (no disk access)
+    for (const pool of pools) {
+      // BTRFS multi-device pools are special: all data_devices share the SAME filesystem UUID.
+      // /dev/disk/by-uuid/<uuid> only points to ONE device, so symlink resolution is not enough.
+      // Use 'btrfs filesystem show <uuid>' to get all actual device paths (kernel metadata, no disk I/O).
+      const isBtrfsMulti = pool.type === 'btrfs' && pool.data_devices && pool.data_devices.length > 1 && !pool.config?.encrypted;
+
+      if (isBtrfsMulti) {
+        const btrfsUuid = (pool.data_devices[0] || {}).id;
+        if (btrfsUuid) {
+          const btrfsDevices = await this._getBtrfsDevicePathsByUuid(btrfsUuid);
+          if (btrfsDevices.length > 0) {
+            for (let i = 0; i < Math.min(pool.data_devices.length, btrfsDevices.length); i++) {
+              pool.data_devices[i].device = btrfsDevices[i];
+            }
+          } else {
+            // Fallback: try symlink resolution for each device
+            for (const dev of pool.data_devices) {
+              dev.device = await this._resolvePoolDevicePath(dev);
+            }
+          }
+        }
+      } else {
+        // Non-BTRFS or single-device BTRFS: resolve via UUID symlinks
+        for (const dev of pool.data_devices || []) {
+          dev.device = await this._resolvePoolDevicePath(dev);
+        }
+      }
+
+      // Parity devices are never BTRFS multi-device, always resolve normally
+      for (const dev of pool.parity_devices || []) {
+        dev.device = await this._resolvePoolDevicePath(dev);
+      }
+    }
+
+    return pools;
+  }
+
+  /**
+   * Gets all device paths in a BTRFS filesystem by its UUID using 'btrfs filesystem show'.
+   * Safe: reads kernel metadata only, no disk I/O.
+   * @param {string} uuid - BTRFS filesystem UUID
+   * @returns {Promise<string[]>} Array of real device paths (e.g. ['/dev/nvme0n1p1', '/dev/sda1'])
+   */
+  async _getBtrfsDevicePathsByUuid(uuid) {
+    try {
+      const { stdout } = await execPromise(`btrfs filesystem show ${uuid} 2>/dev/null || echo ""`);
+      const deviceMatches = stdout.match(/devid\s+\d+\s+size\s+[\d.]+[KMGT]iB\s+used\s+[\d.]+[KMGT]iB\s+path\s+(\/dev\/[^\s]+)/g);
+      if (deviceMatches) {
+        return deviceMatches.map(match => {
+          const pathMatch = match.match(/path\s+(\/dev\/[^\s]+)/);
+          return pathMatch ? pathMatch[1] : null;
+        }).filter(Boolean);
+      }
+      return [];
+    } catch (error) {
+      return [];
+    }
+  }
+
+  /**
+   * Resolves a pool device entry to a real /dev/xxx device path.
+   * Handles: UUID-only entries, /dev/disk/by-uuid/ symlink paths, and already-resolved paths.
+   * Safe: only reads symlinks, no disk access.
+   * @param {Object} dev - Pool device entry with optional id and device fields
+   * @returns {Promise<string|null>} Real device path (e.g. /dev/nvme0n1p1) or null
+   */
+  async _resolvePoolDevicePath(dev) {
+    // Strategy 1: Resolve from UUID (most reliable)
+    if (dev.id) {
+      const resolved = await this._resolveUuidToDevicePath(dev.id);
+      if (resolved) return resolved;
+    }
+
+    // Strategy 2: If dev.device is a symlink path, resolve it
+    if (dev.device && dev.device.startsWith('/dev/disk/')) {
+      try {
+        const relativePath = await fs.readlink(dev.device);
+        return path.resolve(path.dirname(dev.device), relativePath);
+      } catch (e) { /* symlink not found */ }
+    }
+
+    // Strategy 3: dev.device is already a real path (e.g. /dev/nvme0n1p1)
+    if (dev.device && dev.device.startsWith('/dev/') && !dev.device.startsWith('/dev/disk/')) {
+      return dev.device;
+    }
+
+    return dev.device || null;
+  }
+
+  /**
+   * Resolves a UUID to a real device path via /dev/disk/by-uuid/ symlinks.
+   * Safe: only reads symlinks, no disk access.
+   * @param {string} uuid - Filesystem or partition UUID
+   * @returns {Promise<string|null>} Real device path (e.g. /dev/nvme0n1p1) or null
+   */
+  async _resolveUuidToDevicePath(uuid) {
+    if (!uuid) return null;
+
+    // Try /dev/disk/by-uuid/ (filesystem UUID)
+    try {
+      const uuidPath = `/dev/disk/by-uuid/${uuid}`;
+      await fs.access(uuidPath);
+      const relativePath = await fs.readlink(uuidPath);
+      return path.resolve(path.dirname(uuidPath), relativePath);
+    } catch (e) { /* not found */ }
+
+    // Try /dev/disk/by-partuuid/ (partition UUID)
+    try {
+      const partuuidPath = `/dev/disk/by-partuuid/${uuid}`;
+      await fs.access(partuuidPath);
+      const relativePath = await fs.readlink(partuuidPath);
+      return path.resolve(path.dirname(partuuidPath), relativePath);
+    } catch (e) { /* not found */ }
+
+    return null;
+  }
+
+  /**
    * Checks if a disk is already in use (mounted or in pool)
    * @param {string} device - Device to check
    * @param {Array} pools - Pre-loaded pools list (optional, will load if not provided)
@@ -1187,11 +1324,9 @@ class DisksService {
     try {
       // Check pool membership using UUID-based approach
       try {
-        // Use provided pools or load them
+        // Use provided pools or load them via safe helper (no disk access)
         if (!pools) {
-          const PoolsServiceClass = require('./pools.service');
-          const poolsService = new PoolsServiceClass();
-          pools = await poolsService.listPools({});
+          pools = await this._loadPoolsWithResolvedPaths();
         }
 
         // Get all UUIDs that belong to this device by reading /dev/disk/by-uuid/
@@ -1877,12 +2012,10 @@ class DisksService {
       const allDisks = await this.getAllDisks(diskOptions, user);
       const unassignedDisks = [];
 
-      // Load pools once - listPools() automatically injects real device paths via symlinks (no disk access)
+      // Load pools with resolved device paths (safe: reads JSON + symlinks only, no disk access)
       let pools = [];
       try {
-        const PoolsServiceClass = require('./pools.service');
-        const poolsService = new PoolsServiceClass();
-        pools = await poolsService.listPools({});
+        pools = await this._loadPoolsWithResolvedPaths();
       } catch (error) {
         console.warn('Failed to load pools:', error.message);
       }
@@ -3231,7 +3364,10 @@ class DisksService {
   }
 
   /**
-   * Mounts a device or partition with integrated mountability checks
+   * Mounts a device or partition with integrated mountability checks.
+   * For whole disks with partitions: mounts all mountable partitions individually.
+   * For whole disks without partitions (directly formatted): mounts the disk itself.
+   * For partitions: mounts the partition directly.
    */
   async mountDevice(device, options = {}) {
     try {
@@ -3252,114 +3388,60 @@ class DisksService {
         throw new Error('Cannot mount system disk');
       }
 
-      // 3. Get device information
-      const deviceInfo = await this._getDeviceUuidAndLabel(devicePath);
-
-      if (!deviceInfo.filesystem) {
-        throw new Error(`Device ${devicePath} has no filesystem. Please format it first.`);
+      // 3. Check if device is used in a pool -> refuse mount
+      const usageInfo = await this._isDiskInUse(devicePath);
+      if (usageInfo.inUse) {
+        // Allow already-mounted devices to return their info (handled below)
+        // But refuse if in a pool
+        if (usageInfo.reason.startsWith('in_pool')) {
+          throw new Error(`Device is used in pool '${usageInfo.poolName}' (${usageInfo.reason}). Unmount/remove from pool first.`);
+        }
       }
 
-      // 4. Check if already mounted
+      // 4. Detect partitions via lsblk to decide mount strategy
+      const partitions = await this._getPartitions(devicePath);
+
+      // Case A: Device has real partitions (children in lsblk)
+      // We identify this by checking if any partition is NOT marked as isWholeDisk
+      const realPartitions = partitions.filter(p => !p.isWholeDisk);
+
+      if (realPartitions.length > 0) {
+        // Whole disk with partition table -> mount each partition individually
+        return await this._mountPartitions(device, realPartitions, options);
+      }
+
+      // Case B: Whole disk directly formatted (no partition table, filesystem on disk itself)
+      // or a single partition device (e.g. /dev/sdb1)
+      const wholeDiskEntry = partitions.find(p => p.isWholeDisk);
+      const deviceInfo = await this._getDeviceUuidAndLabel(devicePath);
+
+      // If no filesystem on the device at all
+      if (!deviceInfo.filesystem && (!wholeDiskEntry || !wholeDiskEntry.filesystem)) {
+        throw new Error(`Device ${devicePath} has no filesystem and no mountable partitions. Please format it first.`);
+      }
+
+      // 5. Check if already mounted
       const mounts = await this._getMountInfo();
       if (mounts.has(devicePath)) {
         const existingMount = mounts.get(devicePath);
-        return {
-          success: true,
-          device: device,
-          mountPoint: existingMount.mountpoint,
-          filesystem: existingMount.fstype,
-          alreadyMounted: true,
-          message: `Device ${device} is already mounted at ${existingMount.mountpoint}`
-        };
+        throw new Error(`Device ${device} is already mounted at ${existingMount.mountpoint}`);
       }
 
-      // 5. Special BTRFS Multi-Device Check (less restrictive)
+      // 6. Special BTRFS Multi-Device Check (less restrictive)
       if (deviceInfo.filesystem === 'btrfs') {
         const btrfsUsage = await this._checkBtrfsUsage(devicePath);
         if (btrfsUsage.inUse) {
-          // BTRFS Multi-Device already mounted - use existing mount point
-          return {
-            success: true,
-            device: device,
-            mountPoint: btrfsUsage.mountpoint,
-            filesystem: 'btrfs',
-            uuid: btrfsUsage.uuid,
-            btrfsMultiDevice: true,
-            primaryDevice: btrfsUsage.primaryDevice,
-            alreadyMounted: true,
-            message: `BTRFS device ${device} is part of multi-device filesystem already mounted at ${btrfsUsage.mountpoint}`
-          };
+          throw new Error(`BTRFS device ${device} is part of multi-device filesystem already mounted at ${btrfsUsage.mountpoint}`);
         }
-
-        // For BTRFS: Try degraded mount if other devices are missing
-        // This is important for RAID1/10 where individual devices are also mountable
       }
 
-      // 6. Check if in use (for Non-BTRFS or non-mounted BTRFS)
-      const usageInfo = await this._isDiskInUse(devicePath);
+      // 7. Check remaining in-use reasons (mounted elsewhere, mapper, etc.)
       if (usageInfo.inUse && usageInfo.reason !== 'btrfs_multi_device') {
         throw new Error(`Device is in use: ${usageInfo.reason}`);
       }
 
-      // === MOUNT LOGIC ===
-
-      // Generate mount point name
-      const mountName = await this._generateMountPointName(devicePath);
-      const baseMountPoint = `/mnt/disks/${mountName}`;
-
-      // Create mount point directory
-      try {
-        await fs.mkdir(baseMountPoint, { recursive: true });
-      } catch (error) {
-        throw new Error(`Failed to create mount point ${baseMountPoint}: ${error.message}`);
-      }
-
-      // Check if mount point is already in use
-      if (await this._isMounted(baseMountPoint)) {
-        throw new Error(`Mount point ${baseMountPoint} is already in use`);
-      }
-
-      // Perform mount
-      const mountOptions = options.mountOptions || 'defaults';
-
-      // For BTRFS: special handling with degraded option for missing devices
-      let mountCommand;
-      if (deviceInfo.filesystem === 'btrfs') {
-        // BTRFS with degraded option - allows mount even with missing RAID devices
-        mountCommand = `mount -o ${mountOptions},degraded ${devicePath} ${baseMountPoint}`;
-      } else {
-        mountCommand = `mount -o ${mountOptions} ${devicePath} ${baseMountPoint}`;
-      }
-
-      await execPromise(mountCommand);
-
-      // Make the mount point a shared mount (for bind mount propagation)
-      try {
-        await execPromise(`mount --make-shared "${baseMountPoint}"`);
-        console.log(`Made mount point shared: ${baseMountPoint}`);
-      } catch (sharedError) {
-        console.warn(`Warning: Could not make mount shared: ${sharedError.message}`);
-        // Don't fail the mount if --make-shared fails
-      }
-
-      // Set permissions
-      try {
-        await execPromise(`chmod 755 ${baseMountPoint}`);
-      } catch (error) {
-        // Warning but no error
-        console.warn(`Could not set permissions on ${baseMountPoint}: ${error.message}`);
-      }
-
-      return {
-        success: true,
-        device: device,
-        mountPoint: baseMountPoint,
-        filesystem: deviceInfo.filesystem,
-        uuid: deviceInfo.uuid,
-        label: deviceInfo.label,
-        alreadyMounted: false,
-        message: `Device ${device} successfully mounted at ${baseMountPoint}`
-      };
+      // === MOUNT SINGLE DEVICE/PARTITION ===
+      return await this._mountSingleDevice(device, devicePath, deviceInfo, options);
 
     } catch (error) {
       throw new Error(`Failed to mount device ${device}: ${error.message}`);
@@ -3367,89 +3449,314 @@ class DisksService {
   }
 
   /**
-   * Unmounts a device with automatic BTRFS Multi-Device Unmount
+   * Mounts a single device or partition to /mnt/disks/
+   * @private
+   */
+  async _mountSingleDevice(device, devicePath, deviceInfo, options = {}) {
+    const mountOptions = options.mountOptions || 'defaults';
+
+    // Generate mount point name
+    const mountName = await this._generateMountPointName(devicePath);
+    const baseMountPoint = `/mnt/disks/${mountName}`;
+
+    // Create mount point directory
+    try {
+      await fs.mkdir(baseMountPoint, { recursive: true });
+    } catch (error) {
+      throw new Error(`Failed to create mount point ${baseMountPoint}: ${error.message}`);
+    }
+
+    // Check if mount point is already in use
+    if (await this._isMounted(baseMountPoint)) {
+      throw new Error(`Mount point ${baseMountPoint} is already in use`);
+    }
+
+    // Build mount command
+    let mountCommand;
+    if (deviceInfo.filesystem === 'btrfs') {
+      mountCommand = `mount -o ${mountOptions},degraded ${devicePath} ${baseMountPoint}`;
+    } else {
+      mountCommand = `mount -o ${mountOptions} ${devicePath} ${baseMountPoint}`;
+    }
+
+    await execPromise(mountCommand);
+
+    // Make the mount point a shared mount (for bind mount propagation)
+    try {
+      await execPromise(`mount --make-shared "${baseMountPoint}"`);
+      console.log(`Made mount point shared: ${baseMountPoint}`);
+    } catch (sharedError) {
+      console.warn(`Warning: Could not make mount shared: ${sharedError.message}`);
+    }
+
+    // Set permissions
+    try {
+      await execPromise(`chmod 755 ${baseMountPoint}`);
+    } catch (error) {
+      console.warn(`Could not set permissions on ${baseMountPoint}: ${error.message}`);
+    }
+
+    return {
+      success: true,
+      device: device,
+      mountPoint: baseMountPoint,
+      filesystem: deviceInfo.filesystem,
+      uuid: deviceInfo.uuid,
+      label: deviceInfo.label,
+      message: `Device ${device} successfully mounted at ${baseMountPoint}`
+    };
+  }
+
+  /**
+   * Mounts all mountable partitions of a whole disk to /mnt/disks/
+   * @private
+   */
+  async _mountPartitions(device, partitions, options = {}) {
+    const mounts = await this._getMountInfo();
+    const results = [];
+    const errors = [];
+    const skippedMounted = [];
+
+    for (const partition of partitions) {
+      const partDevice = partition.device;
+      const partName = partDevice.replace('/dev/', '');
+
+      // 1. Check if already mounted (BEFORE filesystem check - mounted partition clearly has a FS)
+      if (mounts.has(partDevice)) {
+        const existingMount = mounts.get(partDevice);
+        skippedMounted.push(`${partName} at ${existingMount.mountpoint}`);
+        continue;
+      }
+      // Also check via lsblk mountpoint (mounts map may use different device path)
+      if (partition.mountpoint) {
+        skippedMounted.push(`${partName} at ${partition.mountpoint}`);
+        continue;
+      }
+
+      // 2. Skip partitions without a filesystem
+      if (!partition.filesystem) {
+        continue;
+      }
+
+      // 3. Skip system partitions
+      const isSysPart = await this._isSystemPartition(partDevice, mounts);
+      if (isSysPart) {
+        continue;
+      }
+
+      // 4. Get partition info for mount
+      const partInfo = await this._getDeviceUuidAndLabel(partDevice);
+      if (!partInfo.filesystem) {
+        continue;
+      }
+
+      try {
+        const result = await this._mountSingleDevice(partName, partDevice, partInfo, options);
+        results.push(result);
+      } catch (error) {
+        errors.push({
+          device: partName,
+          error: error.message
+        });
+      }
+    }
+
+    // If nothing was newly mounted but some are already mounted -> already mounted error
+    if (results.length === 0 && skippedMounted.length > 0) {
+      throw new Error(`All partition(s) of ${device} are already mounted (${skippedMounted.join(', ')})`);
+    }
+
+    if (results.length === 0 && errors.length > 0) {
+      throw new Error(`Failed to mount any partition of ${device}: ${errors.map(e => `${e.device}: ${e.error}`).join('; ')}`);
+    }
+
+    if (results.length === 0 && errors.length === 0) {
+      throw new Error(`Device ${device} has partitions but none are mountable (no filesystem found).`);
+    }
+
+    return {
+      success: true,
+      device: device,
+      mountedPartitions: results,
+      errors: errors.length > 0 ? errors : undefined,
+      message: `Mounted ${results.length} partition(s) of ${device}${skippedMounted.length > 0 ? ` (${skippedMounted.length} already mounted)` : ''}${errors.length > 0 ? ` (${errors.length} failed)` : ''}`
+    };
+  }
+
+  /**
+   * Unmounts a device with automatic BTRFS Multi-Device Unmount.
+   * For whole disks: also unmounts all mounted partitions of that disk.
    */
   async unmountDevice(device, options = {}) {
     try {
       const devicePath = device.startsWith('/dev/') ? device : `/dev/${device}`;
 
-      // Find mount point of device
+      // Pre-load mounts once for all checks (safe, reads /proc/mounts)
       const mounts = await this._getMountInfo();
-      if (!mounts.has(devicePath)) {
+
+      // Pre-load pools with resolved device paths once (safe, reads JSON + symlinks only)
+      const pools = await this._loadPoolsWithResolvedPaths();
+
+      // 1. Check if device (or any of its partitions) is used in a pool -> refuse unmount
+      const usageInfo = await this._isDiskInUse(devicePath, pools, mounts);
+      if (usageInfo.inUse && usageInfo.reason.startsWith('in_pool')) {
+        throw new Error(`Device is used in pool '${usageInfo.poolName}' (${usageInfo.reason}). Cannot unmount a pool disk directly. Use pool management instead.`);
+      }
+
+      // Case A: Device itself is directly mounted
+      if (mounts.has(devicePath)) {
+        const mountInfo = mounts.get(devicePath);
+
+        // Safety: Refuse unmount if mount is not under /mnt/disks/ (pool/system mount)
+        if (!mountInfo.mountpoint.startsWith('/mnt/disks/')) {
+          throw new Error(`Device ${device} is mounted at ${mountInfo.mountpoint} which is not a manual disk mount. Use pool management or system tools instead.`);
+        }
+
+        return await this._unmountSingleDevice(device, devicePath, mounts, options);
+      }
+
+      // Case B: Whole disk passed but not directly mounted -> check for mounted partitions
+      const mountedPartitions = [];
+      for (const [mountedDevice, mountInfo] of mounts) {
+        if (this._isPartitionOfDevice(mountedDevice, devicePath)) {
+          mountedPartitions.push({ device: mountedDevice, mountInfo });
+        }
+      }
+
+      if (mountedPartitions.length > 0) {
+        const results = [];
+        const errors = [];
+        const skipped = [];
+
+        for (const { device: partDevice, mountInfo } of mountedPartitions) {
+          const partName = partDevice.replace('/dev/', '');
+
+          // Per-partition pool check (reuses pre-loaded + resolved pools)
+          const partUsage = await this._isDiskInUse(partDevice, pools, mounts);
+          if (partUsage.inUse && partUsage.reason.startsWith('in_pool')) {
+            skipped.push({
+              device: partName,
+              reason: `Part of pool '${partUsage.poolName}'`,
+              mountPoint: mountInfo.mountpoint
+            });
+            continue;
+          }
+
+          // Only unmount mounts under /mnt/disks/ (not pool bind mounts or system mounts)
+          if (!mountInfo.mountpoint.startsWith('/mnt/disks/')) {
+            skipped.push({
+              device: partName,
+              reason: `Mounted at ${mountInfo.mountpoint} (not a manual disk mount)`,
+              mountPoint: mountInfo.mountpoint
+            });
+            continue;
+          }
+
+          try {
+            const result = await this._unmountSingleDevice(partName, partDevice, mounts, options);
+            results.push(result);
+          } catch (error) {
+            errors.push({
+              device: partName,
+              error: error.message
+            });
+          }
+        }
+
+        // All partitions are pool/system mounts -> refuse
+        if (results.length === 0 && errors.length === 0) {
+          if (skipped.length > 0) {
+            throw new Error(`Cannot unmount ${device}: all mounted partitions are pool or system mounts (${skipped.map(s => `${s.device}: ${s.reason}`).join('; ')})`);
+          }
+          throw new Error(`Device ${device} has no unmountable partitions`);
+        }
+
+        if (results.length === 0 && errors.length > 0) {
+          throw new Error(`Failed to unmount partitions of ${device}: ${errors.map(e => `${e.device}: ${e.error}`).join('; ')}`);
+        }
+
         return {
           success: true,
           device: device,
-          alreadyUnmounted: true,
-          message: `Device ${device} is not mounted`
+          unmountedPartitions: results,
+          errors: errors.length > 0 ? errors : undefined,
+          skipped: skipped.length > 0 ? skipped : undefined,
+          message: `Unmounted ${results.length} partition(s) of ${device}${errors.length > 0 ? ` (${errors.length} failed)` : ''}${skipped.length > 0 ? ` (${skipped.length} skipped - pool/system)` : ''}`
         };
       }
 
-      const mountInfo = mounts.get(devicePath);
-      const mountPoint = mountInfo.mountpoint;
+      // Nothing mounted at all -> error
+      throw new Error(`Device ${device} is not mounted`);
 
-      let unmountedDevices = [devicePath];
+    } catch (error) {
+      throw new Error(`Failed to unmount device ${device}: ${error.message}`);
+    }
+  }
 
-      // Special BTRFS Multi-Device Handling
-      if (mountInfo.fstype === 'btrfs') {
-        const deviceInfo = await this._getDeviceUuidAndLabel(devicePath);
-        if (deviceInfo.uuid) {
-          // Find all devices with the same BTRFS UUID
-          const allBtrfsDevices = await this._getAllBtrfsDevicesWithSameUuid(deviceInfo.uuid);
+  /**
+   * Unmounts a single device/partition, handles BTRFS multi-device and cleanup.
+   * @private
+   */
+  async _unmountSingleDevice(device, devicePath, mounts, options = {}) {
+    const mountInfo = mounts.get(devicePath);
+    if (!mountInfo) {
+      throw new Error(`Device ${device} is not mounted`);
+    }
 
-          if (allBtrfsDevices.length > 1) {
-            console.log(`Unmounting BTRFS multi-device filesystem with ${allBtrfsDevices.length} devices`);
+    const mountPoint = mountInfo.mountpoint;
+    let unmountedDevices = [devicePath];
 
-            // Unmount all other BTRFS devices automatically
-            for (const btrfsDevice of allBtrfsDevices) {
-              if (btrfsDevice !== devicePath && mounts.has(btrfsDevice)) {
-                try {
-                  const btrfsMountInfo = mounts.get(btrfsDevice);
-                  if (btrfsMountInfo.mountpoint === mountPoint) {
-                    // Same mount point - will be automatically unmounted
-                    unmountedDevices.push(btrfsDevice);
-                  }
-                } catch (error) {
-                  console.warn(`Could not check BTRFS device ${btrfsDevice}: ${error.message}`);
+    // Special BTRFS Multi-Device Handling
+    if (mountInfo.fstype === 'btrfs') {
+      const deviceInfo = await this._getDeviceUuidAndLabel(devicePath);
+      if (deviceInfo.uuid) {
+        const allBtrfsDevices = await this._getAllBtrfsDevicesWithSameUuid(deviceInfo.uuid);
+
+        if (allBtrfsDevices.length > 1) {
+          console.log(`Unmounting BTRFS multi-device filesystem with ${allBtrfsDevices.length} devices`);
+
+          for (const btrfsDevice of allBtrfsDevices) {
+            if (btrfsDevice !== devicePath && mounts.has(btrfsDevice)) {
+              try {
+                const btrfsMountInfo = mounts.get(btrfsDevice);
+                if (btrfsMountInfo.mountpoint === mountPoint) {
+                  unmountedDevices.push(btrfsDevice);
                 }
+              } catch (error) {
+                console.warn(`Could not check BTRFS device ${btrfsDevice}: ${error.message}`);
               }
             }
           }
         }
       }
-
-      // Perform unmount
-      const forceFlag = options.force ? ' -f' : '';
-      const lazyFlag = options.lazy ? ' -l' : '';
-
-      await execPromise(`umount${forceFlag}${lazyFlag} ${mountPoint}`);
-
-      // Remove empty directory if it is under /mnt/disks and is empty
-      if (mountPoint.startsWith('/mnt/disks/')) {
-        try {
-          // Check if directory is empty
-          const dirContents = await fs.readdir(mountPoint);
-          if (dirContents.length === 0) {
-            await fs.rmdir(mountPoint);
-          }
-        } catch (error) {
-          // Ignore error removing directory
-          console.warn(`Could not remove mount directory ${mountPoint}: ${error.message}`);
-        }
-      }
-
-      return {
-        success: true,
-        device: device,
-        mountPoint: mountPoint,
-        filesystem: mountInfo.fstype,
-        unmountedDevices: unmountedDevices,
-        alreadyUnmounted: false,
-        message: `Device ${device} successfully unmounted from ${mountPoint}${unmountedDevices.length > 1 ? ` (including ${unmountedDevices.length - 1} additional BTRFS devices)` : ''}`
-      };
-
-    } catch (error) {
-      throw new Error(`Failed to unmount device ${device}: ${error.message}`);
     }
+
+    // Perform unmount
+    const forceFlag = options.force ? ' -f' : '';
+    const lazyFlag = options.lazy ? ' -l' : '';
+
+    await execPromise(`umount${forceFlag}${lazyFlag} ${mountPoint}`);
+
+    // Remove empty directory if it is under /mnt/disks
+    if (mountPoint.startsWith('/mnt/disks/')) {
+      try {
+        const dirContents = await fs.readdir(mountPoint);
+        if (dirContents.length === 0) {
+          await fs.rmdir(mountPoint);
+        }
+      } catch (error) {
+        console.warn(`Could not remove mount directory ${mountPoint}: ${error.message}`);
+      }
+    }
+
+    return {
+      success: true,
+      device: device,
+      mountPoint: mountPoint,
+      filesystem: mountInfo.fstype,
+      unmountedDevices: unmountedDevices,
+      message: `Device ${device} successfully unmounted from ${mountPoint}${unmountedDevices.length > 1 ? ` (including ${unmountedDevices.length - 1} additional BTRFS devices)` : ''}`
+    };
   }
 
   /**

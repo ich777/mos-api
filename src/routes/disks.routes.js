@@ -1821,6 +1821,13 @@ router.post('/:device/mount', checkRole(['admin']), async (req, res) => {
     const result = await disksService.mountDevice(req.params.device, options);
     res.json(result);
   } catch (error) {
+    // Return 400 for known validation errors (pool, no filesystem, system disk, already mounted, etc.)
+    const msg = error.message || '';
+    if (msg.includes('used in pool') || msg.includes('no filesystem') || msg.includes('no mountable partitions') ||
+        msg.includes('Cannot mount system') || msg.includes('does not exist') || msg.includes('is in use') ||
+        msg.includes('already mounted')) {
+      return res.status(400).json({ error: error.message });
+    }
     res.status(500).json({ error: error.message });
   }
 });
@@ -1911,6 +1918,13 @@ router.post('/:device/unmount', checkRole(['admin']), async (req, res) => {
     const result = await disksService.unmountDevice(req.params.device, options);
     res.json(result);
   } catch (error) {
+    // Return 400 for known validation errors (pool, not mounted, system mount)
+    const msg = error.message || '';
+    if (msg.includes('used in pool') || msg.includes('is not mounted') ||
+        msg.includes('not a manual disk mount') || msg.includes('pool or system mounts') ||
+        msg.includes('no unmountable partitions')) {
+      return res.status(400).json({ error: error.message });
+    }
     res.status(500).json({ error: error.message });
   }
 });

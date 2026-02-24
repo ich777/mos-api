@@ -54,6 +54,12 @@ class TerminalService {
         config.cols = size.cols;
         config.rows = size.rows;
       }
+
+      // Ensure cols/rows are valid integers
+      config.cols = parseInt(config.cols, 10) || defaultOptions.cols;
+      config.rows = parseInt(config.rows, 10) || defaultOptions.rows;
+
+      console.log(`Creating terminal session ${sessionId} with size: ${config.cols}x${config.rows}`);
       let ptyProcess;
 
       // Flexible terminal - can execute anything
@@ -174,9 +180,16 @@ class TerminalService {
       cols = size.cols;
       rows = size.rows;
     } else {
-      cols = dimensions.cols;
-      rows = dimensions.rows;
+      cols = parseInt(dimensions.cols, 10);
+      rows = parseInt(dimensions.rows, 10);
     }
+
+    // Validate
+    if (!cols || !rows || cols < 1 || rows < 1) {
+      throw new Error(`Invalid resize dimensions: cols=${cols}, rows=${rows}`);
+    }
+
+    console.log(`Resizing terminal session ${sessionId}: ${session.options.cols}x${session.options.rows} -> ${cols}x${rows}`);
 
     session.ptyProcess.resize(cols, rows);
     session.options.cols = cols;
