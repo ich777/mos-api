@@ -672,11 +672,12 @@ class LxcService {
         return;
       }
 
-      // Add idmap lines for unprivileged container
+      // Add idmap and cgroup lines for unprivileged container
       const idmapLines = `
-# Unprivileged container id mapping
+# Unprivileged container id mapping and cgroup mount
 lxc.idmap = u 0 100000 65536
 lxc.idmap = g 0 100000 65536
+lxc.mount.auto = cgroup:mixed:force
 `;
 
       // Append to config
