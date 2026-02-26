@@ -480,6 +480,18 @@ const { checkRole } = require('../middleware/auth.middleware');
      *                   type: integer
      *                   description: HTTP port for the WebUI (default 80)
      *                   example: 80
+     *         update_check:
+     *           type: object
+     *           description: MOS system update check configuration
+     *           properties:
+     *             enabled:
+     *               type: boolean
+     *               description: Enable system update checking
+     *               example: false
+     *             update_check_schedule:
+     *               type: string
+     *               description: Cron schedule for update checks
+     *               example: "0 1 * * *"
  *     Keymap:
  *       type: object
  *       properties:
@@ -1632,6 +1644,18 @@ router.get('/settings/system', async (req, res) => {
  *                         type: integer
  *                         description: HTTP port for the WebUI (default 80). Changing this triggers nginx restart.
  *                         example: 80
+ *               update_check:
+ *                 type: object
+ *                 description: MOS system update check configuration. Changing enabled or schedule triggers mos-cron_update.
+ *                 properties:
+ *                   enabled:
+ *                     type: boolean
+ *                     description: Enable system update checking
+ *                     example: true
+ *                   update_check_schedule:
+ *                     type: string
+ *                     description: Cron schedule for update checks
+ *                     example: "0 1 * * *"
  *     responses:
  *       200:
  *         description: System settings updated successfully

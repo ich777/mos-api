@@ -2555,6 +2555,10 @@ class MosService {
         ports: {
           http: 80
         }
+      },
+      update_check: {
+        enabled: false,
+        update_check_schedule: '0 1 * * *'
       }
     };
   }
@@ -2614,7 +2618,7 @@ class MosService {
         if (error.code !== 'ENOENT') throw error;
       }
       // Only allowed fields are updated
-      const allowed = ['hostname', 'global_spindown', 'keymap', 'timezone', 'display', 'persist_history', 'ntp', 'notification_sound', 'cpufreq', 'swapfile', 'binfmt', 'webui'];
+      const allowed = ['hostname', 'global_spindown', 'keymap', 'timezone', 'display', 'persist_history', 'ntp', 'notification_sound', 'cpufreq', 'swapfile', 'binfmt', 'webui', 'update_check'];
       let ntpChanged = false;
       let swapfileUpdate = null;
       let keymapChanged = false;
@@ -2627,6 +2631,7 @@ class MosService {
       let cpufreqChanged = false;
       let binfmtChanged = false;
       let webuiHttpPortChanged = false;
+      let updateCheckChanged = false;
 
       for (const key of Object.keys(updates)) {
         if (!allowed.includes(key)) {
@@ -2807,6 +2812,33 @@ class MosService {
               };
             }
           }
+        } else if (key === 'update_check') {
+          // Intelligent update_check handling - only changed fields are overwritten
+          if (!current.update_check) current.update_check = {};
+
+          // If only a boolean is sent, it is for enabled
+          if (typeof updates.update_check === 'boolean') {
+            if (current.update_check.enabled !== updates.update_check) {
+              updateCheckChanged = true;
+            }
+            current.update_check.enabled = updates.update_check;
+          } else if (typeof updates.update_check === 'object') {
+            // Individual update_check properties are adopted
+            if (updates.update_check.enabled !== undefined &&
+                current.update_check.enabled !== updates.update_check.enabled) {
+              updateCheckChanged = true;
+            }
+            if (updates.update_check.update_check_schedule !== undefined &&
+                current.update_check.update_check_schedule !== updates.update_check.update_check_schedule) {
+              updateCheckChanged = true;
+            }
+
+            // Main properties are adopted
+            if (updates.update_check.enabled !== undefined)
+              current.update_check.enabled = updates.update_check.enabled;
+            if (updates.update_check.update_check_schedule !== undefined)
+              current.update_check.update_check_schedule = updates.update_check.update_check_schedule;
+          }
         } else if (key === 'hostname') {
           if (updates.hostname !== current.hostname) {
             hostnameChanged = true;
@@ -2920,6 +2952,15 @@ class MosService {
           await execPromise('/etc/init.d/nginx restart');
         } catch (error) {
           console.warn('Warning: Could not restart nginx:', error.message);
+        }
+      }
+
+      // mos-cron_update execute if update_check changed
+      if (updateCheckChanged) {
+        try {
+          await execPromise('/usr/local/bin/mos-cron_update');
+        } catch (error) {
+          console.warn('Warning: mos-cron_update could not be executed:', error.message);
         }
       }
 
@@ -4646,7 +4687,7 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
             // Get the symlink target
             try {
               symlinkTarget = await fs.readlink(fullPath);
-              
+
               // Resolve relative symlinks to absolute paths
               if (!path.isAbsolute(symlinkTarget)) {
                 symlinkTarget = path.resolve(path.dirname(fullPath), symlinkTarget);
