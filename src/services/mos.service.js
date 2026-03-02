@@ -1839,13 +1839,18 @@ class MosService {
     return {
       interfaces: [
         {
+          mac: null,
           name: 'eth0',
+          label: null,
           type: 'ethernet',
           mode: null,
           interfaces: [],
           ipv4: [{ dhcp: true }],
           ipv6: [],
-          vlans: []
+          vlans: [],
+          mtu: null,
+          hw_addr: null,
+          status: 'enabled'
         }
       ],
       services: {
@@ -1926,6 +1931,40 @@ class MosService {
   }
 
   /**
+   * Migrates legacy network interface settings to new format:
+   * - Adds 'mac', 'mtu', 'hw_addr', 'status' fields if missing
+   * - Adds 'mtu' to VLAN entries if missing
+   * @param {Object} settings - Network settings object
+   * @returns {Object} Migrated settings
+   * @private
+   */
+  _migrateNetworkInterfaces(settings) {
+    if (!settings || !Array.isArray(settings.interfaces)) {
+      return settings;
+    }
+
+    for (const iface of settings.interfaces) {
+      if (iface.mac === undefined) iface.mac = null;
+      if (iface.label === undefined) iface.label = null;
+      if (iface.mtu === undefined) iface.mtu = null;
+      if (iface.hw_addr === undefined) iface.hw_addr = null;
+      if (iface.status === undefined) iface.status = 'enabled';
+      if (!Array.isArray(iface.vlans)) iface.vlans = [];
+      if (iface.type === 'bridge') {
+        if (iface.vlan_filtering === undefined) iface.vlan_filtering = false;
+        if (!Array.isArray(iface.bridge_vids)) iface.bridge_vids = [];
+      }
+
+      // Migrate VLAN entries
+      for (const vlan of iface.vlans) {
+        if (vlan.mtu === undefined) vlan.mtu = null;
+      }
+    }
+
+    return settings;
+  }
+
+  /**
    * Reads the Network-Settings from the network.json file.
    * Ensures all expected fields are present by merging with defaults.
    * @returns {Promise<Object>} The Network-Settings as an object
@@ -1951,7 +1990,10 @@ class MosService {
       const settings = this._deepMerge(defaults, loadedSettings);
 
       // Apply migration for legacy settings (nmbd -> samba_discovery, add workgroup)
-      return this._migrateNetworkServices(settings);
+      const migratedServices = this._migrateNetworkServices(settings);
+
+      // Apply migration for legacy interface settings (add mac, mtu, hw_addr, status)
+      return this._migrateNetworkInterfaces(migratedServices);
     } catch (error) {
       if (error.code === 'ENOENT') {
         throw new Error('network.json not found');
@@ -1961,13 +2003,50 @@ class MosService {
   }
 
   /**
-   * Reads only the network interfaces from the network.json file.
-   * @returns {Promise<Array>} Array of network interfaces
+   * Reads the network interfaces from the network.json file and enriches them
+   * with live hardware info (link_state, speed, driver) from the system.
+   * Hardware info is NOT written to the config file.
+   * @returns {Promise<Array>} Array of network interfaces with live hardware info
    */
   async getNetworkInterfaces() {
     try {
       const settings = await this.getNetworkSettings();
-      return settings.interfaces || [];
+      const interfaces = settings.interfaces || [];
+
+      // Detect current hardware state
+      let detected = [];
+      try {
+        detected = await this.detectPhysicalInterfaces();
+      } catch { /* ignore detection errors — return config without hw info */ }
+
+      // Build MAC → hardware info lookup
+      const hwByMac = new Map();
+      const hwByName = new Map();
+      for (const hw of detected) {
+        hwByMac.set(hw.mac.toLowerCase(), hw);
+        hwByName.set(hw.name, hw);
+      }
+
+      // Merge live info into each interface (without modifying config)
+      return interfaces.map(iface => {
+        const result = { ...iface };
+
+        // Match by MAC first, then by name
+        const hw = (iface.mac && hwByMac.get(iface.mac.toLowerCase())) ||
+                   hwByName.get(iface.name);
+
+        if (hw) {
+          result.link_state = hw.link_state;
+          result.speed = hw.speed;
+          result.adapter = hw.adapter;
+        } else {
+          result.link_state = null;
+          result.speed = null;
+          result.adapter = null;
+        }
+
+        return result;
+      });
     } catch (error) {
       throw new Error(`Error reading network interfaces: ${error.message}`);
     }
@@ -1987,7 +2066,212 @@ class MosService {
   }
 
   /**
+   * Detects all physical network interfaces present in the system.
+   * Reads from /sys/class/net and filters out virtual interfaces.
+   * @returns {Promise<Array>} Array of detected interfaces: [{ name, mac, link_state, speed }]
+   */
+  async detectPhysicalInterfaces() {
+    try {
+      const VIRTUAL_PREFIXES = ['lo', 'veth', 'docker', 'br-', 'virbr', 'tailscale', 'wt', 'bond', 'dummy', 'tunl', 'sit', 'vxlan', 'flannel', 'cni', 'lxc'];
+      const netDir = '/sys/class/net';
+      const entries = await fs.readdir(netDir);
+      const interfaces = [];
+
+      for (const name of entries) {
+        // Skip virtual interface prefixes
+        if (VIRTUAL_PREFIXES.some(prefix => name.startsWith(prefix))) {
+          continue;
+        }
+
+        try {
+          // Check if this is a physical device (has /device symlink)
+          const devicePath = path.join(netDir, name, 'device');
+          try {
+            await fs.access(devicePath);
+          } catch {
+            // No /device symlink means it's virtual (e.g., bridges, bonds)
+            // Exception: some embedded NICs may not have /device, check type
+            const typePath = path.join(netDir, name, 'type');
+            try {
+              const typeVal = (await fs.readFile(typePath, 'utf8')).trim();
+              // type 1 = Ethernet, anything else is likely virtual
+              if (typeVal !== '1') continue;
+            } catch {
+              continue;
+            }
+          }
+
+          const macPath = path.join(netDir, name, 'address');
+          const mac = (await fs.readFile(macPath, 'utf8')).trim();
+
+          // Skip interfaces with no MAC or all-zero MAC
+          if (!mac || mac === '00:00:00:00:00:00') continue;
+
+          let linkState = 'unknown';
+          try {
+            linkState = (await fs.readFile(path.join(netDir, name, 'operstate'), 'utf8')).trim();
+          } catch { /* ignore */ }
+
+          let speed = null;
+          try {
+            const speedVal = (await fs.readFile(path.join(netDir, name, 'speed'), 'utf8')).trim();
+            const parsed = parseInt(speedVal, 10);
+            if (!isNaN(parsed) && parsed > 0) speed = parsed;
+          } catch { /* ignore - speed not available when link is down */ }
+
+          let adapter = null;
+          try {
+            // Read PCI slot from device symlink (e.g. ../../../0000:01:00.0)
+            const deviceRealPath = await fs.readlink(path.join(netDir, name, 'device'));
+            const pciSlot = path.basename(deviceRealPath);
+            // Use lspci to get human-readable device name
+            const { stdout } = await execPromise(`lspci -s ${pciSlot}`);
+            if (stdout && stdout.trim()) {
+              // Output: "01:00.0 Ethernet controller: Intel Corporation I225-V (rev 03)"
+              const match = stdout.trim().match(/:\s+(.+)$/);
+              if (match) {
+                adapter = match[1].replace(/\s*\(rev [0-9a-f]+\)\s*$/i, '').trim();
+              }
+            }
+          } catch { /* ignore - lspci or device info not available */ }
+
+          interfaces.push({ name, mac, link_state: linkState, speed, adapter });
+        } catch {
+          // Skip interfaces that can't be read
+          continue;
+        }
+      }
+
+      // Sort by name for stable ordering
+      interfaces.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+
+      return interfaces;
+    } catch (error) {
+      throw new Error(`Error detecting physical interfaces: ${error.message}`);
+    }
+  }
+
+  /**
+   * Reconciles detected physical interfaces with the stored network.json config.
+   * - MAC found in config → update kernel name if changed
+   * - MAC not in config → add new interface with DHCP (status: active)
+   * - MAC in config but not in system → set status: orphan
+   * - Legacy entries (no mac field) → assign MAC based on current kernel name
+   * @returns {Promise<Object>} { interfaces, changes } where changes describes what was modified
+   */
+  async reconcileInterfaces() {
+    try {
+      const detected = await this.detectPhysicalInterfaces();
+
+      // Read current settings
+      const defaults = this._getDefaultNetworkSettings();
+      let current = { ...defaults };
+
+      try {
+        const data = await fs.readFile('/boot/config/network.json', 'utf8');
+        const loadedSettings = JSON.parse(data);
+        current = this._deepMerge(defaults, loadedSettings);
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
+
+      // Apply migration first
+      current = this._migrateNetworkInterfaces(current);
+
+      const changes = [];
+      const detectedMacs = new Map(detected.map(d => [d.mac.toLowerCase(), d]));
+      const configuredMacs = new Set();
+
+      // Pass 1: Handle legacy entries (no mac field) — assign MAC by kernel name
+      for (const iface of current.interfaces) {
+        if (!iface.mac && iface.type !== 'bridge' && iface.type !== 'bond') {
+          const detectedByName = detected.find(d => d.name === iface.name);
+          if (detectedByName) {
+            iface.mac = detectedByName.mac.toLowerCase();
+            changes.push({ type: 'mac_assigned', name: iface.name, mac: iface.mac });
+          }
+        }
+      }
+
+      // Pass 2: Match configured interfaces against detected
+      for (const iface of current.interfaces) {
+        // Skip virtual types (bridges, bonds) — they don't have physical MACs
+        if (iface.type === 'bridge' || iface.type === 'bond') {
+          continue;
+        }
+
+        if (iface.mac) {
+          const macLower = iface.mac.toLowerCase();
+          configuredMacs.add(macLower);
+          const detectedIface = detectedMacs.get(macLower);
+
+          if (detectedIface) {
+            // MAC found in system — update kernel name if changed
+            if (iface.name !== detectedIface.name) {
+              changes.push({ type: 'name_updated', mac: macLower, old_name: iface.name, new_name: detectedIface.name });
+              iface.name = detectedIface.name;
+            }
+            // Ensure status is active
+            if (iface.status === 'orphan') {
+              iface.status = 'enabled';
+              changes.push({ type: 'reactivated', name: iface.name, mac: macLower });
+            }
+          } else {
+            // MAC not in system — mark as orphan
+            if (iface.status !== 'orphan' && iface.status !== 'disabled') {
+              iface.status = 'orphan';
+              changes.push({ type: 'orphaned', name: iface.name, mac: macLower });
+            }
+          }
+        }
+      }
+
+      // Pass 3: Add newly detected interfaces that are not in config
+      for (const [mac, detectedIface] of detectedMacs) {
+        if (!configuredMacs.has(mac)) {
+          const newIface = {
+            mac: mac,
+            name: detectedIface.name,
+            label: null,
+            type: 'ethernet',
+            mode: null,
+            interfaces: [],
+            ipv4: [{ dhcp: true }],
+            ipv6: [],
+            vlans: [],
+            mtu: null,
+            hw_addr: null,
+            status: 'enabled'
+          };
+          current.interfaces.push(newIface);
+          changes.push({ type: 'new_interface', name: detectedIface.name, mac: mac });
+        }
+      }
+
+      // Write back if changes were made
+      if (changes.length > 0) {
+        await fs.writeFile('/boot/config/network.json', JSON.stringify(current, null, 2), 'utf8');
+      }
+
+      return { interfaces: current.interfaces, changes };
+    } catch (error) {
+      throw new Error(`Error reconciling interfaces: ${error.message}`);
+    }
+  }
+
+  /**
+   * Validates a MAC address format (xx:xx:xx:xx:xx:xx)
+   * @param {string} mac - MAC address to validate
+   * @returns {boolean} True if valid
+   * @private
+   */
+  _isValidMac(mac) {
+    return /^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$/.test(mac);
+  }
+
+  /**
    * Updates only the network interfaces in the network.json file.
+   * Supports multi-interface setups with bridge, bond, VLANs, MTU, and MAC spoofing.
    * @param {Array} interfaces - Array of network interfaces
    * @returns {Promise<Array>} The updated interfaces array
    */
@@ -1995,6 +2279,13 @@ class MosService {
     try {
       if (!Array.isArray(interfaces)) {
         throw new Error('interfaces must be an array');
+      }
+
+      // Validate: each interface must have a name
+      for (const iface of interfaces) {
+        if (!iface.name || typeof iface.name !== 'string') {
+          throw new Error('Each interface must have a name');
+        }
       }
 
       // Read current settings
@@ -2014,66 +2305,216 @@ class MosService {
       let primaryInterfaceChanged = false;
       let oldPrimaryInterface = this._determinePrimaryInterface(current.interfaces || []);
 
+      // Merge posted interfaces with current config (by MAC, fallback by name)
+      // Interfaces in the POST body update their matching entry
+      // Interfaces NOT in the POST body are preserved as-is
+      const merged = [];
+      const matchedIndices = new Set();
+
+      for (const posted of interfaces) {
+        const postedMac = posted.mac ? posted.mac.toLowerCase() : null;
+        let matchIdx = -1;
+
+        // Match by MAC first
+        if (postedMac) {
+          matchIdx = current.interfaces.findIndex(c => c.mac && c.mac.toLowerCase() === postedMac);
+        }
+
+        // Fallback: match by name
+        if (matchIdx === -1) {
+          matchIdx = current.interfaces.findIndex((c, idx) => !matchedIndices.has(idx) && c.name === posted.name);
+        }
+
+        if (matchIdx !== -1) {
+          matchedIndices.add(matchIdx);
+        }
+        merged.push(posted);
+      }
+
+      // Preserve interfaces that were not in the POST body
+      for (let i = 0; i < current.interfaces.length; i++) {
+        if (!matchedIndices.has(i)) {
+          merged.push(current.interfaces[i]);
+        }
+      }
+
       // Check if anything has changed
-      if (JSON.stringify(current.interfaces) !== JSON.stringify(interfaces)) {
+      if (JSON.stringify(current.interfaces) !== JSON.stringify(merged)) {
         interfacesChanged = true;
       }
 
-      // Analyze current and new interface states
-      const currentEth0 = current.interfaces.find(iface => iface.name === 'eth0');
-      const currentBr0 = current.interfaces.find(iface => iface.name === 'br0');
-      const newEth0 = interfaces.find(iface => iface.name === 'eth0');
-      const newBr0 = interfaces.find(iface => iface.name === 'br0');
+      current.interfaces = merged;
 
-      // Interfaces directly assign (only new format supported)
-      current.interfaces = interfaces;
+      // Collect all bridged interfaces and existing bridges
+      const bridgedIfaces = interfaces.filter(i => i.type === 'bridged');
+      const bridgeIfaces = interfaces.filter(i => i.type === 'bridge');
+      const bridgeNames = new Set(bridgeIfaces.map(i => i.name));
 
-      // Bridge logic: eth0 set to bridged and br0 is missing
-      if (newEth0 && newEth0.type === 'bridged' && !newBr0) {
-        // Automatically create br0 Bridge-Interface
-        const br0Interface = {
-          name: 'br0',
-          type: 'bridge',
-          mode: null,
-          interfaces: ['eth0'],
-          ipv4: newEth0.ipv4 && newEth0.ipv4.length > 0 ? newEth0.ipv4 : [{ dhcp: false }],
-          ipv6: []
-        };
+      // Auto-create bridge for each bridged interface that has no matching bridge
+      for (const bridgedIface of bridgedIfaces) {
+        // Find a bridge that references this interface
+        const hasMatchingBridge = bridgeIfaces.some(br =>
+          Array.isArray(br.interfaces) && br.interfaces.includes(bridgedIface.name)
+        );
 
-        // Reset eth0 (bridged interfaces have no IP configuration)
-        newEth0.ipv4 = [];
-        newEth0.ipv6 = [];
+        if (!hasMatchingBridge) {
+          // Determine bridge name: br0, br1, ...
+          let brIdx = 0;
+          while (bridgeNames.has(`br${brIdx}`)) brIdx++;
+          const brName = `br${brIdx}`;
+          bridgeNames.add(brName);
 
-        current.interfaces.push(br0Interface);
-        interfacesChanged = true;
-      }
+          const brInterface = {
+            mac: null,
+            name: brName,
+            label: null,
+            type: 'bridge',
+            mode: null,
+            interfaces: [bridgedIface.name],
+            ipv4: bridgedIface.ipv4 && bridgedIface.ipv4.length > 0 ? bridgedIface.ipv4 : [{ dhcp: true }],
+            ipv6: [],
+            vlans: [],
+            mtu: bridgedIface.mtu || null,
+            hw_addr: null,
+            status: 'enabled',
+            vlan_filtering: false,
+            bridge_vids: []
+          };
 
-      // Bridge logic: eth0 from bridged to ethernet and br0 exists
-      if (newEth0 && newEth0.type === 'ethernet' && currentBr0) {
-        // IP configuration from br0 to eth0 (new format)
-        if (currentBr0.ipv4 && Array.isArray(currentBr0.ipv4) && currentBr0.ipv4.length > 0) {
-          newEth0.ipv4 = currentBr0.ipv4;
+          // Reset bridged interface (no IP configuration)
+          bridgedIface.ipv4 = [];
+          bridgedIface.ipv6 = [];
+
+          current.interfaces.push(brInterface);
+          interfacesChanged = true;
         }
-
-        // br0 aus interfaces entfernen
-        current.interfaces = current.interfaces.filter(iface => iface.name !== 'br0');
-        interfacesChanged = true;
       }
 
-      // Validation for static IP configuration
+      // Bridge removal: if an interface was bridged and is now ethernet, remove orphan bridges
       for (const iface of current.interfaces) {
-        // Skip validation for bridged interfaces (they don't need IP configuration)
-        if (iface.type === 'bridged') {
-          continue;
+        if (iface.type === 'ethernet') {
+          // Find bridges that only reference this interface
+          const orphanBridges = current.interfaces.filter(br =>
+            br.type === 'bridge' &&
+            Array.isArray(br.interfaces) &&
+            br.interfaces.length === 1 &&
+            br.interfaces[0] === iface.name
+          );
+
+          for (const orphanBr of orphanBridges) {
+            // If this interface has no IP config, transfer from bridge
+            if ((!iface.ipv4 || iface.ipv4.length === 0) && orphanBr.ipv4 && orphanBr.ipv4.length > 0) {
+              iface.ipv4 = orphanBr.ipv4;
+            }
+            // Remove orphan bridge
+            current.interfaces = current.interfaces.filter(i => i.name !== orphanBr.name);
+            interfacesChanged = true;
+          }
+        }
+      }
+
+      // Validation
+      const validTypes = ['ethernet', 'bridged', 'bridge', 'bond'];
+      const validStatuses = ['enabled', 'disabled', 'orphan'];
+      const validBondModes = ['balance-rr', 'active-backup', 'balance-xor', 'broadcast', '802.3ad', 'balance-tlb', 'balance-alb'];
+
+      for (const iface of current.interfaces) {
+        // Type validation
+        if (iface.type && !validTypes.includes(iface.type)) {
+          throw new Error(`Interface ${iface.name}: invalid type '${iface.type}'. Valid: ${validTypes.join(', ')}`);
         }
 
-        if (iface.ipv4 && Array.isArray(iface.ipv4)) {
-          for (const ipv4Config of iface.ipv4) {
-            if (ipv4Config.dhcp === false && !ipv4Config.address) {
-              throw new Error(`Interface ${iface.name}: address is required when dhcp=false`);
+        // Status validation
+        if (iface.status && !validStatuses.includes(iface.status)) {
+          throw new Error(`Interface ${iface.name}: invalid status '${iface.status}'. Valid: ${validStatuses.join(', ')}`);
+        }
+
+        // MAC validation
+        if (iface.mac && !this._isValidMac(iface.mac)) {
+          throw new Error(`Interface ${iface.name}: invalid mac format '${iface.mac}'`);
+        }
+
+        // hw_addr validation (MAC spoofing)
+        if (iface.hw_addr && !this._isValidMac(iface.hw_addr)) {
+          throw new Error(`Interface ${iface.name}: invalid hw_addr format '${iface.hw_addr}'`);
+        }
+
+        // MTU validation
+        if (iface.mtu !== null && iface.mtu !== undefined) {
+          const mtu = parseInt(iface.mtu, 10);
+          if (isNaN(mtu) || mtu < 68 || mtu > 9000) {
+            throw new Error(`Interface ${iface.name}: mtu must be between 68 and 9000`);
+          }
+          iface.mtu = mtu;
+        }
+
+        // Bond validation
+        if (iface.type === 'bond') {
+          if (iface.mode && !validBondModes.includes(iface.mode)) {
+            throw new Error(`Interface ${iface.name}: invalid bond mode '${iface.mode}'. Valid: ${validBondModes.join(', ')}`);
+          }
+          if (!Array.isArray(iface.interfaces) || iface.interfaces.length < 1) {
+            throw new Error(`Interface ${iface.name}: bond requires at least one slave interface`);
+          }
+        }
+
+        // Bridge validation
+        if (iface.type === 'bridge') {
+          if (!Array.isArray(iface.interfaces) || iface.interfaces.length < 1) {
+            throw new Error(`Interface ${iface.name}: bridge requires at least one member interface`);
+          }
+          if (iface.vlan_filtering === undefined) iface.vlan_filtering = false;
+          if (!Array.isArray(iface.bridge_vids)) iface.bridge_vids = [];
+
+          // Validate bridge_vids entries
+          for (let v = 0; v < iface.bridge_vids.length; v++) {
+            const vid = parseInt(iface.bridge_vids[v], 10);
+            if (isNaN(vid) || vid < 1 || vid > 4094) {
+              throw new Error(`Interface ${iface.name}: bridge_vids must contain VLAN IDs between 1 and 4094`);
+            }
+            iface.bridge_vids[v] = vid;
+          }
+        } else {
+          delete iface.vlan_filtering;
+          delete iface.bridge_vids;
+        }
+
+        // Static IP validation (skip bridged — they don't need IP config)
+        if (iface.type !== 'bridged') {
+          if (iface.ipv4 && Array.isArray(iface.ipv4)) {
+            for (const ipv4Config of iface.ipv4) {
+              if (ipv4Config.dhcp === false && !ipv4Config.address) {
+                throw new Error(`Interface ${iface.name}: address is required when dhcp=false`);
+              }
             }
           }
         }
+
+        // VLAN MTU validation
+        if (Array.isArray(iface.vlans)) {
+          for (const vlan of iface.vlans) {
+            if (vlan.mtu !== null && vlan.mtu !== undefined) {
+              const vlanMtu = parseInt(vlan.mtu, 10);
+              if (isNaN(vlanMtu) || vlanMtu < 68 || vlanMtu > 9000) {
+                throw new Error(`Interface ${iface.name} VLAN ${vlan.vlan_id}: mtu must be between 68 and 9000`);
+              }
+              vlan.mtu = vlanMtu;
+            }
+          }
+        }
+
+        // Strip read-only hardware fields (never persist to config)
+        delete iface.link_state;
+        delete iface.speed;
+        delete iface.adapter;
+
+        // Ensure new fields have defaults
+        if (iface.mac === undefined) iface.mac = null;
+        if (iface.label === undefined) iface.label = null;
+        if (iface.mtu === undefined) iface.mtu = null;
+        if (iface.hw_addr === undefined) iface.hw_addr = null;
+        if (iface.status === undefined) iface.status = 'enabled';
+        if (!Array.isArray(iface.vlans)) iface.vlans = [];
       }
 
       // Check if primary interface has changed
@@ -2153,11 +2594,21 @@ class MosService {
         throw new Error(`VLAN ${vlanId} already exists on interface '${interfaceName}'`);
       }
 
+      // Validate and parse MTU
+      let vlanMtu = null;
+      if (vlanConfig.mtu !== null && vlanConfig.mtu !== undefined) {
+        vlanMtu = parseInt(vlanConfig.mtu, 10);
+        if (isNaN(vlanMtu) || vlanMtu < 68 || vlanMtu > 9000) {
+          throw new Error(`VLAN ${vlanId}: mtu must be between 68 and 9000`);
+        }
+      }
+
       // Create VLAN config with defaults
       const newVlan = {
         vlan_id: vlanId,
         ipv4: Array.isArray(vlanConfig.ipv4) ? vlanConfig.ipv4 : [{ dhcp: true }],
-        ipv6: Array.isArray(vlanConfig.ipv6) ? vlanConfig.ipv6 : []
+        ipv6: Array.isArray(vlanConfig.ipv6) ? vlanConfig.ipv6 : [],
+        mtu: vlanMtu
       };
 
       // Validate IPv4 configuration
@@ -3227,28 +3678,36 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
 
 
   /**
-   * Determines the primary network interface based on the current configuration
+   * Determines the primary network interface based on the current configuration.
+   * Priority: first active bridge > first active bond > first active ethernet with IP > first active interface
    * @param {Array} interfaces - Interface array from network.json
-   * @returns {string} The primary interface (br0 or eth0)
+   * @returns {string} The primary interface name
    */
   _determinePrimaryInterface(interfaces) {
-    if (!Array.isArray(interfaces)) {
+    if (!Array.isArray(interfaces) || interfaces.length === 0) {
       return 'eth0';
     }
 
-    // Check if br0 exists and is active
-    const br0 = interfaces.find(iface => iface.name === 'br0');
-    if (br0 && br0.type === 'bridge') {
-      return 'br0';
-    }
+    // Only consider active interfaces
+    const active = interfaces.filter(i => i.status !== 'orphan' && i.status !== 'disabled');
 
-    // Check if eth0 is set to bridged
-    const eth0 = interfaces.find(iface => iface.name === 'eth0');
-    if (eth0 && eth0.type === 'bridged') {
-      return 'br0';
-    }
+    // 1. First active bridge with IP config
+    const bridge = active.find(i => i.type === 'bridge' && Array.isArray(i.ipv4) && i.ipv4.length > 0);
+    if (bridge) return bridge.name;
 
-    // Default is eth0
+    // 2. First active bond with IP config
+    const bond = active.find(i => i.type === 'bond' && Array.isArray(i.ipv4) && i.ipv4.length > 0);
+    if (bond) return bond.name;
+
+    // 3. First active ethernet with IP config
+    const ethernet = active.find(i => i.type === 'ethernet' && Array.isArray(i.ipv4) && i.ipv4.length > 0);
+    if (ethernet) return ethernet.name;
+
+    // 4. First active interface of any type (excluding bridged)
+    const any = active.find(i => i.type !== 'bridged');
+    if (any) return any.name;
+
+    // Fallback
     return 'eth0';
   }
 

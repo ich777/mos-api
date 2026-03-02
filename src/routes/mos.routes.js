@@ -241,23 +241,34 @@ const { checkRole } = require('../middleware/auth.middleware');
  *           items:
  *             type: object
  *             properties:
+ *               mac:
+ *                 type: string
+ *                 nullable: true
+ *                 description: Physical MAC address for interface identification (null for virtual/legacy)
+ *                 example: "aa:bb:cc:dd:ee:ff"
  *               name:
  *                 type: string
- *                 description: Interface name
+ *                 description: Kernel interface name
  *                 example: "eth0"
+ *               label:
+ *                 type: string
+ *                 nullable: true
+ *                 description: User-defined display name for the interface
+ *                 example: "LAN"
  *               type:
  *                 type: string
- *                 enum: [ethernet, bridged, bridge]
+ *                 enum: [ethernet, bridged, bridge, bond]
  *                 description: Interface type
  *                 example: "ethernet"
  *               mode:
  *                 type: string
  *                 nullable: true
- *                 description: Interface mode
+ *                 description: Bond mode (only for type bond)
+ *                 enum: [balance-rr, active-backup, balance-xor, broadcast, 802.3ad, balance-tlb, balance-alb]
  *                 example: null
  *               interfaces:
  *                 type: array
- *                 description: Bridge member interfaces (for bridge type)
+ *                 description: Member interfaces (for bridge or bond type)
  *                 items:
  *                   type: string
  *                 example: ["eth0"]
@@ -322,6 +333,36 @@ const { checkRole } = require('../middleware/auth.middleware');
  *                       description: IPv6 configuration for this VLAN
  *                       items:
  *                         type: object
+ *                     mtu:
+ *                       type: integer
+ *                       nullable: true
+ *                       description: MTU for this VLAN (null inherits from parent interface)
+ *                       example: null
+ *                 example: []
+ *               mtu:
+ *                 type: integer
+ *                 nullable: true
+ *                 description: MTU for this interface (null = system default 1500)
+ *                 example: null
+ *               hw_addr:
+ *                 type: string
+ *                 nullable: true
+ *                 description: MAC spoofing address (null = use real hardware MAC)
+ *                 example: null
+ *               status:
+ *                 type: string
+ *                 enum: [enabled, orphan, disabled]
+ *                 description: "Interface status: enabled = configured and running, orphan = hardware not found (set by reconcile), disabled = manually disabled by user (skipped at boot, not overwritten by reconcile)"
+ *                 example: "enabled"
+ *               vlan_filtering:
+ *                 type: boolean
+ *                 description: "Enable VLAN filtering on bridge (bridge only). Turns the bridge into a VLAN-aware switch, required for LXC VLAN passthrough."
+ *                 example: false
+ *               bridge_vids:
+ *                 type: array
+ *                 items:
+ *                   type: integer
+ *                 description: "Allowed VLAN IDs on bridge (bridge only, requires vlan_filtering=true). Empty array = all VLANs (2-4094)."
  *                 example: []
  *         services:
  *           type: object
@@ -901,6 +942,121 @@ router.post('/settings/vm', async (req, res) => {
 
 /**
  * @swagger
+ * /mos/system/network/interfaces:
+ *   get:
+ *     summary: Detect physical network interfaces
+ *     description: Scans the system for all physical network interfaces and returns their MAC addresses, link state, and speed. This is a read-only system endpoint (admin only)
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Physical interfaces detected successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: object
+ *                 properties:
+ *                   name:
+ *                     type: string
+ *                     description: Kernel interface name
+ *                     example: "eth0"
+ *                   mac:
+ *                     type: string
+ *                     description: Hardware MAC address
+ *                     example: "aa:bb:cc:dd:ee:ff"
+ *                   link_state:
+ *                     type: string
+ *                     description: Link state (up, down, unknown)
+ *                     example: "up"
+ *                   speed:
+ *                     type: integer
+ *                     nullable: true
+ *                     description: Link speed in Mbps (null if link is down)
+ *                     example: 1000
+ *                   adapter:
+ *                     type: string
+ *                     nullable: true
+ *                     description: PCI device name (e.g. Intel Corporation I225-V)
+ *                     example: "Ethernet controller: Intel Corporation I225-V"
+ *       401:
+ *         description: Not authenticated
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+
+// GET: Detect physical network interfaces (system status, read-only)
+router.get('/system/network/interfaces', async (req, res) => {
+  try {
+    const interfaces = await mosService.detectPhysicalInterfaces();
+    res.json(interfaces);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /mos/settings/network/interfaces/reconcile:
+ *   post:
+ *     summary: Reconcile network interfaces
+ *     description: Matches detected physical interfaces against stored config by MAC address. Updates kernel names, marks orphaned interfaces, and adds new interfaces with DHCP (admin only)
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Reconciliation completed
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 interfaces:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                 changes:
+ *                   type: array
+ *                   description: List of changes made during reconciliation
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       type:
+ *                         type: string
+ *                         enum: [mac_assigned, name_updated, reactivated, orphaned, new_interface]
+ *                       name:
+ *                         type: string
+ *                       mac:
+ *                         type: string
+ *       401:
+ *         description: Not authenticated
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+
+// POST: Reconcile network interfaces
+router.post('/settings/network/interfaces/reconcile', async (req, res) => {
+  try {
+    const result = await mosService.reconcileInterfaces();
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
  * /mos/settings/network/interfaces:
  *   get:
  *     summary: Get network interfaces
@@ -918,12 +1074,21 @@ router.post('/settings/vm', async (req, res) => {
  *               items:
  *                 type: object
  *             example:
- *               - name: "eth0"
+ *               - mac: "aa:bb:cc:dd:ee:ff"
+ *                 name: "eth0"
+ *                 label: null
  *                 type: "ethernet"
  *                 mode: null
  *                 interfaces: []
  *                 ipv4: [{"dhcp": true}]
  *                 ipv6: []
+ *                 vlans: []
+ *                 mtu: null
+ *                 hw_addr: null
+ *                 status: "enabled"
+ *                 link_state: "up"
+ *                 speed: 1000
+ *                 adapter: "Ethernet controller: Intel Corporation I225-V"
  *       401:
  *         description: Not authenticated
  *         content:
@@ -944,7 +1109,7 @@ router.post('/settings/vm', async (req, res) => {
  *               $ref: '#/components/schemas/Error'
  *   post:
  *     summary: Update network interfaces
- *     description: Update network interfaces configuration (admin only)
+ *     description: Update network interfaces configuration (admin only). Supports ethernet, bridge, bond types with MAC identification, MTU, and MAC spoofing.
  *     tags: [MOS]
  *     security:
  *       - bearerAuth: []
@@ -960,36 +1125,200 @@ router.post('/settings/vm', async (req, res) => {
  *             ethernet_dhcp:
  *               summary: Ethernet with DHCP
  *               value:
- *                 - name: "eth0"
+ *                 - mac: "aa:bb:cc:dd:ee:ff"
+ *                   name: "eth0"
+ *                   label: null
  *                   type: "ethernet"
  *                   mode: null
  *                   interfaces: []
  *                   ipv4: [{"dhcp": true}]
  *                   ipv6: []
+ *                   vlans: []
+ *                   mtu: null
+ *                   hw_addr: null
+ *                   status: "enabled"
  *             ethernet_static:
  *               summary: Ethernet with static IP
  *               value:
- *                 - name: "eth0"
+ *                 - mac: "aa:bb:cc:dd:ee:ff"
+ *                   name: "eth0"
+ *                   label: "WAN"
  *                   type: "ethernet"
  *                   mode: null
  *                   interfaces: []
  *                   ipv4: [{"dhcp": false, "address": "10.0.0.1/24", "gateway": "10.0.0.5", "dns": ["10.0.0.5"]}]
  *                   ipv6: []
+ *                   vlans: []
+ *                   mtu: 9000
+ *                   hw_addr: null
+ *                   status: "enabled"
  *             bridge_setup:
  *               summary: Bridge configuration
  *               value:
- *                 - name: "eth0"
+ *                 - mac: "aa:bb:cc:dd:ee:ff"
+ *                   name: "eth0"
+ *                   label: null
  *                   type: "bridged"
  *                   mode: null
  *                   interfaces: []
  *                   ipv4: []
  *                   ipv6: []
- *                 - name: "br0"
+ *                   vlans: []
+ *                   mtu: null
+ *                   hw_addr: null
+ *                   status: "enabled"
+ *                 - mac: null
+ *                   name: "br0"
+ *                   label: "LAN Bridge"
  *                   type: "bridge"
  *                   mode: null
  *                   interfaces: ["eth0"]
  *                   ipv4: [{"dhcp": false, "address": "10.0.0.1/24", "gateway": "10.0.0.5", "dns": ["10.0.0.5"]}]
  *                   ipv6: []
+ *                   vlans: []
+ *                   mtu: null
+ *                   hw_addr: null
+ *                   status: "enabled"
+ *                   vlan_filtering: false
+ *                   bridge_vids: []
+ *             bridge_vlan_aware:
+ *               summary: VLAN-aware bridge - all VLANs
+ *               value:
+ *                 - mac: "aa:bb:cc:dd:ee:ff"
+ *                   name: "eth0"
+ *                   label: "Trunk"
+ *                   type: "bridged"
+ *                   mode: null
+ *                   interfaces: []
+ *                   ipv4: []
+ *                   ipv6: []
+ *                   vlans: []
+ *                   mtu: null
+ *                   hw_addr: null
+ *                   status: "enabled"
+ *                 - mac: null
+ *                   name: "br0"
+ *                   label: "LXC Bridge"
+ *                   type: "bridge"
+ *                   mode: null
+ *                   interfaces: ["eth0"]
+ *                   ipv4: [{"dhcp": false, "address": "10.0.0.1/24", "gateway": "10.0.0.5", "dns": ["10.0.0.5"]}]
+ *                   ipv6: []
+ *                   vlans: []
+ *                   mtu: null
+ *                   hw_addr: null
+ *                   status: "enabled"
+ *                   vlan_filtering: true
+ *                   bridge_vids: []
+ *             bridge_vlan_selective:
+ *               summary: VLAN-aware bridge - only VID 2 and 10
+ *               value:
+ *                 - mac: "aa:bb:cc:dd:ee:ff"
+ *                   name: "eth0"
+ *                   label: "Trunk"
+ *                   type: "bridged"
+ *                   mode: null
+ *                   interfaces: []
+ *                   ipv4: []
+ *                   ipv6: []
+ *                   vlans: []
+ *                   mtu: null
+ *                   hw_addr: null
+ *                   status: "enabled"
+ *                 - mac: null
+ *                   name: "br0"
+ *                   label: "LXC Bridge"
+ *                   type: "bridge"
+ *                   mode: null
+ *                   interfaces: ["eth0"]
+ *                   ipv4: [{"dhcp": false, "address": "10.0.0.1/24", "gateway": "10.0.0.5", "dns": ["10.0.0.5"]}]
+ *                   ipv6: []
+ *                   vlans: []
+ *                   mtu: null
+ *                   hw_addr: null
+ *                   status: "enabled"
+ *                   vlan_filtering: true
+ *                   bridge_vids: [2, 10]
+ *             bond_setup:
+ *               summary: Bond configuration
+ *               value:
+ *                 - mac: null
+ *                   name: "bond0"
+ *                   label: "LACP Bond"
+ *                   type: "bond"
+ *                   mode: "802.3ad"
+ *                   interfaces: ["eth0", "eth1"]
+ *                   ipv4: [{"dhcp": false, "address": "10.0.0.1/24", "gateway": "10.0.0.5", "dns": ["10.0.0.5"]}]
+ *                   ipv6: []
+ *                   vlans: []
+ *                   mtu: null
+ *                   hw_addr: null
+ *                   status: "enabled"
+ *             vlan_setup:
+ *               summary: Ethernet with VLANs
+ *               value:
+ *                 - mac: "aa:bb:cc:dd:ee:ff"
+ *                   name: "eth0"
+ *                   label: "Trunk"
+ *                   type: "ethernet"
+ *                   mode: null
+ *                   interfaces: []
+ *                   ipv4: [{"dhcp": true}]
+ *                   ipv6: []
+ *                   vlans:
+ *                     - vlan_id: 100
+ *                       ipv4: [{"dhcp": false, "address": "192.168.100.1/24", "gateway": "192.168.100.254", "dns": ["8.8.8.8"]}]
+ *                       ipv6: []
+ *                       mtu: 1400
+ *                     - vlan_id: 200
+ *                       ipv4: [{"dhcp": true}]
+ *                       ipv6: []
+ *                       mtu: null
+ *                   mtu: 9000
+ *                   hw_addr: null
+ *                   status: "enabled"
+ *             mac_spoofing:
+ *               summary: MAC spoofing
+ *               value:
+ *                 - mac: "aa:bb:cc:dd:ee:ff"
+ *                   name: "eth0"
+ *                   label: null
+ *                   type: "ethernet"
+ *                   mode: null
+ *                   interfaces: []
+ *                   ipv4: [{"dhcp": true}]
+ *                   ipv6: []
+ *                   vlans: []
+ *                   mtu: null
+ *                   hw_addr: "00:11:22:33:44:55"
+ *                   status: "enabled"
+ *             disabled_interface:
+ *               summary: Disable an interface
+ *               value:
+ *                 - mac: "aa:bb:cc:dd:ee:ff"
+ *                   name: "eth0"
+ *                   label: "LAN"
+ *                   type: "ethernet"
+ *                   mode: null
+ *                   interfaces: []
+ *                   ipv4: [{"dhcp": true}]
+ *                   ipv6: []
+ *                   vlans: []
+ *                   mtu: null
+ *                   hw_addr: null
+ *                   status: "enabled"
+ *                 - mac: "11:22:33:44:55:66"
+ *                   name: "eth1"
+ *                   label: "Unused"
+ *                   type: "ethernet"
+ *                   mode: null
+ *                   interfaces: []
+ *                   ipv4: [{"dhcp": true}]
+ *                   ipv6: []
+ *                   vlans: []
+ *                   mtu: null
+ *                   hw_addr: null
+ *                   status: "disabled"
  *     responses:
  *       200:
  *         description: Network interfaces updated successfully
@@ -1112,11 +1441,17 @@ router.post('/settings/network/interfaces', async (req, res) => {
  *                     prefix:
  *                       type: integer
  *                       example: 64
+ *               mtu:
+ *                 type: integer
+ *                 nullable: true
+ *                 description: MTU for this VLAN (null inherits from parent interface, 68-9000)
+ *                 example: null
  *           example:
  *             vlan_id: 100
  *             ipv4:
  *               - dhcp: true
  *             ipv6: []
+ *             mtu: null
  *     responses:
  *       200:
  *         description: VLAN added successfully
@@ -1131,6 +1466,9 @@ router.post('/settings/network/interfaces', async (req, res) => {
  *                   type: array
  *                 ipv6:
  *                   type: array
+ *                 mtu:
+ *                   type: integer
+ *                   nullable: true
  *       400:
  *         description: Invalid request
  *         content:
