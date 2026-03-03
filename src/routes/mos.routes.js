@@ -257,7 +257,7 @@ const { checkRole } = require('../middleware/auth.middleware');
  *                 example: "LAN"
  *               type:
  *                 type: string
- *                 enum: [ethernet, bridged, bridge, bond]
+ *                 enum: [ethernet, bridged, bridge, bond, bonded]
  *                 description: Interface type
  *                 example: "ethernet"
  *               mode:
@@ -1070,25 +1070,38 @@ router.post('/settings/network/interfaces/reconcile', async (req, res) => {
  *         content:
  *           application/json:
  *             schema:
- *               type: array
- *               items:
- *                 type: object
+ *               type: object
+ *               properties:
+ *                 interfaces:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                 pending_changes:
+ *                   type: boolean
+ *                   description: True if network changes are pending confirmation
+ *                 remaining_seconds:
+ *                   type: integer
+ *                   nullable: true
+ *                   description: Seconds remaining to confirm changes (null if no pending changes)
  *             example:
- *               - mac: "aa:bb:cc:dd:ee:ff"
- *                 name: "eth0"
- *                 label: null
- *                 type: "ethernet"
- *                 mode: null
- *                 interfaces: []
- *                 ipv4: [{"dhcp": true}]
- *                 ipv6: []
- *                 vlans: []
- *                 mtu: null
- *                 hw_addr: null
- *                 status: "enabled"
- *                 link_state: "up"
- *                 speed: 1000
- *                 adapter: "Ethernet controller: Intel Corporation I225-V"
+ *               interfaces:
+ *                 - mac: "aa:bb:cc:dd:ee:ff"
+ *                   name: "eth0"
+ *                   label: null
+ *                   type: "ethernet"
+ *                   mode: null
+ *                   interfaces: []
+ *                   ipv4: [{"dhcp": true}]
+ *                   ipv6: []
+ *                   vlans: []
+ *                   mtu: null
+ *                   hw_addr: null
+ *                   status: "enabled"
+ *                   link_state: "up"
+ *                   speed: 1000
+ *                   adapter: "Ethernet controller: Intel Corporation I225-V"
+ *               pending_changes: false
+ *               remaining_seconds: null
  *       401:
  *         description: Not authenticated
  *         content:
@@ -1240,8 +1253,32 @@ router.post('/settings/network/interfaces/reconcile', async (req, res) => {
  *                   vlan_filtering: true
  *                   bridge_vids: [2, 10]
  *             bond_setup:
- *               summary: Bond configuration
+ *               summary: Bond configuration (LACP)
  *               value:
+ *                 - mac: "aa:bb:cc:dd:ee:ff"
+ *                   name: "eth0"
+ *                   label: null
+ *                   type: "bonded"
+ *                   mode: null
+ *                   interfaces: []
+ *                   ipv4: []
+ *                   ipv6: []
+ *                   vlans: []
+ *                   mtu: null
+ *                   hw_addr: null
+ *                   status: "enabled"
+ *                 - mac: "11:22:33:44:55:66"
+ *                   name: "eth1"
+ *                   label: null
+ *                   type: "bonded"
+ *                   mode: null
+ *                   interfaces: []
+ *                   ipv4: []
+ *                   ipv6: []
+ *                   vlans: []
+ *                   mtu: null
+ *                   hw_addr: null
+ *                   status: "enabled"
  *                 - mac: null
  *                   name: "bond0"
  *                   label: "LACP Bond"
@@ -1378,6 +1415,128 @@ router.post('/settings/network/interfaces', async (req, res) => {
     res.json(updated);
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /mos/settings/network/apply:
+ *   post:
+ *     summary: Confirm pending network changes
+ *     description: Confirms pending network changes within the 60-second timeout window. If not called in time, changes are automatically rolled back to the previous configuration. Must be called after any network interface change (update interfaces, add/delete VLAN).
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Network changes confirmed successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 confirmed:
+ *                   type: boolean
+ *             example:
+ *               confirmed: true
+ *       400:
+ *         description: No pending network changes to confirm
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+
+// POST: Confirm pending network changes
+router.post('/settings/network/apply', async (req, res) => {
+  try {
+    const result = await mosService.confirmNetworkChanges();
+    res.json(result);
+  } catch (error) {
+    if (error.message.includes('No pending')) {
+      res.status(400).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
+/**
+ * @swagger
+ * /mos/settings/network/revert:
+ *   post:
+ *     summary: Revert pending network changes
+ *     description: Immediately reverts pending network changes to the previous configuration and restarts networking. Can be used instead of waiting for the automatic rollback timeout.
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Network changes reverted successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 reverted:
+ *                   type: boolean
+ *             example:
+ *               reverted: true
+ *       400:
+ *         description: No pending network changes to revert
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+
+// POST: Revert pending network changes
+router.post('/settings/network/revert', async (req, res) => {
+  try {
+    const result = await mosService.revertNetworkChanges();
+    res.json(result);
+  } catch (error) {
+    if (error.message.includes('No pending')) {
+      res.status(400).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
   }
 });
 

@@ -22,6 +22,13 @@ class MosService {
 
     // Sensors config cache
     this._sensorsConfigCache = null;
+
+    // Network pending changes state
+    this._networkPendingChanges = false;
+    this._networkRollbackTimer = null;
+    this._networkBackupConfig = null;
+    this._networkRollbackTimeout = 60000; // 60 seconds
+    this._networkPendingTimestamp = null;
   }
 
   /**
@@ -1832,6 +1839,137 @@ class MosService {
   }
 
   /**
+   * Backs up the current network.json before applying changes.
+   * Stores the config in memory for potential rollback.
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _backupNetworkConfig() {
+    try {
+      const data = await fs.readFile('/boot/config/network.json', 'utf8');
+      this._networkBackupConfig = data;
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        this._networkBackupConfig = null;
+      } else {
+        throw new Error(`Error backing up network config: ${error.message}`);
+      }
+    }
+  }
+
+  /**
+   * Starts the pending changes timer after a network change.
+   * If not confirmed within the timeout, the previous config is restored.
+   * @returns {void}
+   * @private
+   */
+  _startNetworkRollbackTimer() {
+    // Clear any existing timer
+    if (this._networkRollbackTimer) {
+      clearTimeout(this._networkRollbackTimer);
+    }
+
+    this._networkPendingChanges = true;
+    this._networkPendingTimestamp = Date.now();
+
+    this._networkRollbackTimer = setTimeout(async () => {
+      console.warn('Network changes not confirmed within timeout — rolling back');
+      try {
+        await this._rollbackNetworkConfig();
+      } catch (error) {
+        console.error('Network rollback failed:', error.message);
+      }
+    }, this._networkRollbackTimeout);
+  }
+
+  /**
+   * Rolls back the network config to the backup and restarts networking.
+   * Called automatically when the confirm timeout expires.
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _rollbackNetworkConfig() {
+    try {
+      if (this._networkBackupConfig !== null) {
+        await fs.writeFile('/boot/config/network.json', this._networkBackupConfig, 'utf8');
+      } else {
+        // Backup was null (file didn't exist before) — remove file
+        try {
+          await fs.unlink('/boot/config/network.json');
+        } catch { /* ignore if already gone */ }
+      }
+
+      // Restart networking to apply restored config
+      await execPromise('/etc/init.d/networking restart');
+    } catch (error) {
+      console.error('Error during network rollback:', error.message);
+    } finally {
+      this._networkPendingChanges = false;
+      this._networkRollbackTimer = null;
+      this._networkBackupConfig = null;
+      this._networkPendingTimestamp = null;
+    }
+  }
+
+  /**
+   * Confirms pending network changes, cancelling the rollback timer.
+   * Must be called within the timeout window after a network change.
+   * @returns {Object} { confirmed: true }
+   * @throws {Error} If no pending changes exist
+   */
+  async confirmNetworkChanges() {
+    if (!this._networkPendingChanges) {
+      throw new Error('No pending network changes to confirm');
+    }
+
+    // Cancel the rollback timer
+    if (this._networkRollbackTimer) {
+      clearTimeout(this._networkRollbackTimer);
+    }
+
+    this._networkPendingChanges = false;
+    this._networkRollbackTimer = null;
+    this._networkBackupConfig = null;
+    this._networkPendingTimestamp = null;
+
+    return { confirmed: true };
+  }
+
+  /**
+   * Reverts pending network changes immediately (user-triggered rollback).
+   * @returns {Promise<Object>} { reverted: true }
+   * @throws {Error} If no pending changes exist
+   */
+  async revertNetworkChanges() {
+    if (!this._networkPendingChanges) {
+      throw new Error('No pending network changes to revert');
+    }
+
+    // Cancel the auto-rollback timer (we'll rollback manually now)
+    if (this._networkRollbackTimer) {
+      clearTimeout(this._networkRollbackTimer);
+    }
+
+    await this._rollbackNetworkConfig();
+    return { reverted: true };
+  }
+
+  /**
+   * Returns the current pending network changes state.
+   * @returns {Object} { pending_changes: boolean, remaining_seconds: number|null }
+   */
+  getNetworkPendingState() {
+    if (!this._networkPendingChanges || !this._networkPendingTimestamp) {
+      return { pending_changes: false, remaining_seconds: null };
+    }
+
+    const elapsed = Date.now() - this._networkPendingTimestamp;
+    const remaining = Math.max(0, Math.ceil((this._networkRollbackTimeout - elapsed) / 1000));
+
+    return { pending_changes: true, remaining_seconds: remaining };
+  }
+
+  /**
    * Returns the default network settings structure with all expected fields
    * @returns {Object} Default network settings
    */
@@ -2006,7 +2144,7 @@ class MosService {
    * Reads the network interfaces from the network.json file and enriches them
    * with live hardware info (link_state, speed, driver) from the system.
    * Hardware info is NOT written to the config file.
-   * @returns {Promise<Array>} Array of network interfaces with live hardware info
+   * @returns {Promise<Object>} { interfaces: Array, pending_changes: boolean, remaining_seconds: number|null }
    */
   async getNetworkInterfaces() {
     try {
@@ -2028,7 +2166,7 @@ class MosService {
       }
 
       // Merge live info into each interface (without modifying config)
-      return interfaces.map(iface => {
+      const enriched = interfaces.map(iface => {
         const result = { ...iface };
 
         // Match by MAC first, then by name
@@ -2047,6 +2185,15 @@ class MosService {
 
         return result;
       });
+
+      // Include pending changes state
+      const pendingState = this.getNetworkPendingState();
+
+      return {
+        interfaces: enriched,
+        pending_changes: pendingState.pending_changes,
+        remaining_seconds: pendingState.remaining_seconds
+      };
     } catch (error) {
       throw new Error(`Error reading network interfaces: ${error.message}`);
     }
@@ -2413,8 +2560,28 @@ class MosService {
         }
       }
 
+      // Validate: every bonded interface must be referenced by an active bond
+      for (const iface of current.interfaces) {
+        if (iface.type === 'bonded') {
+          const parentBond = current.interfaces.find(b =>
+            b.type === 'bond' && Array.isArray(b.interfaces) && b.interfaces.includes(iface.name)
+          );
+          if (!parentBond) {
+            throw new Error(`Interface ${iface.name}: type 'bonded' but no bond references it. Create a bond with this interface first.`);
+          }
+        }
+        if (iface.type === 'bridged') {
+          const parentBridge = current.interfaces.find(b =>
+            b.type === 'bridge' && Array.isArray(b.interfaces) && b.interfaces.includes(iface.name)
+          );
+          if (!parentBridge) {
+            throw new Error(`Interface ${iface.name}: type 'bridged' but no bridge references it.`);
+          }
+        }
+      }
+
       // Validation
-      const validTypes = ['ethernet', 'bridged', 'bridge', 'bond'];
+      const validTypes = ['ethernet', 'bridged', 'bridge', 'bond', 'bonded'];
       const validStatuses = ['enabled', 'disabled', 'orphan'];
       const validBondModes = ['balance-rr', 'active-backup', 'balance-xor', 'broadcast', '802.3ad', 'balance-tlb', 'balance-alb'];
 
@@ -2479,8 +2646,8 @@ class MosService {
           delete iface.bridge_vids;
         }
 
-        // Static IP validation (skip bridged — they don't need IP config)
-        if (iface.type !== 'bridged') {
+        // Static IP validation (skip bridged/bonded — they don't need IP config)
+        if (iface.type !== 'bridged' && iface.type !== 'bonded') {
           if (iface.ipv4 && Array.isArray(iface.ipv4)) {
             for (const ipv4Config of iface.ipv4) {
               if (ipv4Config.dhcp === false && !ipv4Config.address) {
@@ -2500,6 +2667,18 @@ class MosService {
               }
               vlan.mtu = vlanMtu;
             }
+          }
+        }
+
+        // Prevent disabling member interfaces that are referenced by an active bridge or bond
+        if (iface.status === 'disabled' && (iface.type === 'bridged' || iface.type === 'bonded')) {
+          const parent = current.interfaces.find(p =>
+            (p.type === 'bridge' || p.type === 'bond') &&
+            Array.isArray(p.interfaces) && p.interfaces.includes(iface.name) &&
+            p.status !== 'disabled'
+          );
+          if (parent) {
+            throw new Error(`Interface ${iface.name}: cannot disable — it is a member of ${parent.type} '${parent.name}'. Disable '${parent.name}' first.`);
           }
         }
 
@@ -2523,6 +2702,11 @@ class MosService {
         primaryInterfaceChanged = true;
       }
 
+      // Backup current config before writing (for rollback)
+      if (interfacesChanged) {
+        await this._backupNetworkConfig();
+      }
+
       // Write updated settings
       await fs.writeFile('/boot/config/network.json', JSON.stringify(current, null, 2), 'utf8');
 
@@ -2534,6 +2718,7 @@ class MosService {
       // Networking restart if interfaces have changed
       if (interfacesChanged) {
         await execPromise('/etc/init.d/networking restart');
+        this._startNetworkRollbackTimer();
       }
 
       return current.interfaces;
@@ -2621,11 +2806,15 @@ class MosService {
       // Add VLAN to interface
       iface.vlans.push(newVlan);
 
+      // Backup current config before writing (for rollback)
+      await this._backupNetworkConfig();
+
       // Write updated settings
       await fs.writeFile('/boot/config/network.json', JSON.stringify(current, null, 2), 'utf8');
 
       // Restart networking
       await execPromise('/etc/init.d/networking restart');
+      this._startNetworkRollbackTimer();
 
       return newVlan;
     } catch (error) {
@@ -2681,11 +2870,15 @@ class MosService {
 
       iface.vlans.splice(vlanIndex, 1);
 
+      // Backup current config before writing (for rollback)
+      await this._backupNetworkConfig();
+
       // Write updated settings
       await fs.writeFile('/boot/config/network.json', JSON.stringify(current, null, 2), 'utf8');
 
       // Restart networking
       await execPromise('/etc/init.d/networking restart');
+      this._startNetworkRollbackTimer();
 
       return true;
     } catch (error) {
