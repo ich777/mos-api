@@ -3,7 +3,7 @@ const path = require('path');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
-const { exec } = require('child_process');
+const { exec, spawn } = require('child_process');
 const util = require('util');
 const config = require('../config');
 
@@ -345,6 +345,7 @@ class UserService {
     }
 
     // Handle samba_user flag changes (admin only)
+    let smbUserHandled = false;
     if (updates.hasOwnProperty('samba_user') && requestingUser &&
         (requestingUser.role === 'admin' || requestingUser.isBootToken || requestingUser.isAdminToken)) {
 
@@ -357,6 +358,7 @@ class UserService {
         try {
           // Use the stored plain password (before hashing)
           await this._createSmbUser(currentUser.username, plainPassword);
+          smbUserHandled = true;
         } catch (error) {
           throw new Error(`Failed to create SMB user: ${error.message}`);
         }
@@ -364,6 +366,8 @@ class UserService {
         // Remove SMB user
         try {
           await this._deleteSmbUser(currentUser.username);
+          await this._copySystemFiles();
+          await this._restartSmbd();
         } catch (error) {
           // Non-critical error, log and continue
           console.warn(`Failed to delete SMB user: ${error.message}`);
@@ -375,7 +379,7 @@ class UserService {
     if (updates.role) {
       if (updates.role === 'samba_only') {
         updates.samba_user = true;
-        if (!currentUser.samba_user) {
+        if (!currentUser.samba_user && !smbUserHandled) {
           // Create SMB user - password is REQUIRED when converting to samba_only role
           if (!updates.password || updates.password.trim() === '') {
             throw new Error('Password is required when converting a user to samba_only role. SMB passwords cannot be derived from existing system passwords.');
@@ -427,6 +431,11 @@ class UserService {
       // Copy updated system files after deletion
       await this._copySystemFiles();
 
+      // Restart SMB daemon if user had samba access
+      if (user.samba_user) {
+        await this._restartSmbd();
+      }
+
     } catch (error) {
       // Non-critical error, log and continue
       console.warn(`Failed to delete system user during user deletion: ${error.message}`);
@@ -453,8 +462,8 @@ class UserService {
         throw new Error('Password must be at least 4 characters long');
       }
 
-      // Change root password with chpasswd
-      await execAsync(`echo "root:${newPassword}" | chpasswd`);
+      // Change root password with chpasswd (via stdin to avoid shell escaping issues)
+      await this._execWithStdin('chpasswd', [], `root:${newPassword}\n`);
 
       // Copy system files (like in smb-user.service)
       const systemConfigPath = '/boot/config/system';
@@ -679,6 +688,39 @@ class UserService {
   // SMB User Management Methods (moved from smb-user.service.js)
 
   /**
+   * Execute a command with stdin input (avoids shell escaping issues)
+   * @param {string} cmd - Command to execute
+   * @param {Array<string>} args - Command arguments
+   * @param {string} stdinData - Data to write to stdin
+   * @returns {Promise<string>} stdout output
+   */
+  _execWithStdin(cmd, args, stdinData) {
+    return new Promise((resolve, reject) => {
+      const proc = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+      let stdout = '';
+      let stderr = '';
+
+      proc.stdout.on('data', (data) => { stdout += data; });
+      proc.stderr.on('data', (data) => { stderr += data; });
+
+      proc.on('close', (code) => {
+        if (code === 0) {
+          resolve(stdout);
+        } else {
+          reject(new Error(`${cmd} exited with code ${code}: ${stderr.trim()}`));
+        }
+      });
+
+      proc.on('error', (err) => {
+        reject(new Error(`Failed to start ${cmd}: ${err.message}`));
+      });
+
+      proc.stdin.write(stdinData);
+      proc.stdin.end();
+    });
+  }
+
+  /**
    * Copy system files to boot config
    * @returns {Promise<boolean>} Success status
    */
@@ -806,9 +848,8 @@ class UserService {
    */
   async _setSmbPassword(username, password) {
     try {
-      // Set SMB password (non-interactive)
-      const command = `echo -e "${password}\\n${password}" | smbpasswd -a -s "${username}"`;
-      await execAsync(command);
+      // Set SMB password (non-interactive, via stdin to avoid shell escaping issues)
+      await this._execWithStdin('smbpasswd', ['-a', '-s', username], `${password}\n${password}\n`);
 
       return true;
     } catch (error) {
@@ -825,9 +866,8 @@ class UserService {
    */
   async _changeSmbPassword(username, password) {
     try {
-      // Change SMB password (non-interactive)
-      const command = `echo -e "${password}\\n${password}" | smbpasswd -s "${username}"`;
-      await execAsync(command);
+      // Change SMB password (non-interactive, via stdin to avoid shell escaping issues)
+      await this._execWithStdin('smbpasswd', ['-s', username], `${password}\n${password}\n`);
 
       // Copy system files after password change
       await this._copySystemFiles();
