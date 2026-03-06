@@ -3763,15 +3763,13 @@ class DisksService {
    * Check available filesystems for formatting
    * @param {string} pooltype - Optional: Filter for pool type ('multi', 'nonraid', 'single', 'mergerfs')
    *                            'multi' returns only btrfs and zfs
-   *                            'mergerfs' and 'nonraid' exclude vfat (no POSIX support)
-   *                            'single' or no parameter returns all
+   *                            other values or no parameter returns all (ext4, xfs, btrfs)
    */
   async getAvailableFilesystems(pooltype = null) {
     const supportedFilesystems = [
       { name: 'ext4', command: 'mkfs.ext4' },
       { name: 'xfs', command: 'mkfs.xfs' },
       { name: 'btrfs', command: 'mkfs.btrfs' },
-      { name: 'vfat', command: 'mkfs.vfat' },
       { name: 'zfs', command: 'zfs' }
     ];
 
@@ -3803,8 +3801,6 @@ class DisksService {
 
         // Without ZFS - only normal mkfs-tools
         if (fs.name === 'zfs') continue;
-        // vfat bei mergerfs and nonraid exclude
-        if (fs.name === 'vfat' && (pooltype === 'mergerfs' || pooltype === 'nonraid')) continue;
         await execPromise(`which ${fs.command}`);
         availableFilesystems.push(fs.name);
       } catch (error) {

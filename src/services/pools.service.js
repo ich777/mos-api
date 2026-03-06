@@ -3544,7 +3544,7 @@ class PoolsService {
 
       // For single device pools
       if (pool.data_devices && pool.data_devices.length === 1 &&
-          ['ext4', 'xfs', 'btrfs'].includes(pool.type)) {
+          ['ext4', 'xfs', 'btrfs', 'vfat'].includes(pool.type)) {
         return await this._unmountSingleDevicePool(pool, options.force);
       }
 
@@ -3640,7 +3640,7 @@ class PoolsService {
       await this._unmountNonRaidPool(pool, force);
     } else if (pool.type === 'btrfs' && pool.data_devices && pool.data_devices.length > 1) {
       await this._unmountMultiDeviceBtrfsPool(pool, force);
-    } else if (['btrfs', 'ext4', 'xfs'].includes(pool.type)) {
+    } else if (['btrfs', 'ext4', 'xfs', 'vfat'].includes(pool.type)) {
       await this._unmountSingleDevicePool(pool, force);
     } else {
       throw new Error(`Unsupported pool type for removal: ${pool.type}`);

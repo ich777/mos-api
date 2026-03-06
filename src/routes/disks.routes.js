@@ -890,7 +890,7 @@ router.get('/:device/smart', async (req, res) => {
   *             examples:
   *               all:
   *                 summary: All filesystems (no filter or nonraid/single/mergerfs)
-  *                 value: ["ext4", "xfs", "btrfs", "vfat", "zfs"]
+  *                 value: ["ext4", "xfs", "btrfs", "zfs"]
   *               multi:
   *                 summary: Multi-disk filesystems only (pooltype=multi)
   *                 value: ["btrfs", "zfs"]
