@@ -1270,6 +1270,16 @@ class DisksService {
       if (resolved) return resolved;
     }
 
+    // Strategy 1b: Resolve from /dev/disk/by-id/ (used by NonRAID parity devices)
+    if (dev.id) {
+      try {
+        const byIdPath = `/dev/disk/by-id/${dev.id}`;
+        await fs.access(byIdPath);
+        const relativePath = await fs.readlink(byIdPath);
+        return path.resolve(path.dirname(byIdPath), relativePath);
+      } catch (e) { /* not found in by-id */ }
+    }
+
     // Strategy 2: If dev.device is a symlink path, resolve it
     if (dev.device && dev.device.startsWith('/dev/disk/')) {
       try {

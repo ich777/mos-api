@@ -2672,8 +2672,37 @@ class PoolsService {
         console.warn(`partprobe failed: ${error.message}`);
       }
 
+      // Wait for udev to process the partition changes
+      try {
+        await execPromise('udevadm settle');
+      } catch (error) {
+        console.warn(`udevadm settle failed: ${error.message}`);
+      }
+
+      // Wait after udevadm settle (important for USB devices and slow controllers)
+      await new Promise(resolve => setTimeout(resolve, 1500));
+
       // Determine partition path
       targetDevice = this._getPartitionPath(device, 1);
+
+      // Verify partition exists before returning (retry mechanism for slow devices)
+      let partitionExists = false;
+      for (let retry = 0; retry < 5; retry++) {
+        try {
+          await fs.access(targetDevice);
+          partitionExists = true;
+          break;
+        } catch (error) {
+          if (retry < 4) {
+            // Wait before retry (exponential backoff)
+            await new Promise(resolve => setTimeout(resolve, 500 * (retry + 1)));
+          }
+        }
+      }
+
+      if (!partitionExists) {
+        throw new Error(`Partition ${targetDevice} was not created. This can happen with slow devices or controllers.`);
+      }
 
       console.log(`Created partition: ${targetDevice}`);
     }
@@ -3076,8 +3105,18 @@ class PoolsService {
         finalFilesystem = fsInfo.filesystem;
       }
 
-      // Get UUID (Strategy handles physical vs operational device)
-      const deviceUuid = await strategy.getDeviceUuid(deviceContext, poolConfig);
+      // Get UUID from the actual device being used (partition or LUKS mapper)
+      // For format=true: formatDevice returns the UUID of the formatted partition
+      // For format=false: get UUID from the operational device directly
+      let deviceUuid;
+      if (options.format === true) {
+        // After formatting, get UUID from the actual formatted device (partition)
+        deviceUuid = await this.getDeviceUuid(actualDeviceToUse);
+      }
+      if (!deviceUuid) {
+        // Fallback: try Strategy (works for LUKS where UUID is on physical device)
+        deviceUuid = await strategy.getDeviceUuid(deviceContext, poolConfig);
+      }
       if (!deviceUuid) {
         throw new Error(`No filesystem UUID found for device ${device}`);
       }
