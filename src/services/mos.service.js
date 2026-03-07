@@ -1048,7 +1048,7 @@ class MosService {
           throw new Error(`Pool "${poolName}" not found`);
         }
 
-        // Check if pool is mergerfs and restrict only core service directories
+        // Check if pool is mergerfs or nonraid and restrict only core service directories
         // BUT: Allow core directories on individual MergerFS disks (/var/mergerfs/...)
         // Only restrict when using the merged pool mount point (/mnt/poolname)
         const restrictedCombinations = [
@@ -1057,13 +1057,15 @@ class MosService {
           // VM directories and Docker appdata are allowed on mergerfs
         ];
 
-        const isRestricted = pool.type === 'mergerfs' &&
+        const restrictedPoolTypes = ['mergerfs', 'nonraid'];
+        const isRestricted = restrictedPoolTypes.includes(pool.type) &&
           isMntPath && // Only restrict /mnt/ paths, not /var/mergerfs/ disk paths
           restrictedCombinations.some(combo =>
             combo.serviceType === serviceType && combo.fieldName === fieldName
           );
 
         if (isRestricted) {
+          const poolTypeLabel = pool.type === 'mergerfs' ? 'MergerFS' : 'NonRAID';
           return {
             isOnPool: true,
             isValid: false,
@@ -1071,8 +1073,10 @@ class MosService {
             poolPath,
             userPath: normalizedPath,
             poolType: pool.type,
-            error: `${serviceType.toUpperCase()} core directories cannot be placed on MergerFS pool mount points. MergerFS pools are designed for data storage, not for system services.`,
-            suggestion: `Use a single or multi device BTRFS, XFS, or EXT4 pool, or use an individual MergerFS disk path like /var/mergerfs/${poolName}/disk1/...`
+            error: `${serviceType.toUpperCase()} core directories cannot be placed on ${poolTypeLabel} pool mount points. ${poolTypeLabel} pools are designed for data storage, not for system services.`,
+            suggestion: pool.type === 'mergerfs'
+              ? `Use a single or multi device BTRFS, XFS, or EXT4 pool, or use an individual MergerFS disk path like /var/mergerfs/${poolName}/disk1/...`
+              : `Use a single or multi device BTRFS, XFS, or EXT4 pool instead.`
           };
         }
 
