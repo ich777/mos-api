@@ -83,6 +83,9 @@ const VM_ICON_MAPPING = {
  */
 class VmService {
   constructor() {
+    // Detect host architecture (for KVM vs TCG domain type)
+    this.HOST_ARCH = os.arch(); // 'arm64' or 'x64'
+
     // QEMU/KVM paths
     this.QEMU_PATH = '/usr/bin/qemu-system-x86_64';
     this.LIBVIRT_QEMU_PATH = '/etc/libvirt/qemu';
@@ -1121,10 +1124,21 @@ class VmService {
     // Parse memory - supports "4G", "4GB", "4096" (MiB), etc.
     const memoryMiB = this._parseSizeToMiB(memory);
 
+    // Determine domain type: KVM for native x86_64, QEMU/TCG for cross-arch emulation (e.g. ARM64 host)
+    const domainType = this.HOST_ARCH === 'x64' ? 'kvm' : 'qemu';
+    const hostCoreCount = os.cpus().length;
+    const hasCpuPins = cpuPins && Array.isArray(cpuPins) && cpuPins.length > 0;
+
     // Auto-calculate cpus from cpuPins if provided
-    const effectiveCpus = (cpuPins && Array.isArray(cpuPins) && cpuPins.length > 0)
-      ? cpuPins.length
-      : cpus;
+    // For TCG without explicit pins: use all host cores for best emulation performance
+    let effectiveCpus;
+    if (hasCpuPins) {
+      effectiveCpus = cpuPins.length;
+    } else if (domainType === 'qemu') {
+      effectiveCpus = cpus > 1 ? cpus : hostCoreCount;
+    } else {
+      effectiveCpus = cpus;
+    }
 
     // Validate boot_order - check for duplicates across disks and cdroms
     const bootOrders = [];
@@ -1161,17 +1175,28 @@ class VmService {
     const vmUuid = uuid || this._generateUuid();
 
     // Start building XML
-    let xml = `<domain type='kvm'>
+    // For TCG: add QEMU namespace for commandline passthrough (needed for MTTCG)
+    const nsAttr = domainType === 'qemu' ? " xmlns:qemu='http://libvirt.org/schemas/domain/qemu/1.0'" : '';
+    let xml = `<domain type='${domainType}'${nsAttr}>
   <name>${this._escapeXml(name)}</name>
   <uuid>${vmUuid}</uuid>
   <memory unit='MiB'>${memoryMiB}</memory>
   <vcpu placement='static'>${effectiveCpus}</vcpu>`;
 
     // CPU pinning - map vCPUs to specific host cores
-    if (cpuPins && Array.isArray(cpuPins) && cpuPins.length > 0) {
+    // For TCG (cross-arch emulation), auto-pin vCPUs to physical cores if no explicit pins provided
+    let effectivePins = cpuPins;
+    if (domainType === 'qemu' && !hasCpuPins) {
+      effectivePins = [];
+      for (let i = 0; i < effectiveCpus; i++) {
+        effectivePins.push(i % hostCoreCount);
+      }
+    }
+
+    if (effectivePins && Array.isArray(effectivePins) && effectivePins.length > 0) {
       xml += `
   <cputune>`;
-      cpuPins.forEach((hostCpu, vcpuIndex) => {
+      effectivePins.forEach((hostCpu, vcpuIndex) => {
         xml += `
     <vcpupin vcpu='${vcpuIndex}' cpuset='${hostCpu}'/>`;
       });
@@ -1215,13 +1240,25 @@ class VmService {
     }
 
     xml += `
-  </features>
-  <cpu mode='host-passthrough' check='none' migratable='on'/>
+  </features>`;
+
+    // CPU mode: host-passthrough for KVM (native), emulated qemu64 for TCG (cross-arch)
+    if (domainType === 'kvm') {
+      xml += `
+  <cpu mode='host-passthrough' check='none' migratable='on'/>`;
+    } else {
+      xml += `
+  <cpu mode='custom' match='exact'><model fallback='allow'>qemu64</model></cpu>`;
+    }
+
+    xml += `
   <clock offset='utc'>
     <timer name='rtc' tickpolicy='catchup'/>
     <timer name='pit' tickpolicy='delay'/>
     <timer name='hpet' present='no'/>
-  </clock>
+  </clock>`;
+
+    xml += `
   <on_poweroff>destroy</on_poweroff>
   <on_reboot>restart</on_reboot>
   <on_crash>destroy</on_crash>
@@ -1283,7 +1320,18 @@ class VmService {
 
     // Close devices and domain
     xml += `
-  </devices>
+  </devices>`;
+
+    // For TCG: enable multi-threaded TCG so each vCPU gets its own emulation thread
+    if (domainType === 'qemu') {
+      xml += `
+  <qemu:commandline>
+    <qemu:arg value='-accel'/>
+    <qemu:arg value='tcg,thread=multi'/>
+  </qemu:commandline>`;
+    }
+
+    xml += `
 </domain>`;
 
     return xml;

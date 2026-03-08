@@ -499,14 +499,14 @@ class LxcService {
    * @param {string} containerName - Name of the container to create
    * @param {string} distribution - Distribution (e.g., ubuntu, debian)
    * @param {string} release - Release version (e.g., bionic, bookworm)
-   * @param {string} arch - Architecture (defaults to amd64)
+   * @param {string} arch - Architecture (defaults to host architecture: amd64 on x86_64, arm64 on aarch64)
    * @param {boolean} autostart - Whether container should autostart (defaults to false)
    * @param {string} containerDescription - Optional description for the container
    * @param {boolean} startAfterCreation - Whether to start container after creation (defaults to false)
    * @param {boolean} unprivileged - Whether to create an unprivileged container (defaults to false)
    * @returns {Promise<Object>} Result of the operation
    */
-  async createContainer(containerName, distribution, release, arch = 'amd64', autostart = false, containerDescription = null, startAfterCreation = false, unprivileged = false) {
+  async createContainer(containerName, distribution, release, arch = (process.arch === 'arm64' ? 'arm64' : 'amd64'), autostart = false, containerDescription = null, startAfterCreation = false, unprivileged = false) {
     try {
       // Check if container already exists
       const exists = await this.containerExists(containerName);
@@ -1360,19 +1360,25 @@ lxc.mount.auto = cgroup:mixed:force
       const cacheFile = path.join(cacheDir, 'container_index.json');
       const oneHourAgo = Date.now() - (60 * 60 * 1000); // 1 hour in milliseconds
 
-      // Check if arm64 emulation is available via binfmt
-      let arm64Enabled = false;
+      // Detect host architecture and determine which foreign arch is available via binfmt
+      const hostArch = process.arch === 'arm64' ? 'arm64' : 'amd64';
+      let foreignArchEnabled = false;
       try {
         const systemSettings = await getMosService().getSystemSettings();
         if (systemSettings.binfmt &&
             systemSettings.binfmt.enabled === true &&
-            Array.isArray(systemSettings.binfmt.architectures) &&
-            systemSettings.binfmt.architectures.includes('aarch64')) {
-          arm64Enabled = true;
+            Array.isArray(systemSettings.binfmt.architectures)) {
+          if (hostArch === 'amd64' && systemSettings.binfmt.architectures.includes('aarch64')) {
+            foreignArchEnabled = true; // x86_64 host can emulate arm64
+          } else if (hostArch === 'arm64' && systemSettings.binfmt.architectures.includes('x86_64')) {
+            foreignArchEnabled = true; // arm64 host can emulate amd64
+          }
         }
       } catch (e) {
-        // If we can't read system settings, default to not showing arm64
+        // If we can't read system settings, default to not showing foreign arch
       }
+
+      const foreignArch = hostArch === 'amd64' ? 'arm64' : 'amd64';
 
       let needsUpdate = true;
 
@@ -1430,14 +1436,14 @@ lxc.mount.auto = cgroup:mixed:force
             };
           }
 
-          // Check if this is amd64 or arm64 (arm64 only if binfmt aarch64 is enabled)
-          if (arch === 'amd64' || (arch === 'arm64' && arm64Enabled)) {
+          // Check if this is the native arch or the foreign arch (only if binfmt emulation is enabled)
+          if (arch === hostArch || (arch === foreignArch && foreignArchEnabled)) {
             // Add architecture if not already present
             if (!distributions[dist][release].architectures.includes(arch)) {
               distributions[dist][release].architectures.push(arch);
             }
           } else {
-            // Store unsupported architectures in filtered array (includes arm64 when binfmt not enabled)
+            // Store unsupported architectures in filtered array (includes foreign arch when binfmt not enabled)
             const filteredEntry = {
               distribution: dist,
               release: release,

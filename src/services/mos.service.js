@@ -4243,6 +4243,15 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
         console.warn('Warning: Could not get running kernel version:', kernelError.message);
       }
 
+      // Get system architecture
+      let arch = null;
+      try {
+        const { stdout: archOut } = await execPromise('uname -m');
+        arch = archOut.trim();
+      } catch (archError) {
+        console.warn('Warning: Could not get system architecture:', archError.message);
+      }
+
       // Get uptime information
       let uptimeInfo = {
         pretty: null,
@@ -4283,6 +4292,11 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
         if (runningKernel) {
           release.mos.running_kernel = runningKernel;
         }
+
+        // Add architecture to mos object
+        if (arch) {
+          release.mos.arch = arch;
+        }
       } else {
         // Handle flat structure (fallback)
         const originalVersion = release.version || '';
@@ -4302,6 +4316,12 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
         if (runningKernel) {
           if (!release.mos) release.mos = {};
           release.mos.running_kernel = runningKernel;
+        }
+
+        // Add architecture to flat structure
+        if (arch) {
+          if (!release.mos) release.mos = {};
+          release.mos.arch = arch;
         }
       }
 

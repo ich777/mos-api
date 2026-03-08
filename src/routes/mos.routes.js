@@ -3029,6 +3029,10 @@ router.get('/getreleases', async (req, res) => {
  *                       type: string
  *                       description: Currently running kernel version
  *                       example: "5.15.0-generic"
+ *                     arch:
+ *                       type: string
+ *                       description: System architecture (e.g. x86_64, aarch64)
+ *                       example: "x86_64"
  *                 build_date:
  *                   type: string
  *                   description: Build date
@@ -3047,6 +3051,7 @@ router.get('/getreleases', async (req, res) => {
  *                   version: "0.0.1-alpha.4"
  *                   channel: "alpha"
  *                   running_kernel: "5.15.0-generic"
+ *                   arch: "x86_64"
  *                 build_date: "2025-08-24"
  *       401:
  *         description: Not authenticated
