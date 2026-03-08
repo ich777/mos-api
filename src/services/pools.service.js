@@ -6646,7 +6646,10 @@ class PoolsService {
       // Run parity check if parity devices exist and parity_valid is not true
       const shouldRunCheck = options.parity_valid !== true && parityDevicesList.length > 0;
       if (shouldRunCheck) {
-        await this._startNonRaidParityCheck();
+        const checkStarted = await this._startNonRaidParityCheck();
+        if (checkStarted) {
+          this._startNonRaidMonitor(name, 'check', true);
+        }
       }
 
       // Mount data devices
@@ -7460,7 +7463,10 @@ class PoolsService {
       // Run check CORRECT if parity_valid is NOT true
       const shouldRunCheck = options.parity_valid !== true;
       if (shouldRunCheck && pool.parity_devices && pool.parity_devices.length > 0) {
-        await this._startNonRaidParityCheck();
+        const checkStarted = await this._startNonRaidParityCheck();
+        if (checkStarted) {
+          this._startNonRaidMonitor(pool.name, 'check CORRECT', true);
+        }
       }
 
       // Add new device to pool config
@@ -7652,7 +7658,10 @@ class PoolsService {
       await this._setNonRaidWriteMode(writeMode);
 
       // ALWAYS run check CORRECT when adding parity
-      await this._startNonRaidParityCheck();
+      const checkStarted = await this._startNonRaidParityCheck();
+      if (checkStarted) {
+        this._startNonRaidMonitor(pool.name, 'check CORRECT', true);
+      }
 
       // Add new parity device to pool config
       if (!pool.parity_devices) pool.parity_devices = [];
