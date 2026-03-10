@@ -1004,6 +1004,29 @@ class MosService {
         };
       }
 
+      // Check for remote mount paths (/mnt/remotes/server/share/...)
+      // Remotes are not pools - only validate path format
+      if (normalizedPath.startsWith('/mnt/remotes/')) {
+        const remoteParts = normalizedPath.split('/');
+        // Minimum: /mnt/remotes/server/share -> 5 parts
+        if (remoteParts.length < 5) {
+          return {
+            isOnPool: false,
+            isValid: false,
+            error: 'Invalid remote path. Expected format: /mnt/remotes/server/share/...',
+            suggestion: 'Use a path like /mnt/remotes/myserver/myshare/service-directory'
+          };
+        }
+        return {
+          isOnPool: false,
+          isRemote: true,
+          isValid: true,
+          remotePath: normalizedPath,
+          userPath: normalizedPath,
+          message: `Remote mount path accepted: ${normalizedPath}`
+        };
+      }
+
       // Extract Pool name from the path
       const pathParts = normalizedPath.split('/');
       let poolName;

@@ -753,9 +753,9 @@ class RemotesService {
       if (username && password) {
         // Authenticated access
         if (domain) {
-          smbCommand = `smbclient -L //${server} -U ${domain}/${username}%${password} -N 2>/dev/null | grep 'Disk' | awk '{print $1}'`;
+          smbCommand = `smbclient -L //${server} -U ${domain}/${username}%${password} 2>/dev/null | grep 'Disk' | awk '{print $1}'`;
         } else {
-          smbCommand = `smbclient -L //${server} -U ${username}%${password} -N 2>/dev/null | grep 'Disk' | awk '{print $1}'`;
+          smbCommand = `smbclient -L //${server} -U ${username}%${password} 2>/dev/null | grep 'Disk' | awk '{print $1}'`;
         }
       } else {
         // Guest access (no credentials)

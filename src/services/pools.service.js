@@ -2655,6 +2655,23 @@ class PoolsService {
       // This is a whole disk - create partition table and partition first
       console.log(`${device} is a whole disk, creating partition table and partition...`);
 
+      // Wipe all existing filesystem signatures from the disk and all partitions
+      // This ensures no old signatures (from e.g. sda1, sda2, sda3) remain
+      try {
+        await execPromise(`wipefs -a ${device}`);
+        // Also wipe signatures from any existing partitions before destroying the table
+        const existingPartitions = await this._getDevicePartitions(device);
+        for (const part of existingPartitions) {
+          try {
+            await execPromise(`wipefs -a ${part}`);
+          } catch (e) {
+            // Partition may already be gone or inaccessible - that's fine
+          }
+        }
+      } catch (e) {
+        console.warn(`wipefs warning: ${e.message}`);
+      }
+
       // Create GPT partition table
       await execPromise(`parted -s ${device} mklabel gpt`);
 
@@ -3068,9 +3085,18 @@ class PoolsService {
         throw new Error(`Device ${device} is already mounted at ${mountStatus.mountPoint}`);
       }
 
-      // Check device filesystem
-      const deviceInfo = await this.checkDeviceFilesystem(device);
-      let physicalDevice = deviceInfo.actualDevice || device;
+      // Determine the physical device to work with
+      let physicalDevice;
+
+      if (options.format === true) {
+        // format=true: Use original device path so _ensurePartition can wipe
+        // all existing partitions and create a fresh GPT + single partition
+        physicalDevice = device;
+      } else {
+        // format=false (import mode): Resolve to existing partition if available
+        const deviceInfo = await this.checkDeviceFilesystem(device);
+        physicalDevice = deviceInfo.actualDevice || device;
+      }
 
       // Prepare device with Strategy Pattern (handles encryption automatically)
       preparedDevices = await strategy.prepareDevices(
