@@ -2506,8 +2506,13 @@ class MosService {
       }
 
       // Preserve interfaces that were not in the POST body
+      // Exception: orphan interfaces not in POST body are removed (user chose to discard them)
       for (let i = 0; i < current.interfaces.length; i++) {
         if (!matchedIndices.has(i)) {
+          if (current.interfaces[i].status === 'orphan') {
+            interfacesChanged = true;
+            continue;
+          }
           merged.push(current.interfaces[i]);
         }
       }
