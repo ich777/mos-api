@@ -2291,7 +2291,7 @@ router.delete('/mos/unusedimages', async (req, res) => {
  */
 
 // Proxy für Docker REST API
-router.use('/*', checkRole('admin'), async (req, res) => {
+router.use('/{*splat}', checkRole('admin'), async (req, res) => {
   // Define variables outside try block so they're available in catch
   const isStreamingEndpoint = req.originalUrl.includes('/logs') ||
                              req.originalUrl.includes('/attach') ||

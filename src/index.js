@@ -1,6 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-const rateLimit = require('express-rate-limit');
+const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const swaggerUi = require('swagger-ui-express');
 const swaggerSpecs = require('./config/swagger');
 const config = require('./config');
@@ -82,8 +82,12 @@ async function startServer() {
   const limiter = rateLimit({
     windowMs: (process.env.RATE_LIMIT_WINDOW || 1) * 1000,
     max: process.env.RATE_LIMIT_MAX || 20,
-    // Use X-Real-IP from Nginx as it's more reliable in our setup
-    keyGenerator: (req) => req.headers['x-real-ip'] || req.ip,
+    keyGenerator: (req, res) => {
+      if (req.headers['x-real-ip']) {
+        return req.headers['x-real-ip'];
+      }
+      return ipKeyGenerator(req, res);
+    },
     standardHeaders: true,
     legacyHeaders: false
   });
