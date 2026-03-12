@@ -2175,6 +2175,12 @@ class MosService {
    */
   async getNetworkInterfaces() {
     try {
+      // Reconcile first — ensures config reflects current hardware state
+      // (new NICs added, orphans marked, kernel names updated)
+      try {
+        await this.reconcileInterfaces();
+      } catch { /* ignore reconciliation errors — proceed with existing config */ }
+
       const settings = await this.getNetworkSettings();
       const interfaces = settings.interfaces || [];
 
