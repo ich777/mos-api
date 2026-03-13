@@ -1058,14 +1058,23 @@ class MosService {
         poolPath = `/mnt/${poolName}`;
       }
 
-      // Lazy-load PoolsService to avoid circular dependencies
-      const baseService = new PoolsService();
+      // Read pools.json directly - lightweight check without PoolsService instantiation
+      // Avoids: constructor side-effects (_initNonRaidMonitor), heavy listPools() pipeline
+      // (smartctl on every device, df, btrfs filesystem show, etc.)
+      let poolsData;
+      try {
+        const rawData = await fs.readFile('/boot/config/pools.json', 'utf8');
+        poolsData = JSON.parse(rawData);
+      } catch (readError) {
+        if (readError.code === 'ENOENT') {
+          poolsData = [];
+        } else {
+          throw readError;
+        }
+      }
 
       try {
-        // Check if Pool exists and status
-        // Use listPools() to get real-time mount status instead of static pools.json
-        const pools = await baseService.listPools({});
-        const pool = pools.find(p => p.name === poolName);
+        const pool = poolsData.find(p => p.name === poolName);
 
         if (!pool) {
           throw new Error(`Pool "${poolName}" not found`);
@@ -1103,37 +1112,36 @@ class MosService {
           };
         }
 
-        // For MergerFS disk paths, verify the specific disk is mounted
-        if (isMergerfsDiskPath && diskPath) {
-          const diskMountPoint = `/var/mergerfs/${poolName}/${diskPath}`;
-          const isDiskMounted = await baseService._isMounted(diskMountPoint);
+        // Check mount status directly via findmnt (no PoolsService needed)
+        const checkMountPoint = isMergerfsDiskPath && diskPath
+          ? `/var/mergerfs/${poolName}/${diskPath}`
+          : `/mnt/${poolName}`;
 
-          if (!isDiskMounted) {
-            return {
-              isOnPool: true,
-              isValid: false,
-              poolName,
-              poolPath,
-              userPath: normalizedPath,
-              poolType: pool.type,
-              error: `MergerFS disk "${diskPath}" in pool "${poolName}" is not mounted. Service directory would not be available.`,
-              suggestion: `Mount the pool "${poolName}" first or choose a different disk.`
-            };
-          }
-        } else {
-          // Regular pool mount check
-          if (!pool.status.mounted) {
-            return {
-              isOnPool: true,
-              isValid: false,
-              poolName,
-              poolPath,
-              userPath: normalizedPath,
-              poolType: pool.type,
-              error: `Pool "${poolName}" is not mounted. Service directory would not be available.`,
-              suggestion: `Mount the pool "${poolName}" first or choose a different path.`
-            };
-          }
+        let isMounted = false;
+        try {
+          const { stdout } = await execPromise(`findmnt -n -o TARGET ${JSON.stringify(checkMountPoint)} 2>/dev/null || true`);
+          isMounted = stdout.trim().length > 0;
+        } catch (error) {
+          isMounted = false;
+        }
+
+        if (!isMounted) {
+          const errorMsg = isMergerfsDiskPath && diskPath
+            ? `MergerFS disk "${diskPath}" in pool "${poolName}" is not mounted. Service directory would not be available.`
+            : `Pool "${poolName}" is not mounted. Service directory would not be available.`;
+          const suggestionMsg = isMergerfsDiskPath && diskPath
+            ? `Mount the pool "${poolName}" first or choose a different disk.`
+            : `Mount the pool "${poolName}" first or choose a different path.`;
+          return {
+            isOnPool: true,
+            isValid: false,
+            poolName,
+            poolPath,
+            userPath: normalizedPath,
+            poolType: pool.type,
+            error: errorMsg,
+            suggestion: suggestionMsg
+          };
         }
 
         return {
@@ -1327,10 +1335,13 @@ class MosService {
       let updateCheckChanged = false;
 
       // Check directory paths for mount status
-      // Always validate 'directory' (even if unchanged) to catch legacy nonraid/mergerfs paths
+      // Always validate 'directory' to catch legacy nonraid/mergerfs paths
+      // Use updates.directory if provided, otherwise fall back to current.directory
+      // This ensures validation runs even when only 'enabled: true' is sent
       const pathsToCheck = {};
-      if (updates.directory) {
-        pathsToCheck.directory = updates.directory;
+      const effectiveDirectory = updates.directory || current.directory;
+      if (effectiveDirectory) {
+        pathsToCheck.directory = effectiveDirectory;
       }
       if (updates.appdata && updates.appdata !== current.appdata) {
         pathsToCheck.appdata = updates.appdata;
@@ -1605,10 +1616,13 @@ class MosService {
       }
 
       // Check directory paths for mount status
-      // Always validate 'directory' (even if unchanged) to catch legacy nonraid/mergerfs paths
+      // Always validate 'directory' to catch legacy nonraid/mergerfs paths
+      // Use updates.directory if provided, otherwise fall back to current.directory
+      // This ensures validation runs even when only 'enabled: true' is sent
       const pathsToCheck = {};
-      if (updates.directory) {
-        pathsToCheck.directory = updates.directory;
+      const effectiveDirectory = updates.directory || current.directory;
+      if (effectiveDirectory) {
+        pathsToCheck.directory = effectiveDirectory;
       }
       if (updates.backup_path && updates.backup_path !== current.backup_path) {
         pathsToCheck.backup_path = updates.backup_path;
@@ -1808,10 +1822,13 @@ class MosService {
       const allowed = ['enabled', 'directory', 'vdisk_directory', 'start_wait'];
 
       // Check directory paths for mount status
-      // Always validate 'directory' (even if unchanged) to catch legacy nonraid/mergerfs paths
+      // Always validate 'directory' to catch legacy nonraid/mergerfs paths
+      // Use updates.directory if provided, otherwise fall back to current.directory
+      // This ensures validation runs even when only 'enabled: true' is sent
       const pathsToCheck = {};
-      if (updates.directory) {
-        pathsToCheck.directory = updates.directory;
+      const effectiveDirectory = updates.directory || current.directory;
+      if (effectiveDirectory) {
+        pathsToCheck.directory = effectiveDirectory;
       }
       if (updates.vdisk_directory && updates.vdisk_directory !== current.vdisk_directory) {
         pathsToCheck.vdisk_directory = updates.vdisk_directory;
