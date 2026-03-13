@@ -36,8 +36,41 @@ class SystemLoadWebSocketManager {
     this.poolsStructureCacheTimestamp = 0;
     this.poolsStructureCacheTTL = 8000; // 8 seconds
 
+    // Dashboard interface cache (which network interface to monitor)
+    this.dashboardInterface = null;
+    this.dashboardInterfaceCacheDuration = 30 * 1000; // 30 seconds
+    this.dashboardInterfaceTimestamp = 0;
+
     // Start cache cleanup timer (every 10 minutes)
     setInterval(() => this.cleanupExpiredCaches(), 10 * 60 * 1000);
+  }
+
+  /**
+   * Get the dashboard network interface setting (cached)
+   * @returns {Promise<string>} Interface name (default: 'eth0')
+   */
+  async getDashboardInterfaceCached() {
+    const now = Date.now();
+    if (this.dashboardInterface && (now - this.dashboardInterfaceTimestamp) < this.dashboardInterfaceCacheDuration) {
+      return this.dashboardInterface;
+    }
+
+    try {
+      this.dashboardInterface = await mosService.getDashboardInterface();
+      this.dashboardInterfaceTimestamp = now;
+      return this.dashboardInterface;
+    } catch (error) {
+      console.error('Error reading dashboard interface setting:', error);
+      return this.dashboardInterface || 'eth0';
+    }
+  }
+
+  /**
+   * Invalidate the dashboard interface cache (called when interface setting changes)
+   */
+  invalidateDashboardInterfaceCache() {
+    this.dashboardInterface = null;
+    this.dashboardInterfaceTimestamp = 0;
   }
 
   /**
@@ -289,8 +322,9 @@ class SystemLoadWebSocketManager {
         // Get first connected user for data formatting (cached for efficiency)
         const user = this.getFirstConnectedUser();
 
-        // Get Network data and send update
-        const networkData = await this.getNetworkDataWithCache(false, user);
+        // Get dashboard interface setting and Network data, then send update
+        const dashboardIface = await this.getDashboardInterfaceCached();
+        const networkData = await this.getNetworkDataWithCache(false, user, dashboardIface);
         this.io.to('system-load').emit('load-update', networkData);
       } catch (error) {
         console.error('Error in Network monitoring:', error);
@@ -838,10 +872,11 @@ class SystemLoadWebSocketManager {
   async sendSystemLoadUpdate(socket, forceRefresh = false, sendFullData = false) {
     try {
       // Get all data types for initial connection including uptime
+      const dashboardIface = await this.getDashboardInterfaceCached();
       const [cpuData, memoryData, networkData, uptime] = await Promise.all([
         this.getCombinedCpuData(socket.user),
         this.getMemoryDataWithCache(forceRefresh, socket.user),
-        this.getNetworkDataWithCache(forceRefresh, socket.user),
+        this.getNetworkDataWithCache(forceRefresh, socket.user, dashboardIface),
         this.systemService.getUptime()
       ]);
 
@@ -1023,10 +1058,11 @@ class SystemLoadWebSocketManager {
   /**
    * Get Network data with caching
    */
-  async getNetworkDataWithCache(forceRefresh = false, user = null) {
-    // Include byte_format in cache key to avoid serving wrong format
+  async getNetworkDataWithCache(forceRefresh = false, user = null, interfaceName = null) {
+    // Include byte_format and interface in cache key
     const byteFormat = user?.byte_format || 'binary';
-    const cacheKey = `network-data-${byteFormat}`;
+    const ifaceKey = interfaceName || 'auto';
+    const cacheKey = `network-data-${byteFormat}-${ifaceKey}`;
     const cached = this.dataCache.get(cacheKey);
 
     // Return cached data if valid and not forcing refresh
@@ -1035,7 +1071,7 @@ class SystemLoadWebSocketManager {
     }
 
     try {
-      const networkData = await this.systemService.getNetworkLoad(user);
+      const networkData = await this.systemService.getNetworkLoad(user, interfaceName);
 
       // Cache the result
       this.dataCache.set(cacheKey, {
@@ -1300,10 +1336,11 @@ class SystemLoadWebSocketManager {
         this.dataCache.delete('memory-services-data');
         // Force immediate updates with first user's byte format
         const user = this.getFirstConnectedUser();
+        const dashboardIface = await this.getDashboardInterfaceCached();
         const [cpuData, memoryData, networkData] = await Promise.all([
           this.getCombinedCpuData(user),
           this.getMemoryDataWithCache(true, user),
-          this.getNetworkDataWithCache(true, user)
+          this.getNetworkDataWithCache(true, user, dashboardIface)
         ]);
         // Send combined update
         const combinedData = { ...cpuData, ...memoryData, ...networkData };

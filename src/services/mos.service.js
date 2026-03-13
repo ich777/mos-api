@@ -5198,11 +5198,16 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
         throw new Error('Dashboard layout must be an object with left, right, and visibility properties');
       }
 
+      // Ensure interface key exists (default: eth0)
+      if (!layout.interface || typeof layout.interface !== 'string') {
+        layout.interface = 'eth0';
+      }
+
       return layout;
     } catch (error) {
       if (error.code === 'ENOENT') {
         // Return default empty layout if file doesn't exist
-        return { left: [], right: [], visibility: {} };
+        return { left: [], right: [], visibility: {}, interface: 'eth0' };
       }
       throw error;
     }
@@ -5259,11 +5264,24 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
         }
       }
 
-      // Normalize layout
+      // Read existing interface setting from file to preserve it if not provided
+      let existingInterface = 'eth0';
+      try {
+        const existingData = await fs.readFile(this.dashboardPath, 'utf8');
+        const existingLayout = JSON.parse(existingData);
+        if (existingLayout.interface && typeof existingLayout.interface === 'string') {
+          existingInterface = existingLayout.interface;
+        }
+      } catch (e) {
+        // File doesn't exist or invalid, use default
+      }
+
+      // Normalize layout (preserve existing interface if not provided in update)
       const normalizedLayout = {
         left: layout.left.map(card => ({ id: card.id, name: card.name })),
         right: layout.right.map(card => ({ id: card.id, name: card.name })),
-        visibility: { ...layout.visibility }
+        visibility: { ...layout.visibility },
+        interface: (layout.interface && typeof layout.interface === 'string') ? layout.interface : existingInterface
       };
 
       // Write to file
@@ -5272,6 +5290,64 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
       return normalizedLayout;
     } catch (error) {
       console.error('Error updating dashboard layout:', error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Gets the dashboard network interface setting
+   * @returns {Promise<string>} The interface name (default: 'eth0')
+   */
+  async getDashboardInterface() {
+    try {
+      const data = await fs.readFile(this.dashboardPath, 'utf8');
+      const layout = JSON.parse(data);
+      return (layout.interface && typeof layout.interface === 'string') ? layout.interface : 'eth0';
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        return 'eth0';
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Updates the dashboard network interface setting
+   * @param {string} interfaceName - The interface name to set (e.g. 'eth0', 'br0', 'bond0')
+   * @returns {Promise<Object>} Object with the updated interface name
+   */
+  async updateDashboardInterface(interfaceName) {
+    try {
+      // Validate interface name
+      if (!interfaceName || typeof interfaceName !== 'string') {
+        throw new Error('Interface name must be a non-empty string');
+      }
+
+      // Validate interface name format (alphanumeric + dots for VLANs)
+      if (!/^[a-zA-Z][a-zA-Z0-9.]*$/.test(interfaceName)) {
+        throw new Error('Invalid interface name format');
+      }
+
+      // Read existing dashboard config
+      let layout = {};
+      try {
+        const data = await fs.readFile(this.dashboardPath, 'utf8');
+        layout = JSON.parse(data);
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+        // File doesn't exist, start with defaults
+        layout = { left: [], right: [], visibility: {} };
+      }
+
+      // Update interface
+      layout.interface = interfaceName;
+
+      // Write to file
+      await fs.writeFile(this.dashboardPath, JSON.stringify(layout, null, 2), 'utf8');
+
+      return { interface: interfaceName };
+    } catch (error) {
+      console.error('Error updating dashboard interface:', error.message);
       throw error;
     }
   }

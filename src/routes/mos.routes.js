@@ -3979,6 +3979,10 @@ router.post('/installtodisk', async (req, res) => {
  *                   example:
  *                     Card1: true
  *                     Card2: false
+ *                 interface:
+ *                   type: string
+ *                   description: Network interface to monitor on dashboard (default eth0)
+ *                   example: "eth0"
  *             example:
  *               left:
  *                 - id: "C1"
@@ -3989,6 +3993,7 @@ router.post('/installtodisk', async (req, res) => {
  *               visibility:
  *                 Card1: true
  *                 Card2: false
+ *               interface: "eth0"
  *       401:
  *         description: Not authenticated
  *         content:
@@ -4063,6 +4068,10 @@ router.post('/installtodisk', async (req, res) => {
  *                 description: Visibility state for each card (key is card name, value is boolean)
  *                 additionalProperties:
  *                   type: boolean
+ *               interface:
+ *                 type: string
+ *                 description: Network interface to monitor on dashboard (default eth0)
+ *                 example: "eth0"
  *           example:
  *             left:
  *               - id: "C1"
@@ -4073,6 +4082,7 @@ router.post('/installtodisk', async (req, res) => {
  *             visibility:
  *               Card1: true
  *               Card2: false
+ *             interface: "eth0"
  *     responses:
  *       200:
  *         description: Dashboard layout updated successfully
@@ -4103,6 +4113,10 @@ router.post('/installtodisk', async (req, res) => {
  *                   type: object
  *                   additionalProperties:
  *                     type: boolean
+ *                 interface:
+ *                   type: string
+ *                   description: Network interface to monitor on dashboard
+ *                   example: "eth0"
  *       400:
  *         description: Invalid request body
  *         content:
@@ -4883,6 +4897,33 @@ router.post('/chmod', checkRole(['admin']), async (req, res) => {
   }
 });
 
+// GET: Read dashboard interface setting
+router.get('/dashboard/interface', async (req, res) => {
+  try {
+    const interfaceName = await mosService.getDashboardInterface();
+    res.json({ interface: interfaceName });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST: Update dashboard interface setting
+router.post('/dashboard/interface', async (req, res) => {
+  try {
+    const { interface: interfaceName } = req.body || {};
+    const result = await mosService.updateDashboardInterface(interfaceName);
+
+    // Invalidate websocket cache so it picks up the new interface immediately
+    if (req.app.locals.systemLoadWebSocketManager) {
+      req.app.locals.systemLoadWebSocketManager.invalidateDashboardInterfaceCache();
+    }
+
+    res.json(result);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
 // GET: Read dashboard layout
 router.get('/dashboard', async (req, res) => {
   try {
@@ -4906,6 +4947,81 @@ router.post('/dashboard', async (req, res) => {
     res.status(400).json({ error: error.message });
   }
 });
+
+/**
+ * @swagger
+ * /mos/dashboard/interface:
+ *   get:
+ *     summary: Get dashboard network interface setting
+ *     description: Retrieve which network interface is monitored on the dashboard. Returns 'eth0' by default if not configured.
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Dashboard interface retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 interface:
+ *                   type: string
+ *                   description: Network interface name used for dashboard monitoring
+ *                   example: "eth0"
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *   post:
+ *     summary: Update dashboard network interface setting
+ *     description: |
+ *       Set which network interface is monitored on the dashboard (system load websocket and /system/load endpoint).
+ *       Valid interface names include eth0, eth1, br0, bond0, eth0.100 (VLAN), etc.
+ *       If set to empty or invalid, defaults back to eth0.
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - interface
+ *             properties:
+ *               interface:
+ *                 type: string
+ *                 description: Network interface name to monitor
+ *                 example: "br0"
+ *     responses:
+ *       200:
+ *         description: Dashboard interface updated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 interface:
+ *                   type: string
+ *                   description: Updated network interface name
+ *                   example: "br0"
+ *       400:
+ *         description: Invalid interface name
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 
 /**
  * @swagger

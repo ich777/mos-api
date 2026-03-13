@@ -548,9 +548,9 @@ class SystemService {
   /**
    * Get static network interface information (IP, MAC, speed, etc.)
    */
-  async getNetworkStaticInterfaces() {
+  async getNetworkStaticInterfaces(interfaceName = null) {
     try {
-      const interfaceDetails = await this.getNetworkInterfaceDetails();
+      const interfaceDetails = await this.getNetworkInterfaceDetails(interfaceName);
 
       // Create a map for quick lookup
       const interfaceMap = {};
@@ -567,9 +567,9 @@ class SystemService {
   /**
    * Get dynamic network counters and calculate speeds
    */
-  async getNetworkDynamicCounters(user = null) {
+  async getNetworkDynamicCounters(user = null, interfaceName = null) {
     try {
-      const networkCounters = await this.getNetworkCountersOnly();
+      const networkCounters = await this.getNetworkCountersOnly(interfaceName);
       const currentTime = Date.now();
 
       // Calculate speeds using cached previous values
@@ -699,12 +699,12 @@ class SystemService {
     }
   }
 
-  async getNetworkLoad(user = null) {
+  async getNetworkLoad(user = null, interfaceName = null) {
     try {
       // Get static and dynamic data in parallel
       const [staticInterfaces, dynamicCounters] = await Promise.all([
-        this.getNetworkStaticInterfaces(),
-        this.getNetworkDynamicCounters(user)
+        this.getNetworkStaticInterfaces(interfaceName),
+        this.getNetworkDynamicCounters(user, interfaceName)
       ]);
 
       // Combine static interface info with dynamic counters
@@ -738,7 +738,7 @@ class SystemService {
    * Get network interface details from /sys filesystem (ultra-fast)
    * @returns {Promise<Array>} Network interface details
    */
-  async getNetworkInterfaceDetails() {
+  async getNetworkInterfaceDetails(interfaceName = null) {
     try {
       const fs = require('fs').promises;
       const { exec } = require('child_process');
@@ -748,36 +748,44 @@ class SystemService {
       // Get all network interfaces from /sys/class/net and filter immediately
       const allInterfaces = await fs.readdir('/sys/class/net');
 
-      // Helper function to check if interface is relevant (moved here for efficiency)
-      const isRelevantInterface = (ifaceName) => {
-        const name = ifaceName.toLowerCase();
-        // Only process main interfaces, exclude Docker bridges and virtual interfaces
-        return (name.startsWith('eth') ||   // Physical Ethernet
-                name.startsWith('bond') ||  // Bonding
-                name === 'br0') &&          // Main bridge only
-               !name.includes('docker') &&  // Exclude Docker interfaces
-               !name.startsWith('veth') &&  // Exclude virtual ethernet
-               !name.startsWith('br-');     // Exclude Docker bridges (br-xxxxx)
-      };
+      let prioritizedInterfaces;
 
-      // Filter interfaces before processing
-      const relevantInterfaces = allInterfaces.filter(isRelevantInterface);
+      // If a specific interface is requested, use only that one
+      if (interfaceName && allInterfaces.includes(interfaceName)) {
+        prioritizedInterfaces = [interfaceName];
+      } else {
+        // Helper function to check if interface is relevant (moved here for efficiency)
+        const isRelevantInterface = (ifaceName) => {
+          const name = ifaceName.toLowerCase();
+          // Only process main interfaces, exclude Docker bridges and virtual interfaces
+          return (name.startsWith('eth') ||   // Physical Ethernet
+                  name.startsWith('bond') ||  // Bonding
+                  name === 'br0') &&          // Main bridge only
+                 !name.includes('docker') &&  // Exclude Docker interfaces
+                 !name.startsWith('veth') &&  // Exclude virtual ethernet
+                 !name.startsWith('br-');     // Exclude Docker bridges (br-xxxxx)
+        };
 
-      // Smart interface priority: br0 > bond* > eth*
-      const prioritizeInterfaces = (interfaces) => {
-        const hasBridge = interfaces.some(name => name === 'br0');
-        const hasBond = interfaces.some(name => name.startsWith('bond'));
+        // Filter interfaces before processing
+        const relevantInterfaces = allInterfaces.filter(isRelevantInterface);
 
-        if (hasBridge) {
-          return interfaces.filter(name => name === 'br0');
-        } else if (hasBond) {
-          return interfaces.filter(name => name.startsWith('bond'));
-        } else {
-          return interfaces.filter(name => name.startsWith('eth'));
-        }
-      };
+        // Smart interface priority: br0 > bond* > eth*
+        const prioritizeInterfaces = (interfaces) => {
+          const hasBridge = interfaces.some(name => name === 'br0');
+          const hasBond = interfaces.some(name => name.startsWith('bond'));
 
-      const prioritizedInterfaces = prioritizeInterfaces(relevantInterfaces);
+          if (hasBridge) {
+            return interfaces.filter(name => name === 'br0');
+          } else if (hasBond) {
+            return interfaces.filter(name => name.startsWith('bond'));
+          } else {
+            return interfaces.filter(name => name.startsWith('eth'));
+          }
+        };
+
+        prioritizedInterfaces = prioritizeInterfaces(relevantInterfaces);
+      }
+
       const interfaceDetails = [];
 
       for (const ifaceName of prioritizedInterfaces) {
@@ -848,22 +856,11 @@ class SystemService {
    * Get network counters with error stats from /proc/net/dev (ultra-fast, pre-filtered)
    * @returns {Promise<Array>} Network counters with error statistics
    */
-  async getNetworkCountersOnly() {
+  async getNetworkCountersOnly(interfaceName = null) {
     try {
       const fs = require('fs').promises;
       const data = await fs.readFile('/proc/net/dev', 'utf8');
       const lines = data.split('\n').slice(2); // Skip header lines
-
-      // Helper function to check if interface is relevant (same logic as getNetworkInterfaceDetails)
-      const isRelevantInterface = (ifaceName) => {
-        const name = ifaceName.toLowerCase();
-        return (name.startsWith('eth') ||   // Physical Ethernet
-                name.startsWith('bond') ||  // Bonding
-                name === 'br0') &&          // Main bridge only
-               !name.includes('docker') &&  // Exclude Docker interfaces
-               !name.startsWith('veth') &&  // Exclude virtual ethernet
-               !name.startsWith('br-');     // Exclude Docker bridges (br-xxxxx)
-      };
 
       const allInterfaces = [];
 
@@ -873,22 +870,97 @@ class SystemService {
           if (parts.length >= 17) {
             const iface = parts[0].replace(':', '');
 
-            // Filter interfaces here to avoid processing unwanted ones
-            if (isRelevantInterface(iface)) {
-              allInterfaces.push({
-                iface: iface,
-                rx_bytes: parseInt(parts[1]) || 0,
-                rx_packets: parseInt(parts[2]) || 0,
-                rx_errors: parseInt(parts[3]) || 0,
-                rx_dropped: parseInt(parts[4]) || 0,
-                tx_bytes: parseInt(parts[9]) || 0,
-                tx_packets: parseInt(parts[10]) || 0,
-                tx_errors: parseInt(parts[11]) || 0,
-                tx_dropped: parseInt(parts[12]) || 0
-              });
+            // If a specific interface is requested, only match that one
+            if (interfaceName) {
+              if (iface === interfaceName) {
+                allInterfaces.push({
+                  iface: iface,
+                  rx_bytes: parseInt(parts[1]) || 0,
+                  rx_packets: parseInt(parts[2]) || 0,
+                  rx_errors: parseInt(parts[3]) || 0,
+                  rx_dropped: parseInt(parts[4]) || 0,
+                  tx_bytes: parseInt(parts[9]) || 0,
+                  tx_packets: parseInt(parts[10]) || 0,
+                  tx_errors: parseInt(parts[11]) || 0,
+                  tx_dropped: parseInt(parts[12]) || 0
+                });
+              }
+            } else {
+              // Helper function to check if interface is relevant (same logic as getNetworkInterfaceDetails)
+              const isRelevantInterface = (ifaceName) => {
+                const name = ifaceName.toLowerCase();
+                return (name.startsWith('eth') ||   // Physical Ethernet
+                        name.startsWith('bond') ||  // Bonding
+                        name === 'br0') &&          // Main bridge only
+                       !name.includes('docker') &&  // Exclude Docker interfaces
+                       !name.startsWith('veth') &&  // Exclude virtual ethernet
+                       !name.startsWith('br-');     // Exclude Docker bridges (br-xxxxx)
+              };
+
+              // Filter interfaces here to avoid processing unwanted ones
+              if (isRelevantInterface(iface)) {
+                allInterfaces.push({
+                  iface: iface,
+                  rx_bytes: parseInt(parts[1]) || 0,
+                  rx_packets: parseInt(parts[2]) || 0,
+                  rx_errors: parseInt(parts[3]) || 0,
+                  rx_dropped: parseInt(parts[4]) || 0,
+                  tx_bytes: parseInt(parts[9]) || 0,
+                  tx_packets: parseInt(parts[10]) || 0,
+                  tx_errors: parseInt(parts[11]) || 0,
+                  tx_dropped: parseInt(parts[12]) || 0
+                });
+              }
             }
           }
         }
+      }
+
+      // If a specific interface was requested and found, return directly
+      if (interfaceName && allInterfaces.length > 0) {
+        return allInterfaces;
+      }
+
+      // If specific interface was requested but not found, fall back to default priority
+      // Also used when no specific interface was requested
+      if (interfaceName && allInterfaces.length === 0) {
+        // Re-parse all relevant interfaces for fallback
+        const fallbackInterfaces = [];
+        const isRelevantInterface = (ifaceName) => {
+          const name = ifaceName.toLowerCase();
+          return (name.startsWith('eth') || name.startsWith('bond') || name === 'br0') &&
+                 !name.includes('docker') && !name.startsWith('veth') && !name.startsWith('br-');
+        };
+        for (const line of lines) {
+          if (line.trim()) {
+            const parts = line.trim().split(/\s+/);
+            if (parts.length >= 17) {
+              const iface = parts[0].replace(':', '');
+              if (isRelevantInterface(iface)) {
+                fallbackInterfaces.push({
+                  iface: iface,
+                  rx_bytes: parseInt(parts[1]) || 0,
+                  rx_packets: parseInt(parts[2]) || 0,
+                  rx_errors: parseInt(parts[3]) || 0,
+                  rx_dropped: parseInt(parts[4]) || 0,
+                  tx_bytes: parseInt(parts[9]) || 0,
+                  tx_packets: parseInt(parts[10]) || 0,
+                  tx_errors: parseInt(parts[11]) || 0,
+                  tx_dropped: parseInt(parts[12]) || 0
+                });
+              }
+            }
+          }
+        }
+        // Apply priority logic to fallback interfaces
+        const prioritizeFallback = (interfaces) => {
+          const hasBridge = interfaces.some(i => i.iface === 'br0');
+          const hasBond = interfaces.some(i => i.iface.startsWith('bond'));
+          if (hasBridge) return interfaces.filter(i => i.iface === 'br0');
+          if (hasBond) return interfaces.filter(i => i.iface.startsWith('bond'));
+          return interfaces.filter(i => i.iface.startsWith('eth'));
+        };
+        return prioritizeFallback(fallbackInterfaces);
       }
 
       // Smart interface priority: br0 > bond* > eth*
@@ -946,12 +1018,12 @@ class SystemService {
    * @param {Object} user - User object with byte_format preference
    * @returns {Promise<Object>} Load, temperature, network and memory info
    */
-  async getSystemLoad(user = null) {
+  async getSystemLoad(user = null, interfaceName = null) {
     try {
       // Combine CPU/Memory, Network data and Uptime
       const [cpuMemoryData, networkData, uptime] = await Promise.all([
         this.getCpuMemoryLoad(user),
-        this.getNetworkLoad(user),
+        this.getNetworkLoad(user, interfaceName),
         this.getUptime()
       ]);
 

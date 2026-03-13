@@ -958,7 +958,8 @@ router.get('/detailed', checkRole(['admin']), async (req, res) => {
 // System load (available to all authenticated users)
 router.get('/load', authenticateToken, async (req, res) => {
   try {
-    const loadInfo = await systemService.getSystemLoad(req.user);
+    const dashboardInterface = await mosService.getDashboardInterface();
+    const loadInfo = await systemService.getSystemLoad(req.user, dashboardInterface);
     res.json(loadInfo);
   } catch (error) {
     res.status(500).json({ error: error.message });
