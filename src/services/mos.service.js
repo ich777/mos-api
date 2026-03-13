@@ -1327,8 +1327,9 @@ class MosService {
       let updateCheckChanged = false;
 
       // Check directory paths for mount status
+      // Always validate 'directory' (even if unchanged) to catch legacy nonraid/mergerfs paths
       const pathsToCheck = {};
-      if (updates.directory && updates.directory !== current.directory) {
+      if (updates.directory) {
         pathsToCheck.directory = updates.directory;
       }
       if (updates.appdata && updates.appdata !== current.appdata) {
@@ -1604,8 +1605,9 @@ class MosService {
       }
 
       // Check directory paths for mount status
+      // Always validate 'directory' (even if unchanged) to catch legacy nonraid/mergerfs paths
       const pathsToCheck = {};
-      if (updates.directory && updates.directory !== current.directory) {
+      if (updates.directory) {
         pathsToCheck.directory = updates.directory;
       }
       if (updates.backup_path && updates.backup_path !== current.backup_path) {
@@ -1806,8 +1808,9 @@ class MosService {
       const allowed = ['enabled', 'directory', 'vdisk_directory', 'start_wait'];
 
       // Check directory paths for mount status
+      // Always validate 'directory' (even if unchanged) to catch legacy nonraid/mergerfs paths
       const pathsToCheck = {};
-      if (updates.directory && updates.directory !== current.directory) {
+      if (updates.directory) {
         pathsToCheck.directory = updates.directory;
       }
       if (updates.vdisk_directory && updates.vdisk_directory !== current.vdisk_directory) {
