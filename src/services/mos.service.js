@@ -27,6 +27,7 @@ class MosService {
     this._networkPendingChanges = false;
     this._networkRollbackTimer = null;
     this._networkBackupConfig = null;
+    this._systemJsonBackup = null;
     this._networkRollbackTimeout = 60000; // 60 seconds
     this._networkPendingTimestamp = null;
   }
@@ -1886,8 +1887,54 @@ class MosService {
   }
 
   /**
-   * Backs up the current network.json before applying changes.
-   * Stores the config in memory for potential rollback.
+   * Derives listen_interfaces from the current network interface config and
+   * updates system.json + restarts nginx when the list changes.
+   * Active IP-carrying interfaces: enabled ethernet (not bridged/bonded), bridges, bonds.
+   * When eth0 becomes bridged → eth0 is removed, br0 is added. Reverse on bridge removal.
+   * @param {Array} interfaces - The current interfaces array
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _syncListenInterfaces(interfaces) {
+    const sysDefaults = this._getDefaultSystemSettings();
+    let sysSettings = { ...sysDefaults };
+    try {
+      const sysData = await fs.readFile('/boot/config/system.json', 'utf8');
+      sysSettings = this._deepMerge(sysDefaults, JSON.parse(sysData));
+    } catch (e) {
+      if (e.code !== 'ENOENT') throw e;
+    }
+
+    if (!sysSettings.webui) sysSettings.webui = { ports: { http: 80 }, listen_interfaces: ['eth0'] };
+    if (!Array.isArray(sysSettings.webui.listen_interfaces)) sysSettings.webui.listen_interfaces = ['eth0'];
+
+    // Empty list = nginx listens on all interfaces (default), nothing to do
+    if (sysSettings.webui.listen_interfaces.length === 0) return;
+
+    const activeListenIfaces = interfaces
+      .filter(i => {
+        if (i.status === 'disabled' || i.status === 'orphan') return false;
+        if (i.type === 'bridged' || i.type === 'bonded') return false;
+        return true;
+      })
+      .map(i => i.name);
+
+    const oldList = JSON.stringify(sysSettings.webui.listen_interfaces);
+    sysSettings.webui.listen_interfaces = activeListenIfaces;
+
+    if (oldList !== JSON.stringify(sysSettings.webui.listen_interfaces)) {
+      await fs.writeFile('/boot/config/system.json', JSON.stringify(sysSettings, null, 2), 'utf8');
+      try {
+        await execPromise('/etc/init.d/nginx restart');
+      } catch (nginxErr) {
+        console.warn('Warning: Could not restart nginx after listen_interfaces update:', nginxErr.message);
+      }
+    }
+  }
+
+  /**
+   * Backs up the current network.json and system.json (listen_interfaces)
+   * before applying changes. Stores the configs in memory for potential rollback.
    * @returns {Promise<void>}
    * @private
    */
@@ -1900,6 +1947,16 @@ class MosService {
         this._networkBackupConfig = null;
       } else {
         throw new Error(`Error backing up network config: ${error.message}`);
+      }
+    }
+
+    // Backup system.json for listen_interfaces rollback
+    try {
+      const sysData = await fs.readFile('/boot/config/system.json', 'utf8');
+      this._systemJsonBackup = sysData;
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        this._systemJsonBackup = null;
       }
     }
   }
@@ -1946,14 +2003,37 @@ class MosService {
         } catch { /* ignore if already gone */ }
       }
 
+      // Restore system.json (listen_interfaces) if we have a backup
+      let needNginxRestart = false;
+      if (this._systemJsonBackup !== null && this._systemJsonBackup !== undefined) {
+        await fs.writeFile('/boot/config/system.json', this._systemJsonBackup, 'utf8');
+        // Only restart nginx if the backed-up listen_interfaces was non-empty
+        try {
+          const backedUp = JSON.parse(this._systemJsonBackup);
+          if (Array.isArray(backedUp?.webui?.listen_interfaces) && backedUp.webui.listen_interfaces.length > 0) {
+            needNginxRestart = true;
+          }
+        } catch { /* parse error — skip nginx restart */ }
+      }
+
       // Restart networking to apply restored config
       await execPromise('/etc/init.d/networking restart');
+
+      // Restart nginx to restore previous listen_interfaces (only if non-empty)
+      if (needNginxRestart) {
+        try {
+          await execPromise('/etc/init.d/nginx restart');
+        } catch (nginxErr) {
+          console.warn('Warning: Could not restart nginx during rollback:', nginxErr.message);
+        }
+      }
     } catch (error) {
       console.error('Error during network rollback:', error.message);
     } finally {
       this._networkPendingChanges = false;
       this._networkRollbackTimer = null;
       this._networkBackupConfig = null;
+      this._systemJsonBackup = null;
       this._networkPendingTimestamp = null;
     }
   }
@@ -1977,6 +2057,7 @@ class MosService {
     this._networkPendingChanges = false;
     this._networkRollbackTimer = null;
     this._networkBackupConfig = null;
+    this._systemJsonBackup = null;
     this._networkPendingTimestamp = null;
 
     return { confirmed: true };
@@ -2779,6 +2860,15 @@ class MosService {
         this._startNetworkRollbackTimer();
       }
 
+      // Auto-update webui listen_interfaces based on active IP-carrying interfaces
+      if (interfacesChanged) {
+        try {
+          await this._syncListenInterfaces(current.interfaces);
+        } catch (listenErr) {
+          console.warn('Warning: Could not update webui listen_interfaces:', listenErr.message);
+        }
+      }
+
       return current.interfaces;
     } catch (error) {
       throw new Error(`Error updating network interfaces: ${error.message}`);
@@ -3256,7 +3346,8 @@ class MosService {
       webui: {
         ports: {
           http: 80
-        }
+        },
+        listen_interfaces: ['eth0']
       },
       update_check: {
         enabled: false,
@@ -3332,7 +3423,7 @@ class MosService {
       let persistHistoryValue = null;
       let cpufreqChanged = false;
       let binfmtChanged = false;
-      let webuiHttpPortChanged = false;
+      let webuiChanged = false;
       let updateCheckChanged = false;
 
       for (const key of Object.keys(updates)) {
@@ -3494,11 +3585,17 @@ class MosService {
             current.webui = {
               ports: {
                 http: 80
-              }
+              },
+              listen_interfaces: [
+                'eth0'
+              ]
             };
           }
           if (!current.webui.ports) {
             current.webui.ports = { http: 80 };
+          }
+          if (!Array.isArray(current.webui.listen_interfaces)) {
+            current.webui.listen_interfaces = [];
           }
 
           // Update webui settings
@@ -3506,12 +3603,20 @@ class MosService {
             if (typeof updates.webui.ports === 'object' && updates.webui.ports !== null) {
               // Check if http port changed
               if (updates.webui.ports.http !== undefined && updates.webui.ports.http !== current.webui.ports.http) {
-                webuiHttpPortChanged = true;
+                webuiChanged = true;
               }
 
               current.webui.ports = {
                 http: updates.webui.ports.http !== undefined ? updates.webui.ports.http : current.webui.ports.http
               };
+            }
+
+            // Check if listen_interfaces changed
+            if (Array.isArray(updates.webui.listen_interfaces)) {
+              if (JSON.stringify(updates.webui.listen_interfaces) !== JSON.stringify(current.webui.listen_interfaces)) {
+                webuiChanged = true;
+              }
+              current.webui.listen_interfaces = updates.webui.listen_interfaces;
             }
           }
         } else if (key === 'update_check') {
@@ -3648,8 +3753,8 @@ class MosService {
         }
       }
 
-      // Restart nginx if webui http port changed
-      if (webuiHttpPortChanged) {
+      // Restart nginx if webui settings changed (http port or listen_interfaces)
+      if (webuiChanged) {
         try {
           await execPromise('/etc/init.d/nginx restart');
         } catch (error) {

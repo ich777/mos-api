@@ -1872,6 +1872,7 @@ router.post('/settings/network/services', async (req, res) => {
  *               webui:
  *                 ports:
  *                   http: 80
+ *                 listen_interfaces: ["eth0"]
  *       401:
  *         description: Not authenticated
  *         content:
@@ -1898,7 +1899,7 @@ router.post('/settings/network/services', async (req, res) => {
  *               $ref: '#/components/schemas/Error'
  *   post:
  *     summary: Update system settings
- *     description: Update system configuration - hostname, global_spindown, and notification_sound allowed (admin only)
+ *     description: Update system configuration - hostname, global_spindown, notification_sound, webui listen_interfaces and more (admin only)
  *     tags: [MOS]
  *     security:
  *       - bearerAuth: []
@@ -2131,7 +2132,7 @@ router.get('/settings/system', async (req, res) => {
  *                     example: ["aarch64"]
  *               webui:
  *                 type: object
- *                 description: WebUI configuration settings. Changing the HTTP port triggers nginx restart.
+ *                 description: WebUI configuration settings. Changing the HTTP port or listen_interfaces triggers nginx restart.
  *                 properties:
  *                   ports:
  *                     type: object
@@ -2141,6 +2142,12 @@ router.get('/settings/system', async (req, res) => {
  *                         type: integer
  *                         description: HTTP port for the WebUI (default 80). Changing this triggers nginx restart.
  *                         example: 80
+ *                   listen_interfaces:
+ *                     type: array
+ *                     items:
+ *                       type: string
+ *                     description: Network interfaces for nginx to listen on (e.g. eth0, br0). Empty array means all interfaces. Changing this triggers nginx restart.
+ *                     example: ["eth0", "br0"]
  *               update_check:
  *                 type: object
  *                 description: MOS system update check configuration. Changing enabled or schedule triggers mos-cron_update.
