@@ -121,6 +121,23 @@ class SystemService {
   }
 
   /**
+   * Format network link speed (Mbit/s) to human readable string
+   * @param {number} speedMbit - Link speed in Mbit/s (e.g. 100, 1000, 2500, 10000)
+   * @returns {string|null} Human readable speed (e.g. "1 Gbit", "2.5 Gbit", "100 Mbit")
+   */
+  formatLinkSpeed(speedMbit) {
+    if (!speedMbit || speedMbit <= 0) return null;
+
+    if (speedMbit >= 1000) {
+      const gbit = speedMbit / 1000;
+      const formatted = Number.isInteger(gbit) ? gbit.toString() : gbit.toFixed(1);
+      return `${formatted} Gbit`;
+    }
+
+    return `${speedMbit} Mbit`;
+  }
+
+  /**
    * Get user's byte format preference
    * @param {Object} user - User object
    * @returns {string} Byte format ('binary' or 'decimal')
@@ -716,6 +733,7 @@ class SystemService {
           type: staticInfo.type || 'unknown',
           state: staticInfo.state || 'unknown',
           speed: staticInfo.speed || null,
+          speed_human: staticInfo.speed_human || null,
           ip4: staticInfo.ip4 || null,
           ip6: staticInfo.ip6 || null,
           mac: staticInfo.mac || null,
@@ -822,11 +840,37 @@ class SystemService {
           else if (ifaceName.startsWith('bond')) interfaceType = 'bond';
           else if (ifaceName.startsWith('wlan')) interfaceType = 'wireless';
 
+          let resolvedSpeed = parseInt(speed.trim()) || null;
+
+          // Bridge interfaces report a kernel-default speed (usually 10000 Mbit).
+          // Resolve to the highest member port speed instead.
+          if (interfaceType === 'bridge' && resolvedSpeed) {
+            try {
+              const members = await fs.readdir(`${basePath}/brif`).catch(() => []);
+              if (members.length > 0) {
+                const memberSpeeds = await Promise.all(
+                  members.map(member =>
+                    fs.readFile(`/sys/class/net/${member}/speed`, 'utf8')
+                      .then(s => parseInt(s.trim()) || 0)
+                      .catch(() => 0)
+                  )
+                );
+                const maxMemberSpeed = Math.max(...memberSpeeds);
+                if (maxMemberSpeed > 0) {
+                  resolvedSpeed = maxMemberSpeed;
+                }
+              }
+            } catch (e) {
+              // Keep bridge-reported speed as fallback
+            }
+          }
+
           interfaceDetails.push({
             name: ifaceName,
             type: interfaceType,
             state: operstate.trim(),
-            speed: parseInt(speed.trim()) || null,
+            speed: resolvedSpeed,
+            speed_human: this.formatLinkSpeed(resolvedSpeed),
             mac: address.trim() || null,
             ip4: ip4,
             ip6: ip6
@@ -838,6 +882,7 @@ class SystemService {
             type: 'unknown',
             state: 'unknown',
             speed: null,
+            speed_human: null,
             mac: null,
             ip4: null,
             ip6: null

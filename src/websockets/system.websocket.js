@@ -1270,6 +1270,7 @@ class SystemLoadWebSocketManager {
           interface: iface.interface,
           type: iface.type,
           speed: iface.speed,
+          speed_human: iface.speed_human,
           ip4: iface.ip4,
           ip6: iface.ip6,
           mac: iface.mac
