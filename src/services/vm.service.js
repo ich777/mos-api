@@ -2062,9 +2062,28 @@ class VmService {
       // Extract UUID
       const vmUuid = this._extractXmlValue(xml, 'uuid');
 
+      // Get icon and description from VM index
+      let icon = null;
+      let description = null;
+      let customIcon = false;
+      try {
+        const indexData = await this._readVmIndex();
+        const indexEntry = indexData.find(e => e.name === vmName);
+        if (indexEntry) {
+          icon = indexEntry.icon || null;
+          description = indexEntry.description || null;
+        }
+        customIcon = this.hasCustomIcon(vmName);
+      } catch (indexError) {
+        // If index read fails, continue without icon/description
+      }
+
       return {
         name,
         uuid: vmUuid,
+        icon,
+        customIcon,
+        description,
         memory: memoryMiB,
         memoryHuman,
         cpus: vcpu,
@@ -2094,6 +2113,11 @@ class VmService {
       // Get current config
       const currentConfig = await this.getVmConfig(vmName);
 
+      // Resize file-based disks if size changed (grow only, block devices skipped)
+      if (updates.disks) {
+        await this._resizeDisksIfNeeded(currentConfig.disks, updates.disks);
+      }
+
       // Merge updates with current config
       const newConfig = {
         ...currentConfig,
@@ -2112,7 +2136,22 @@ class VmService {
       xml = this._removeXmlEditedMetadata(xml);
 
       // Update VM without injecting xmlEdited metadata
-      return await this._saveVmXml(vmName, xml);
+      const result = await this._saveVmXml(vmName, xml);
+
+      // Save icon and description to VM index if provided
+      if (updates.icon !== undefined || updates.description !== undefined) {
+        try {
+          const indexUpdate = { name: vmName };
+          if (updates.icon !== undefined) indexUpdate.icon = updates.icon;
+          if (updates.description !== undefined) indexUpdate.description = updates.description;
+          await this.updateVmIndex([indexUpdate]);
+        } catch (indexError) {
+          // Don't fail the whole update if index write fails
+          console.warn(`Warning: Could not update VM index for icon/description: ${indexError.message}`);
+        }
+      }
+
+      return result;
     } catch (error) {
       throw new Error(`Failed to update VM config: ${error.message}`);
     }
@@ -2377,6 +2416,94 @@ class VmService {
   // ============================================================
   // Disk Management
   // ============================================================
+
+  /**
+   * Parse size string or number to bytes
+   * Supports: 512M, 512MB, 512MiB, 4G, 4GB, 4GiB, 1T, 1TB, 1TiB
+   * Plain numbers are assumed to be bytes
+   * @param {string|number} size - Size with optional unit
+   * @returns {number} Size in bytes
+   * @private
+   */
+  _parseSizeToBytes(size) {
+    if (typeof size === 'number') return Math.floor(size);
+
+    const sizeStr = String(size).trim();
+    const match = sizeStr.match(/^(\d+(?:\.\d+)?)\s*(M|MB|MIB|G|GB|GIB|T|TB|TIB)?$/i);
+
+    if (!match) {
+      throw new Error(`Invalid size format: ${size}. Use format like 4G, 4GB, 512M, 512MB or plain bytes`);
+    }
+
+    const value = parseFloat(match[1]);
+    const unit = match[2] ? match[2].toUpperCase() : null;
+
+    if (!unit) {
+      // Plain number = bytes
+      return Math.floor(value);
+    }
+
+    switch (unit) {
+      case 'M':
+      case 'MB':
+      case 'MIB':
+        return Math.floor(value * 1024 * 1024);
+      case 'G':
+      case 'GB':
+      case 'GIB':
+        return Math.floor(value * 1024 * 1024 * 1024);
+      case 'T':
+      case 'TB':
+      case 'TIB':
+        return Math.floor(value * 1024 * 1024 * 1024 * 1024);
+      default:
+        return Math.floor(value);
+    }
+  }
+
+  /**
+   * Resize file-based disks if the requested size is larger than the current size
+   * Skips block devices. Rejects shrink requests.
+   * @param {Array} currentDisks - Current disk config from getVmConfig (size in bytes)
+   * @param {Array} newDisks - Updated disk config from the user
+   * @private
+   */
+  async _resizeDisksIfNeeded(currentDisks, newDisks) {
+    if (!newDisks || !Array.isArray(newDisks)) return;
+
+    for (const newDisk of newDisks) {
+      if (!newDisk.source || newDisk.size === undefined || newDisk.size === null) continue;
+
+      // Skip block devices
+      if (newDisk.diskType === 'block') continue;
+
+      // Find matching current disk by source path
+      const currentDisk = currentDisks.find(d => d.source === newDisk.source);
+      if (!currentDisk || !currentDisk.size) continue;
+
+      // Skip block devices (check current disk type too)
+      if (currentDisk.diskType === 'block') continue;
+
+      // Parse new size to bytes for comparison
+      const newSizeBytes = this._parseSizeToBytes(newDisk.size);
+      const currentSizeBytes = currentDisk.size; // already in bytes from getVmConfig
+
+      if (newSizeBytes === currentSizeBytes) continue;
+
+      if (newSizeBytes < currentSizeBytes) {
+        throw new Error(
+          `Disk "${newDisk.source}": Shrinking is not supported via API. ` +
+          `Current: ${currentDisk.sizeHuman}, requested: ${this.formatBytes(newSizeBytes)}`
+        );
+      }
+
+      // Grow the disk with qemu-img resize
+      const { stderr } = await execPromise(`qemu-img resize "${newDisk.source}" ${newSizeBytes}`);
+      if (stderr && stderr.toLowerCase().includes('error')) {
+        throw new Error(`Failed to resize disk "${newDisk.source}": ${stderr}`);
+      }
+    }
+  }
 
   /**
    * Create a new virtual disk image
