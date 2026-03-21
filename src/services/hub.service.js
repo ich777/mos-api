@@ -490,9 +490,14 @@ class HubService {
 
   /**
    * Gets available categories from the index (filtered by allowed categories)
+   * @param {boolean} all - If true, return all allowed categories, otherwise only those in use
    * @returns {Promise<Array<string>>} List of available categories
    */
-  async getCategories() {
+  async getCategories(all = false) {
+    if (all) {
+      return [...this.allowedCategories];
+    }
+
     let indexData;
     try {
       const data = await fs.readFile(this.indexPath, 'utf8');

@@ -384,10 +384,16 @@ router.get('/types', async (req, res) => {
  * /mos/hub/categories:
  *   get:
  *     summary: Get available template categories
- *     description: Returns available categories (AI, Backup, Media, etc.) that exist in repositories
+ *     description: Returns available categories (AI, Backup, Media, etc.). Use ?all=true to return all allowed categories, not only those in use.
  *     tags: [MOS Hub]
  *     security:
  *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: all
+ *         schema:
+ *           type: boolean
+ *         description: If true, returns all allowed categories instead of only those currently in use
  *     responses:
  *       200:
  *         description: List of available categories
@@ -403,7 +409,8 @@ router.get('/types', async (req, res) => {
  */
 router.get('/categories', async (req, res) => {
   try {
-    const categories = await hubService.getCategories();
+    const all = req.query.all === 'true';
+    const categories = await hubService.getCategories(all);
     res.json(categories);
   } catch (error) {
     res.status(500).json({ error: error.message });
