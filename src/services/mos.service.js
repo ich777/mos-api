@@ -5310,6 +5310,80 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
   }
 
   /**
+   * Rename a file or directory
+   * @param {string} destination - Full path to the file or directory to rename
+   * @param {string} new_name - New name (filename only, no path separators)
+   * @returns {Promise<Object>} Result with old path, new path, and new name
+   */
+  async rename(destination, new_name) {
+    if (!destination) {
+      throw new Error('destination is required');
+    }
+    if (!new_name) {
+      throw new Error('new_name is required');
+    }
+
+    // Prevent path traversal
+    if (new_name.includes('/') || new_name.includes('\\') || new_name === '.' || new_name === '..') {
+      throw new Error('new_name must be a simple filename without path separators');
+    }
+
+    // Validate Linux filename: only NUL (\0) and / are truly forbidden,
+    // but we also reject control characters and other problematic characters
+    const invalidCharsRegex = /[\x00-\x1f\x7f/\\:*?"<>|]/;
+    if (invalidCharsRegex.test(new_name)) {
+      throw new Error('new_name contains invalid characters. Forbidden: \\ / : * ? " < > | and control characters');
+    }
+
+    // Reject names that are only whitespace or start/end with spaces (common filesystem issues)
+    if (new_name.trim() !== new_name || new_name.trim().length === 0) {
+      throw new Error('new_name must not be empty or have leading/trailing whitespace');
+    }
+
+    const normalizedDest = path.resolve(destination);
+    const currentName = path.basename(normalizedDest);
+
+    // Check if new name is identical to current name
+    if (new_name === currentName) {
+      throw new Error('new_name is identical to the current name');
+    }
+
+    // Check destination exists
+    try {
+      await fs.stat(normalizedDest);
+    } catch (e) {
+      if (e.code === 'ENOENT') {
+        throw new Error(`Path does not exist: ${normalizedDest}`);
+      }
+      throw e;
+    }
+
+    // Build new path (same parent directory, new name)
+    const parentDir = path.dirname(normalizedDest);
+    const newPath = path.join(parentDir, new_name);
+
+    // Check new path doesn't already exist (skip for case-only changes on case-sensitive FS)
+    const isCaseChangeOnly = new_name.toLowerCase() === currentName.toLowerCase();
+    if (!isCaseChangeOnly) {
+      try {
+        await fs.access(newPath);
+        throw new Error(`A file or directory with the name "${new_name}" already exists in ${parentDir}`);
+      } catch (e) {
+        if (e.code !== 'ENOENT') throw e;
+      }
+    }
+
+    // Perform rename
+    await fs.rename(normalizedDest, newPath);
+
+    return {
+      source: normalizedDest,
+      destination: newPath,
+      new_name: new_name
+    };
+  }
+
+  /**
    * Gets the dashboard layout configuration
    * @returns {Promise<Object>} The dashboard layout with left, right columns and visibility
    */

@@ -60,6 +60,7 @@ const dockerWebSocketRoutes = require('./routes/websocket/docker.websocket.route
 const disksWebSocketRoutes = require('./routes/websocket/disks.websocket.routes');
 const vmWebSocketRoutes = require('./routes/websocket/vm.websocket.routes');
 const lxcWebSocketRoutes = require('./routes/websocket/lxc.websocket.routes');
+const fileOperationsWebSocketRoutes = require('./routes/websocket/fileoperations.websocket.routes');
 
 // Middleware
 const { authenticateToken } = require('./middleware/auth.middleware');
@@ -172,6 +173,7 @@ async function startServer() {
   app.use('/api/v1/disks', disksWebSocketRoutes);
   app.use('/api/v1/vm', vmWebSocketRoutes);
   app.use('/api/v1/lxc', lxcWebSocketRoutes);
+  app.use('/api/v1/mos', fileOperationsWebSocketRoutes);
 
   // Error Handling
   app.use(errorHandler);
@@ -292,6 +294,7 @@ async function startServer() {
   const DisksWebSocketManager = require('./websockets/disks.websocket');
   const VmWebSocketManager = require('./websockets/vm.websocket');
   const LxcWebSocketManager = require('./websockets/lxc.websocket');
+  const FileOperationsWebSocketManager = require('./websockets/fileoperations.websocket');
 
   // Initialize event emitter for service communication
   const EventEmitter = require('events');
@@ -305,6 +308,7 @@ async function startServer() {
   const disksNamespace = io.of('/disks');
   const vmNamespace = io.of('/vm');
   const lxcNamespace = io.of('/lxc');
+  const fileOperationsNamespace = io.of('/fileoperations');
 
   // Initialize pool WebSocket manager with pools namespace
   const PoolsService = require('./services/pools.service');
@@ -367,6 +371,10 @@ async function startServer() {
   const lxcService = require('./services/lxc.service');
   const lxcWebSocketManager = new LxcWebSocketManager(lxcNamespace, lxcService);
 
+  // Initialize File Operations WebSocket manager with fileoperations namespace
+  const fileOperationsService = require('./services/fileoperations.service');
+  const fileOperationsWebSocketManager = new FileOperationsWebSocketManager(fileOperationsNamespace, fileOperationsService);
+
   // Make WebSocket managers available to routes
   app.locals.poolWebSocketManager = poolWebSocketManager;
   app.locals.systemLoadWebSocketManager = systemLoadWebSocketManager;
@@ -375,6 +383,7 @@ async function startServer() {
   app.locals.disksWebSocketManager = disksWebSocketManager;
   app.locals.vmWebSocketManager = vmWebSocketManager;
   app.locals.lxcWebSocketManager = lxcWebSocketManager;
+  app.locals.fileOperationsWebSocketManager = fileOperationsWebSocketManager;
 
   // Setup namespace handlers
   poolsNamespace.on('connection', (socket) => {
@@ -415,6 +424,12 @@ async function startServer() {
   lxcNamespace.on('connection', (socket) => {
     console.info(`LXC WebSocket client connected: ${socket.id}`);
     lxcWebSocketManager.handleConnection(socket);
+  });
+
+  // File Operations namespace for copy/move progress monitoring
+  fileOperationsNamespace.on('connection', (socket) => {
+    console.info(`FileOps WebSocket client connected: ${socket.id}`);
+    fileOperationsWebSocketManager.handleConnection(socket);
   });
 
   // ============================================================

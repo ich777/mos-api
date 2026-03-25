@@ -98,6 +98,10 @@ const options = {
         description: 'MOS System Configuration and Settings Management'
       },
       {
+        name: 'File Operations WebSocket',
+        description: 'File Operations WebSocket'
+      },
+      {
         name: 'MOS Hub',
         description: 'MOS Hub Repository Management'
       },

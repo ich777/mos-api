@@ -4348,6 +4348,124 @@ router.post('/editfile', checkRole(['admin']), async (req, res) => {
 
 /**
  * @swagger
+ * /mos/rename:
+ *   post:
+ *     summary: Rename a file or directory
+ *     description: |
+ *       Renames a file or directory by changing only its name within the same parent directory.
+ *       This is a synchronous operation and returns immediately.
+ *
+ *       **Validation:**
+ *       - `new_name` must not contain forbidden characters: `\ / : * ? " < > |` or control characters
+ *       - `new_name` must not have leading/trailing whitespace
+ *       - `new_name` must not be identical to the current name
+ *       - Case-only changes (e.g., `Movies` → `movies`) are allowed (Linux is case-sensitive)
+ *       - An error is thrown if a file/directory with `new_name` already exists in the same directory
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - destination
+ *               - new_name
+ *             properties:
+ *               destination:
+ *                 type: string
+ *                 description: Full path to the file or directory to rename
+ *                 example: "/mnt/Pool1/media/old-folder"
+ *               new_name:
+ *                 type: string
+ *                 description: New name (filename only, no path separators or invalid characters)
+ *                 example: "new-folder"
+ *           examples:
+ *             renameDir:
+ *               summary: Rename a directory
+ *               value:
+ *                 destination: "/mnt/Pool1/media/old-folder"
+ *                 new_name: "new-folder"
+ *             renameFile:
+ *               summary: Rename a file
+ *               value:
+ *                 destination: "/mnt/Pool1/documents/report.txt"
+ *                 new_name: "report-final.txt"
+ *             caseChange:
+ *               summary: Change case only
+ *               value:
+ *                 destination: "/mnt/Pool1/media/Movies"
+ *                 new_name: "movies"
+ *     responses:
+ *       200:
+ *         description: Rename successful
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 source:
+ *                   type: string
+ *                   description: Original full path
+ *                   example: "/mnt/Pool1/media/old-folder"
+ *                 destination:
+ *                   type: string
+ *                   description: New full path after rename
+ *                   example: "/mnt/Pool1/media/new-folder"
+ *                 new_name:
+ *                   type: string
+ *                   description: New name
+ *                   example: "new-folder"
+ *       400:
+ *         description: Invalid parameters or name already exists
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *             examples:
+ *               exists:
+ *                 value:
+ *                   error: "A file or directory with the name \"new-folder\" already exists in /mnt/Pool1/media"
+ *               notfound:
+ *                 value:
+ *                   error: "Path does not exist: /mnt/Pool1/media/old-folder"
+ *               invalid_chars:
+ *                 value:
+ *                   error: "new_name contains invalid characters. Forbidden: \\ / : * ? \" < > | and control characters"
+ *               identical:
+ *                 value:
+ *                   error: "new_name is identical to the current name"
+ *       401:
+ *         description: Not authenticated
+ *       500:
+ *         description: Server error
+ */
+
+// POST: Rename a file or directory
+router.post('/rename', async (req, res) => {
+  try {
+    const { destination, new_name } = req.body;
+    const result = await mosService.rename(destination, new_name);
+    res.json(result);
+  } catch (error) {
+    if (error.message.includes('required') ||
+        error.message.includes('does not exist') ||
+        error.message.includes('already exists') ||
+        error.message.includes('must be') ||
+        error.message.includes('invalid characters') ||
+        error.message.includes('identical') ||
+        error.message.includes('must not be')) {
+      res.status(400).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
+/**
+ * @swagger
  * /mos/createfile:
  *   post:
  *     summary: Create a new file on the filesystem
@@ -5316,6 +5434,309 @@ router.get('/fsnavigator', async (req, res) => {
     } else if (error.message.includes('does not exist')) {
       res.status(404).json({ error: error.message });
     } else if (error.message.includes('not a directory')) {
+      res.status(400).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
+// ============================================================
+// FILE OPERATIONS ENDPOINTS
+// ============================================================
+
+/**
+ * @swagger
+ * /mos/fileoperations:
+ *   post:
+ *     summary: Start a file copy or move operation
+ *     description: |
+ *       Starts a background file copy or move operation with progress tracking.
+ *       The operation runs asynchronously - use the WebSocket namespace `/fileoperations`
+ *       or poll `GET /mos/fileoperations` for progress updates.
+ *
+ *       **MergerFS Protection:**
+ *       Copy operations within the same MergerFS pool are blocked to prevent data corruption.
+ *       This includes paths under `/mnt/POOLNAME` and `/var/mergerfs/POOLNAME/`.
+ *       Move operations are always allowed.
+ *
+ *       **Same-Filesystem Moves:**
+ *       If source and destination are on the same filesystem, the move is instant (rename).
+ *       The response will have `instantMove: true` in this case.
+ *
+ *       **Disk Space Check:**
+ *       Before starting the transfer, available disk space at the destination is checked.
+ *       The operation will fail if insufficient space is detected.
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - operation
+ *               - source
+ *               - destination
+ *             properties:
+ *               operation:
+ *                 type: string
+ *                 enum: [copy, move]
+ *                 description: Type of file operation
+ *                 example: "copy"
+ *               source:
+ *                 type: string
+ *                 description: Source file or directory path
+ *                 example: "/mnt/Pool1/media/movies"
+ *               destination:
+ *                 type: string
+ *                 description: Destination directory path
+ *                 example: "/mnt/ssd1/backup"
+ *               onConflict:
+ *                 type: string
+ *                 enum: [fail, overwrite, skip]
+ *                 default: fail
+ *                 description: |
+ *                   How to handle conflicts when destination already exists:
+ *                   - `fail` - Abort the operation (default)
+ *                   - `overwrite` - Overwrite existing files
+ *                   - `skip` - Skip existing files
+ *                 example: "fail"
+ *           examples:
+ *             copy:
+ *               summary: Copy a directory
+ *               value:
+ *                 operation: "copy"
+ *                 source: "/mnt/Pool1/media/movies"
+ *                 destination: "/mnt/ssd1/backup"
+ *                 onConflict: "fail"
+ *             move:
+ *               summary: Move a directory
+ *               value:
+ *                 operation: "move"
+ *                 source: "/var/mergerfs/Pool1/disk1/old-data"
+ *                 destination: "/var/mergerfs/Pool1/disk2"
+ *             overwrite:
+ *               summary: Copy with overwrite
+ *               value:
+ *                 operation: "copy"
+ *                 source: "/mnt/Pool1/media"
+ *                 destination: "/mnt/Pool2/media-backup"
+ *                 onConflict: "overwrite"
+ *     responses:
+ *       200:
+ *         description: Operation started successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/FileOperationUpdate'
+ *             example:
+ *               id: "1742742123456"
+ *               operation: "copy"
+ *               source: "/mnt/Pool1/media/movies"
+ *               destination: "/mnt/ssd1/backup"
+ *               destinationFull: "/mnt/ssd1/backup/movies"
+ *               status: "preparing"
+ *               instantMove: false
+ *               onConflict: "fail"
+ *               progress: 0
+ *               speed: 0
+ *               speed_human: "0 B/s"
+ *               eta: null
+ *               bytesTransferred: 0
+ *               bytesTransferred_human: "0 B"
+ *               bytesTotal: 0
+ *               bytesTotal_human: "0 B"
+ *               startedAt: "2025-03-23T14:30:00.000Z"
+ *               completedAt: null
+ *               error: null
+ *       400:
+ *         description: Invalid parameters or MergerFS copy blocked
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *             examples:
+ *               invalid:
+ *                 value:
+ *                   error: "Invalid operation. Must be \"copy\" or \"move\""
+ *               mergerfs:
+ *                 value:
+ *                   error: "Copy operation blocked: Source and destination both belong to pool \"Pool1\". Copying within the same MergerFS pool creates duplicates and corrupts the pool. Use \"move\" instead, or copy to a different pool/location"
+ *               conflict:
+ *                 value:
+ *                   error: "Destination already exists: /mnt/ssd1/backup/movies. Use onConflict \"overwrite\" or \"skip\" to proceed"
+ *               space:
+ *                 value:
+ *                   error: "Not enough disk space. Required: 2.6 GiB, Available: 1.2 GiB"
+ *       401:
+ *         description: Not authenticated
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *   get:
+ *     summary: List all file operations
+ *     description: |
+ *       Returns all running and recently completed file operations (completed operations
+ *       are retained for 5 minutes). Sorted by status (running first) then by start time.
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: List of file operations
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 $ref: '#/components/schemas/FileOperationUpdate'
+ *       401:
+ *         description: Not authenticated
+ *       500:
+ *         description: Server error
+ */
+
+/**
+ * @swagger
+ * /mos/fileoperations/{id}:
+ *   delete:
+ *     summary: Cancel a running file operation
+ *     description: |
+ *       Cancels a running copy or move operation by sending SIGINT to the rsync process.
+ *       Partially transferred files may remain at the destination.
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Operation ID to cancel
+ *         example: "1742742123456"
+ *     responses:
+ *       200:
+ *         description: Operation cancelled successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/FileOperationUpdate'
+ *       400:
+ *         description: Operation already completed/cancelled
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *             example:
+ *               error: "Operation 1742742123456 is already completed"
+ *       404:
+ *         description: Operation not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *             example:
+ *               error: "Operation not found: 1742742123456"
+ *       401:
+ *         description: Not authenticated
+ *       500:
+ *         description: Server error
+ */
+
+/**
+ * @swagger
+ * /mos/runningfsoperations:
+ *   get:
+ *     summary: Get count of running file operations
+ *     description: Returns the number of currently running (preparing + running) file operations as an integer.
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Running operations count
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 count:
+ *                   type: integer
+ *                   description: Number of currently running file operations
+ *                   example: 2
+ *       401:
+ *         description: Not authenticated
+ *       500:
+ *         description: Server error
+ */
+
+const fileOperationsService = require('../services/fileoperations.service');
+
+// POST: Start a file copy or move operation
+router.post('/fileoperations', async (req, res) => {
+  try {
+    const { operation, source, destination, onConflict } = req.body;
+
+    const result = await fileOperationsService.startOperation({
+      operation,
+      source,
+      destination,
+      onConflict,
+      user: req.user
+    });
+
+    res.json(result);
+  } catch (error) {
+    if (error.message.includes('blocked') ||
+        error.message.includes('Invalid') ||
+        error.message.includes('already exists') ||
+        error.message.includes('Not enough disk space') ||
+        error.message.includes('must be') ||
+        error.message.includes('required') ||
+        error.message.includes('does not exist')) {
+      res.status(400).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
+// GET: List all file operations
+router.get('/fileoperations', async (req, res) => {
+  try {
+    const operations = fileOperationsService.getOperations(req.user);
+    res.json(operations);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET: Count of running file operations
+router.get('/runningfsoperations', async (req, res) => {
+  try {
+    const count = fileOperationsService.getRunningCount();
+    res.json({ count });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// DELETE: Cancel a running file operation
+router.delete('/fileoperations/:id', async (req, res) => {
+  try {
+    const result = fileOperationsService.cancelOperation(req.params.id, req.user);
+    res.json(result);
+  } catch (error) {
+    if (error.message.includes('not found')) {
+      res.status(404).json({ error: error.message });
+    } else if (error.message.includes('already')) {
       res.status(400).json({ error: error.message });
     } else {
       res.status(500).json({ error: error.message });
