@@ -250,17 +250,17 @@ class UserService {
     const user = users.find(u => u.username === username);
 
     if (!user) {
-      throw new Error('User not found');
+      throw new Error('Invalid username or password');
     }
 
     // samba_only users cannot log in via API
     if (user.role === 'samba_only') {
-      throw new Error('Access denied. This account is for file sharing only.');
+      throw new Error('Invalid username or password');
     }
 
     const validPassword = await bcrypt.compare(password, user.password);
     if (!validPassword) {
-      throw new Error('Invalid password');
+      throw new Error('Invalid username or password');
     }
 
     const token = jwt.sign(

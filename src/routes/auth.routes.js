@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const userService = require('../services/user.service');
 const { authenticateToken, checkRole, getBootToken } = require('../middleware/auth.middleware');
+const { loginRateLimiter, resetLoginAttempts } = require('../middleware/login-rate-limit.middleware');
 
 /**
  * @swagger
@@ -245,6 +246,25 @@ router.get('/firstsetup', async (req, res) => {
  *               $ref: '#/components/schemas/Error'
  *             example:
  *               error: "Invalid username or password"
+ *       429:
+ *         description: Too many login attempts
+ *         headers:
+ *           Retry-After:
+ *             description: Seconds until the block expires
+ *             schema:
+ *               type: integer
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: "Too many login attempts. Please try again later."
+ *                 retryAfter:
+ *                   type: integer
+ *                   description: Seconds until the block expires
+ *                   example: 7200
  *       400:
  *         description: Bad request
  *         content:
@@ -252,13 +272,18 @@ router.get('/firstsetup', async (req, res) => {
  *             schema:
  *               $ref: '#/components/schemas/Error'
  */
-router.post('/login', async (req, res) => {
+router.post('/login', loginRateLimiter, async (req, res) => {
   try {
     const { username, password } = req.body;
     const result = await userService.authenticate(username, password);
+    resetLoginAttempts(req);
     res.json(result);
   } catch (error) {
-    res.status(401).json({ error: error.message });
+    const remaining = res.locals.remainingLoginAttempts;
+    const triesText = remaining === 1 ? '1 attempt remaining' : `${remaining} attempts remaining`;
+    res.status(401).json({
+      error: `${error.message} (${triesText})`
+    });
   }
 });
 

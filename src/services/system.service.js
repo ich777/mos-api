@@ -778,22 +778,21 @@ class SystemService {
           // Only process main interfaces, exclude Docker bridges and virtual interfaces
           return (name.startsWith('eth') ||   // Physical Ethernet
                   name.startsWith('bond') ||  // Bonding
-                  name === 'br0') &&          // Main bridge only
+                  name.startsWith('br')) &&    // Bridges (br0, br1, ...)
                  !name.includes('docker') &&  // Exclude Docker interfaces
-                 !name.startsWith('veth') &&  // Exclude virtual ethernet
-                 !name.startsWith('br-');     // Exclude Docker bridges (br-xxxxx)
+                 !name.startsWith('veth');    // Exclude virtual ethernet
         };
 
         // Filter interfaces before processing
         const relevantInterfaces = allInterfaces.filter(isRelevantInterface);
 
-        // Smart interface priority: br0 > bond* > eth*
+        // Smart interface priority: br* > bond* > eth*
         const prioritizeInterfaces = (interfaces) => {
-          const hasBridge = interfaces.some(name => name === 'br0');
+          const hasBridge = interfaces.some(name => name.startsWith('br'));
           const hasBond = interfaces.some(name => name.startsWith('bond'));
 
           if (hasBridge) {
-            return interfaces.filter(name => name === 'br0');
+            return interfaces.filter(name => name.startsWith('br'));
           } else if (hasBond) {
             return interfaces.filter(name => name.startsWith('bond'));
           } else {
@@ -936,10 +935,9 @@ class SystemService {
                 const name = ifaceName.toLowerCase();
                 return (name.startsWith('eth') ||   // Physical Ethernet
                         name.startsWith('bond') ||  // Bonding
-                        name === 'br0') &&          // Main bridge only
+                        name.startsWith('br')) &&    // Bridges (br0, br1, ...)
                        !name.includes('docker') &&  // Exclude Docker interfaces
-                       !name.startsWith('veth') &&  // Exclude virtual ethernet
-                       !name.startsWith('br-');     // Exclude Docker bridges (br-xxxxx)
+                       !name.startsWith('veth');    // Exclude virtual ethernet
               };
 
               // Filter interfaces here to avoid processing unwanted ones
@@ -973,8 +971,8 @@ class SystemService {
         const fallbackInterfaces = [];
         const isRelevantInterface = (ifaceName) => {
           const name = ifaceName.toLowerCase();
-          return (name.startsWith('eth') || name.startsWith('bond') || name === 'br0') &&
-                 !name.includes('docker') && !name.startsWith('veth') && !name.startsWith('br-');
+          return (name.startsWith('eth') || name.startsWith('bond') || name.startsWith('br')) &&
+                 !name.includes('docker') && !name.startsWith('veth');
         };
         for (const line of lines) {
           if (line.trim()) {
@@ -999,9 +997,9 @@ class SystemService {
         }
         // Apply priority logic to fallback interfaces
         const prioritizeFallback = (interfaces) => {
-          const hasBridge = interfaces.some(i => i.iface === 'br0');
+          const hasBridge = interfaces.some(i => i.iface.startsWith('br'));
           const hasBond = interfaces.some(i => i.iface.startsWith('bond'));
-          if (hasBridge) return interfaces.filter(i => i.iface === 'br0');
+          if (hasBridge) return interfaces.filter(i => i.iface.startsWith('br'));
           if (hasBond) return interfaces.filter(i => i.iface.startsWith('bond'));
           return interfaces.filter(i => i.iface.startsWith('eth'));
         };
@@ -1010,11 +1008,11 @@ class SystemService {
 
       // Smart interface priority: br0 > bond* > eth*
       const prioritizeInterfaces = (interfaces) => {
-        const hasBridge = interfaces.some(iface => iface.iface === 'br0');
+        const hasBridge = interfaces.some(iface => iface.iface.startsWith('br'));
         const hasBond = interfaces.some(iface => iface.iface.startsWith('bond'));
 
         if (hasBridge) {
-          return interfaces.filter(iface => iface.iface === 'br0');
+          return interfaces.filter(iface => iface.iface.startsWith('br'));
         } else if (hasBond) {
           return interfaces.filter(iface => iface.iface.startsWith('bond'));
         } else {

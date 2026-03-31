@@ -55,6 +55,9 @@ class Config {
           JWT_EXPIRY_DAYS: '1',
           RATE_LIMIT_WINDOW: '1',
           RATE_LIMIT_MAX: '20',
+          RATE_LIMIT_MAX_LOGIN: '5',
+          RATE_LIMIT_LOGIN_WINDOW: '15',
+          RATE_LIMIT_LOGIN_BLOCK: '30',
           NODE_ENV: 'production'
         };
       }
@@ -66,6 +69,9 @@ class Config {
         JWT_EXPIRY_DAYS: '1',
         RATE_LIMIT_WINDOW: '1',
         RATE_LIMIT_MAX: '20',
+        RATE_LIMIT_MAX_LOGIN: '5',
+        RATE_LIMIT_LOGIN_WINDOW: '15',
+        RATE_LIMIT_LOGIN_BLOCK: '30',
         NODE_ENV: 'production'
       };
 
