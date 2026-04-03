@@ -5559,7 +5559,7 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
    * @param {boolean} includeHidden - Whether to include hidden files/folders
    * @returns {Promise<Object>} Directory listing with items and navigation info
    */
-  async browseFilesystem(requestPath, type = 'directories', allowedRoots = null, includeHidden = false) {
+  async browseFilesystem(requestPath, type = 'directories', allowedRoots = null, includeHidden = false, user = null) {
     const normalizedPath = requestPath?.trim() || '/';
 
     // If allowedRoots are specified, create a virtual root
@@ -5577,14 +5577,14 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
       }
 
       // Browse real directory with virtual root boundary
-      return await this._browseDirectory(resolvedPath, type, allowedRoots, includeHidden);
+      return await this._browseDirectory(resolvedPath, type, allowedRoots, includeHidden, user);
     }
 
     // No roots specified: Browse filesystem normally (full access)
     const resolvedPath = path.resolve(normalizedPath);
 
     // Browse without restrictions
-    return await this._browseDirectory(resolvedPath, type, null, includeHidden);
+    return await this._browseDirectory(resolvedPath, type, null, includeHidden, user);
   }
 
   /**
@@ -5624,7 +5624,7 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
    * Browse a real directory
    * @private
    */
-  async _browseDirectory(dirPath, type, fsNavigatorRoots, includeHidden = false) {
+  async _browseDirectory(dirPath, type, fsNavigatorRoots, includeHidden = false, user = null) {
     // Check if path exists
     let stats;
     try {
@@ -5710,6 +5710,7 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
           path: fullPath,
           type: resolvedType,
           size: (resolvedType === 'file' && itemStats.isFile()) ? itemStats.size : null,
+          size_human: (resolvedType === 'file' && itemStats.isFile()) ? systemService.formatBytes(itemStats.size, user) : null,
           modified: itemStats.mtime,
           isSymlink: isSymlink,
           symlinkTarget: symlinkTarget,

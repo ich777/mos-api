@@ -5273,6 +5273,11 @@ router.post('/dashboard', async (req, res) => {
  *                         nullable: true
  *                         description: File size in bytes (null for directories)
  *                         example: null
+ *                       size_human:
+ *                         type: string
+ *                         nullable: true
+ *                         description: Human readable file size based on user byte_format preference (null for directories)
+ *                         example: null
  *                       modified:
  *                         type: string
  *                         format: date-time
@@ -5332,6 +5337,7 @@ router.post('/dashboard', async (req, res) => {
  *                       path: "/mnt/nvme/appdata"
  *                       type: "directory"
  *                       size: null
+ *                       size_human: null
  *                       modified: "2024-11-25T14:30:00.000Z"
  *                       isSymlink: false
  *                       symlinkTarget: null
@@ -5343,6 +5349,7 @@ router.post('/dashboard', async (req, res) => {
  *                       path: "/mnt/nvme/backup"
  *                       type: "directory"
  *                       size: null
+ *                       size_human: null
  *                       modified: "2024-11-20T10:15:00.000Z"
  *                       isSymlink: false
  *                       symlinkTarget: null
@@ -5354,6 +5361,7 @@ router.post('/dashboard', async (req, res) => {
  *                       path: "/bin"
  *                       type: "directory"
  *                       size: null
+ *                       size_human: null
  *                       modified: "2024-11-15T08:20:00.000Z"
  *                       isSymlink: true
  *                       symlinkTarget: "/usr/bin"
@@ -5426,7 +5434,7 @@ router.get('/fsnavigator', async (req, res) => {
       }
     }
 
-    const result = await mosService.browseFilesystem(path, type, allowedRoots, includeHidden === 'true');
+    const result = await mosService.browseFilesystem(path, type, allowedRoots, includeHidden === 'true', req.user);
     res.json(result);
   } catch (error) {
     if (error.message.includes('outside allowed directories')) {
