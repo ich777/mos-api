@@ -18,6 +18,7 @@ class NotificationsService {
    */
   _initFileWatcher() {
     const dir = path.dirname(this.notificationsPath);
+    const filename = path.basename(this.notificationsPath);
 
     // Ensure directory exists before watching
     fsSync.mkdirSync(dir, { recursive: true });
@@ -25,21 +26,24 @@ class NotificationsService {
     // Load initial IDs so we don't push existing notifications on startup
     this._loadKnownIds();
 
-    try {
-      this._watcher = fsSync.watch(this.notificationsPath, () => {
-        // Debounce: the file may be written multiple times in quick succession
-        if (this._debounceTimer) clearTimeout(this._debounceTimer);
-        this._debounceTimer = setTimeout(() => this._onFileChanged(), 500);
-      });
+    // Watch the directory instead of the file:
+    // - Works even if the file doesn't exist yet (no retry loop needed)
+    // - Survives file deletion/recreation (inotify watches the directory inode)
+    // - Zero CPU cost when idle (kernel inotify, no polling)
+    this._watcher = fsSync.watch(dir, (eventType, changedFile) => {
+      if (changedFile !== filename) return;
 
-      this._watcher.on('error', () => {
-        // File might not exist yet, retry after delay
-        setTimeout(() => this._initFileWatcher(), 5000);
-      });
-    } catch {
-      // File doesn't exist yet, retry after delay
-      setTimeout(() => this._initFileWatcher(), 5000);
-    }
+      // Debounce: the file may be written multiple times in quick succession
+      if (this._debounceTimer) clearTimeout(this._debounceTimer);
+      this._debounceTimer = setTimeout(() => this._onFileChanged(), 500);
+    });
+
+    // If directory is deleted, watcher dies — restart immediately (mkdirSync recreates it)
+    this._watcher.on('error', () => {
+      this._watcher.close();
+      this._watcher = null;
+      setTimeout(() => this._initFileWatcher(), 1000);
+    });
   }
 
   /**
