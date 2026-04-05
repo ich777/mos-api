@@ -37,7 +37,7 @@ const dockerComposeService = require('../services/dockercompose.service');
  *           example: "https://example.com/icon.png"
  *         running:
  *           type: boolean
- *           description: Whether stack is running
+ *           description: Whether stack is running (from docker-compose ls)
  *           example: true
  *         autostart:
  *           type: boolean
@@ -213,8 +213,13 @@ router.get('/stacks/:name', async (req, res) => {
  *               webui:
  *                 type: string
  *                 nullable: true
- *                 description: WebUI URL for the stack
+ *                 description: WebUI URL for the stack (also accepts web_ui_url)
  *                 example: "http://10.0.0.1:3001"
+ *               web_ui_url:
+ *                 type: string
+ *                 nullable: true
+ *                 description: Alias for webui (webui takes priority if both are provided)
+ *                 example: "http://[IP]:3001"
  *     responses:
  *       201:
  *         description: Stack created successfully
@@ -264,8 +269,8 @@ router.post('/stacks', async (req, res) => {
       return res.status(400).json({ error: 'compose.yaml content is required' });
     }
 
-    const { webui } = req.body;
-    const result = await dockerComposeService.createStack(name, yaml, env, icon, autostart === true, webui || null);
+    const webuiValue = req.body.webui !== undefined ? req.body.webui : req.body.web_ui_url;
+    const result = await dockerComposeService.createStack(name, yaml, env, icon, autostart === true, webuiValue || null);
     res.status(201).json(result);
   } catch (error) {
     if (error.message.includes('already exists')) {
@@ -322,8 +327,13 @@ router.post('/stacks', async (req, res) => {
  *               webui:
  *                 type: string
  *                 nullable: true
- *                 description: WebUI URL for the stack (null to clear)
+ *                 description: WebUI URL for the stack (null to clear, also accepts web_ui_url)
  *                 example: "http://10.0.0.1:3001"
+ *               web_ui_url:
+ *                 type: string
+ *                 nullable: true
+ *                 description: Alias for webui (webui takes priority if both are provided)
+ *                 example: "http://[IP]:3001"
  *     responses:
  *       200:
  *         description: Stack updated successfully
@@ -366,7 +376,7 @@ router.post('/stacks', async (req, res) => {
 router.put('/stacks/:name', async (req, res) => {
   try {
     const { name } = req.params;
-    const { yaml, env, icon, autostart, webui } = req.body;
+    const { yaml, env, icon, autostart } = req.body;
 
     if (!yaml) {
       return res.status(400).json({ error: 'compose.yaml content is required' });
@@ -375,6 +385,8 @@ router.put('/stacks/:name', async (req, res) => {
     // Pass autostart as-is (null if not provided, to preserve existing value)
     const autostartValue = autostart !== undefined ? autostart === true : null;
     // webui: undefined = preserve, null = clear, string = set
+    // Accept both webui and web_ui_url
+    const webui = req.body.webui !== undefined ? req.body.webui : req.body.web_ui_url;
     const result = await dockerComposeService.updateStack(name, yaml, env, icon, autostartValue, webui);
     res.json(result);
   } catch (error) {
@@ -416,8 +428,13 @@ router.put('/stacks/:name', async (req, res) => {
  *               webui:
  *                 type: string
  *                 nullable: true
- *                 description: WebUI URL for the stack (null to clear)
+ *                 description: WebUI URL for the stack (null to clear, also accepts web_ui_url)
  *                 example: "http://10.0.0.1:3001"
+ *               web_ui_url:
+ *                 type: string
+ *                 nullable: true
+ *                 description: Alias for webui (webui takes priority if both are provided)
+ *                 example: "http://[IP]:3001"
  *     responses:
  *       200:
  *         description: Settings updated successfully
@@ -447,12 +464,14 @@ router.put('/stacks/:name', async (req, res) => {
 router.patch('/stacks/:name', async (req, res) => {
   try {
     const { name } = req.params;
-    const { autostart, webui } = req.body;
+    const { autostart } = req.body;
 
     const settings = {};
     if (autostart !== undefined) {
       settings.autostart = autostart === true;
     }
+    // Accept both webui and web_ui_url
+    const webui = req.body.webui !== undefined ? req.body.webui : req.body.web_ui_url;
     if (webui !== undefined) {
       settings.webui = webui; // null clears, string sets
     }
@@ -791,27 +810,36 @@ router.post('/stacks/:name/upgrade', async (req, res) => {
 
 /**
  * @swagger
- * /docker/mos/compose/removed:
+ * /docker/mos/compose/templates:
  *   get:
- *     summary: Get all removed (deleted) compose stacks
- *     description: List all compose stacks that have been deleted (admin only)
+ *     summary: Get all compose template names
+ *     description: Retrieve all Docker Compose template names grouped by installed and removed (admin only)
  *     tags: [Docker Compose]
  *     security:
  *       - bearerAuth: []
  *     responses:
  *       200:
- *         description: List of removed stacks
+ *         description: Template names retrieved successfully
  *         content:
  *           application/json:
  *             schema:
- *               type: array
- *               items:
- *                 type: object
- *                 properties:
- *                   name:
+ *               type: object
+ *               properties:
+ *                 installed:
+ *                   type: array
+ *                   items:
  *                     type: string
- *                     description: Stack name
- *                     example: "wordpress"
+ *                   description: List of installed stack template names
+ *                   example: ["wordpress", "nextcloud"]
+ *                 removed:
+ *                   type: array
+ *                   items:
+ *                     type: string
+ *                   description: List of removed stack template names
+ *                   example: ["gitea", "vaultwarden"]
+ *             example:
+ *               installed: ["wordpress", "nextcloud"]
+ *               removed: ["gitea", "vaultwarden"]
  *       401:
  *         description: Not authenticated
  *       403:
@@ -819,10 +847,10 @@ router.post('/stacks/:name/upgrade', async (req, res) => {
  *       500:
  *         description: Server error
  */
-router.get('/removed', async (req, res) => {
+router.get('/templates', async (req, res) => {
   try {
-    const stacks = await dockerComposeService.getRemovedStacks();
-    res.json(stacks);
+    const allTemplates = await dockerComposeService.getAllTemplates();
+    res.json(allTemplates);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -830,10 +858,10 @@ router.get('/removed', async (req, res) => {
 
 /**
  * @swagger
- * /docker/mos/compose/removed/{name}:
+ * /docker/mos/compose/templates/{name}:
  *   get:
- *     summary: Get details of a removed compose stack
- *     description: Retrieve YAML, env, and icon details of a removed stack (admin only)
+ *     summary: Get specific compose template
+ *     description: Retrieve a specific Docker Compose template, preferring installed over removed if both exist (admin only)
  *     tags: [Docker Compose]
  *     security:
  *       - bearerAuth: []
@@ -843,11 +871,19 @@ router.get('/removed', async (req, res) => {
  *         required: true
  *         schema:
  *           type: string
- *         description: Stack name
+ *         description: Name of the compose stack template
  *         example: "wordpress"
+ *       - in: query
+ *         name: edit
+ *         required: false
+ *         schema:
+ *           type: boolean
+ *           default: false
+ *         description: If false (default), appends '_new' to the name for installed stacks. If true, returns original name.
+ *         example: true
  *     responses:
  *       200:
- *         description: Removed stack details
+ *         description: Template retrieved successfully
  *         content:
  *           application/json:
  *             schema:
@@ -855,7 +891,8 @@ router.get('/removed', async (req, res) => {
  *               properties:
  *                 name:
  *                   type: string
- *                   example: "wordpress"
+ *                   description: Stack name (may have '_new' suffix if edit=false and source is installed)
+ *                   example: "wordpress_new"
  *                 yaml:
  *                   type: string
  *                   nullable: true
@@ -868,20 +905,47 @@ router.get('/removed', async (req, res) => {
  *                   type: string
  *                   nullable: true
  *                   description: Icon URL
+ *                 autostart:
+ *                   type: boolean
+ *                   description: Whether stack should autostart
+ *                 webui:
+ *                   type: string
+ *                   nullable: true
+ *                   description: WebUI URL
+ *                 source:
+ *                   type: string
+ *                   enum: [installed, removed]
+ *                   description: Whether template is from installed or removed stacks
+ *             example:
+ *               name: "wordpress_new"
+ *               yaml: "version: '3'\nservices:\n  web:\n    image: wordpress:latest"
+ *               env: "DB_HOST=db"
+ *               iconUrl: "https://example.com/icon.png"
+ *               autostart: false
+ *               webui: null
+ *               source: "installed"
+ *       400:
+ *         description: Template name is required
  *       401:
  *         description: Not authenticated
  *       403:
  *         description: Admin permission required
  *       404:
- *         description: Removed stack not found
+ *         description: Template not found
  *       500:
  *         description: Server error
  */
-router.get('/removed/:name', async (req, res) => {
+router.get('/templates/:name', async (req, res) => {
   try {
     const { name } = req.params;
-    const details = await dockerComposeService.getRemovedStackDetails(name);
-    res.json(details);
+    const edit = req.query.edit === 'true';
+
+    if (!name) {
+      return res.status(400).json({ error: 'Template name is required' });
+    }
+
+    const template = await dockerComposeService.getTemplate(name, edit);
+    res.json(template);
   } catch (error) {
     if (error.message.includes('not found')) {
       res.status(404).json({ error: error.message });

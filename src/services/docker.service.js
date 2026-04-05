@@ -20,7 +20,29 @@ class DockerService {
 
       // Read file
       const data = await fs.readFile(filePath, 'utf8');
-      const images = JSON.parse(data);
+      let images = JSON.parse(data);
+
+      // Lazy cleanup: remove orphaned entries not present in Docker
+      try {
+        const { stdout } = await execPromise('docker ps -a --format "{{.Names}}"');
+        const dockerContainers = new Set(
+          stdout.trim().split('\n').filter(name => name.length > 0)
+        );
+
+        const originalLength = images.length;
+        images = images.filter(image => dockerContainers.has(image.name));
+
+        if (images.length < originalLength) {
+          // Reindex remaining entries
+          images.sort((a, b) => (a.index || 0) - (b.index || 0));
+          images.forEach((image, i) => { image.index = i + 1; });
+
+          // Write cleaned file back
+          await fs.writeFile(filePath, JSON.stringify(images, null, 2), 'utf8');
+        }
+      } catch (dockerError) {
+        // Docker daemon not available - skip cleanup
+      }
 
       // Process each image and add update status
       return images.map(image => {

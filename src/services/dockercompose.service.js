@@ -69,6 +69,20 @@ async function execWithAuth(command, options = {}) {
 class DockerComposeService {
 
   /**
+   * Normalize webui URL: convert [IP] to [ADDRESS], null/empty to null
+   * @param {string|null|undefined} webui - Raw webui value
+   * @returns {string|null} Normalized webui or null
+   */
+  _normalizeWebui(webui) {
+    if (webui === null || webui === undefined || webui === '') return null;
+    let normalized = webui;
+    if (normalized.includes('[IP]')) {
+      normalized = normalized.replace(/\[IP\]/g, '[ADDRESS]');
+    }
+    return normalized;
+  }
+
+  /**
    * Get the base path for compose stacks (boot directory - master copy)
    * @returns {string} Base path
    */
@@ -313,6 +327,52 @@ class DockerComposeService {
   }
 
   /**
+   * Get running status for all compose projects in one call
+   * @returns {Promise<Object>} Map of stackName → { running: boolean, status: string }
+   */
+  async _getComposeProjectStatuses() {
+    try {
+      const { stdout } = await execPromise('docker-compose ls --all --format json');
+      const projects = JSON.parse(stdout || '[]');
+      const statusMap = {};
+
+      for (const project of projects) {
+        // Project name is compose_${stackName} from working directory
+        const projectName = project.Name || '';
+        if (projectName.startsWith('compose_')) {
+          const stackName = projectName.substring('compose_'.length);
+          const status = project.Status || '';
+          // Status format: "running(2)", "exited(2)", "created(1)", etc.
+          const isRunning = status.toLowerCase().startsWith('running');
+          statusMap[stackName] = {
+            running: isRunning,
+            status: status
+          };
+        }
+      }
+
+      return statusMap;
+    } catch (error) {
+      console.warn(`Failed to get compose project statuses: ${error.message}`);
+      return {};
+    }
+  }
+
+  /**
+   * Check if a specific stack is running
+   * @param {string} stackName - Stack name
+   * @returns {Promise<boolean>} Whether the stack is running
+   */
+  async _isStackRunning(stackName) {
+    try {
+      const statuses = await this._getComposeProjectStatuses();
+      return statuses[stackName]?.running || false;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  /**
    * Get actual container names after stack deployment (including stopped containers)
    * @param {string} stackName - Stack name
    * @returns {Promise<Array<string>>} Array of container names
@@ -515,12 +575,7 @@ class DockerComposeService {
         }
       }
 
-      // Normalize webui: null or empty string means clear
-      // Also convert [IP] to [ADDRESS] for consistency
-      let normalizedWebui = (webui === null || webui === '') ? null : webui;
-      if (normalizedWebui && normalizedWebui.includes('[IP]')) {
-        normalizedWebui = normalizedWebui.replace(/\[IP\]/g, '[ADDRESS]');
-      }
+      const normalizedWebui = this._normalizeWebui(webui);
 
       const stackEntry = {
         stack: stackName,
@@ -594,7 +649,24 @@ class DockerComposeService {
   }
 
   /**
-   * Deploy a compose stack
+   * Pull images for a compose stack (without starting)
+   * @param {string} stackName - Stack name
+   * @returns {Promise<Object>} Object with stdout and stderr
+   */
+  async _pullStackImages(stackName) {
+    try {
+      const workingPath = await this._getWorkingPath(stackName);
+      const { stdout, stderr } = await execWithAuth('docker-compose -f compose.yaml -f mos.override.yaml pull', {
+        cwd: workingPath
+      });
+      return { stdout: stdout || '', stderr: stderr || '' };
+    } catch (error) {
+      throw new Error(`Failed to pull images: ${error.message}${error.stderr ? '\n' + error.stderr : ''}`);
+    }
+  }
+
+  /**
+   * Deploy a compose stack (start containers, assumes images are already pulled)
    * @param {string} stackName - Stack name
    * @returns {Promise<Object>} Object with stdout and stderr
    */
@@ -608,6 +680,23 @@ class DockerComposeService {
     } catch (error) {
       // Include output even on error
       throw new Error(`Failed to deploy stack: ${error.message}${error.stderr ? '\n' + error.stderr : ''}`);
+    }
+  }
+
+  /**
+   * Stop all containers in a compose stack (without removing them)
+   * @param {string} stackName - Stack name
+   * @returns {Promise<void>}
+   */
+  async _stopStack(stackName) {
+    try {
+      const workingPath = await this._getWorkingPath(stackName);
+      await execPromise('docker-compose -f compose.yaml -f mos.override.yaml stop', {
+        cwd: workingPath
+      });
+    } catch (error) {
+      console.warn(`Warning during stack stop: ${error.message}`);
+      // Don't throw - stopping is best-effort after a failed deploy
     }
   }
 
@@ -679,15 +768,28 @@ class DockerComposeService {
         throw new Error('compose.yaml content is required');
       }
 
-      // Check if stack already exists
+      // Check if stack already exists (directory + group = real active stack)
       const stackPath = this._getStackPath(name);
+      let stackDirExists = false;
       try {
         await fs.access(stackPath);
-        throw new Error(`Stack '${name}' already exists`);
+        stackDirExists = true;
       } catch (err) {
         if (err.code !== 'ENOENT') {
           throw err;
         }
+      }
+
+      if (stackDirExists) {
+        // Directory exists - check if a compose group also exists
+        const groups = await dockerService.getContainerGroups();
+        const existingGroup = groups.find(g => g.name === name && g.compose === true);
+
+        if (existingGroup) {
+          // Both directory and group exist = real active stack, reject
+          throw new Error(`Stack '${name}' already exists`);
+        }
+        // Directory exists but no group = orphaned files, safe to overwrite
       }
 
       // If a removed stack with the same name exists, delete it permanently
@@ -700,7 +802,7 @@ class DockerComposeService {
         // Removed stack doesn't exist, that's fine
       }
 
-      // Step 1-2: Create stack directory in boot and save files
+      // Step 1-2: Create stack directory in boot and save files (mkdir is safe even if exists)
       await fs.mkdir(stackPath, { recursive: true });
 
       // Save compose.yaml
@@ -741,7 +843,26 @@ class DockerComposeService {
         icon: iconPath ? name : null
       });
 
-      // Step 5: Try to deploy stack from working directory (this might fail due to invalid YAML, network issues, etc.)
+      // Step 5: Pull images first (if this fails, clean up everything)
+      try {
+        await this._pullStackImages(name);
+      } catch (pullError) {
+        // Pull failed - no images, clean up group and files
+        try {
+          const groups = await dockerService.getContainerGroups();
+          const group = groups.find(g => g.name === name && g.compose === true);
+          if (group) await dockerService.deleteContainerGroup(group.id);
+        } catch (groupError) { /* ignore */ }
+
+        // Remove stack files
+        try {
+          await fs.rm(stackPath, { recursive: true, force: true });
+        } catch (cleanupError) { /* ignore */ }
+
+        throw new Error(`Could not pull images: ${pullError.message}`);
+      }
+
+      // Step 6: Try to start containers (images are pulled, so containers can be created)
       let containerNames = [];
       let deploymentError = null;
       let stdout = '';
@@ -753,9 +874,12 @@ class DockerComposeService {
         stderr = output.stderr;
       } catch (deployError) {
         deploymentError = deployError;
+
+        // Stop all containers to ensure a clean stopped state
+        await this._stopStack(name);
       }
 
-      // Get containers REGARDLESS of deployment success (containers might be created but not started)
+      // Get containers REGARDLESS of deployment success (containers might be created but stopped)
       containerNames = await this._getStackContainers(name);
 
       // Update group with actual containers (even if deployment failed)
@@ -767,10 +891,8 @@ class DockerComposeService {
         });
       }
 
-      // Update compose-containers file with image SHAs, autostart and webui (non-critical)
-      if (containerNames.length > 0) {
-        await this._updateStackInComposeContainers(name, autostart, webui);
-      }
+      // Update compose-containers file (even with 0 containers, so the stack entry exists)
+      await this._updateStackInComposeContainers(name, autostart, webui);
 
       // Return result (even if deployment failed, files and group were created)
       const result = {
@@ -838,6 +960,9 @@ class DockerComposeService {
       const entries = await fs.readdir(basePath, { withFileTypes: true });
       const stacks = [];
 
+      // Get actual running status for all compose projects in one call
+      const projectStatuses = await this._getComposeProjectStatuses();
+
       for (const entry of entries) {
         if (entry.isDirectory()) {
           try {
@@ -872,6 +997,10 @@ class DockerComposeService {
             const autostart = stackEntry ? (stackEntry.autostart || false) : false;
             const webui = stackEntry ? (stackEntry.webui || null) : null;
 
+            // Get actual running status from docker-compose ls
+            const stackStatus = projectStatuses[entry.name];
+            const running = stackStatus?.running || false;
+
             stacks.push({
               name: entry.name,
               services: services,
@@ -879,7 +1008,7 @@ class DockerComposeService {
               iconUrl: iconUrl,
               autostart: autostart,
               webui: webui,
-              running: containers.length > 0
+              running: running
             });
           } catch (err) {
             console.warn(`Failed to read stack '${entry.name}': ${err.message}`);
@@ -946,6 +1075,11 @@ class DockerComposeService {
       const autostart = stackEntry ? (stackEntry.autostart || false) : false;
       const webui = stackEntry ? (stackEntry.webui || null) : null;
 
+      // Get actual running status from docker-compose ls
+      const projectStatuses = await this._getComposeProjectStatuses();
+      const stackStatus = projectStatuses[name];
+      const running = stackStatus?.running || false;
+
       return {
         name: name,
         yaml: composeContent,
@@ -955,7 +1089,7 @@ class DockerComposeService {
         iconUrl: iconUrl,
         autostart: autostart,
         webui: webui,
-        running: containers.length > 0
+        running: running
       };
     } catch (error) {
       throw new Error(`Failed to get stack: ${error.message}`);
@@ -1031,13 +1165,26 @@ class DockerComposeService {
       // Step 3-4: Copy updated files from boot to working directory
       await this._copyStackToWorking(name);
 
-      // Step 5: Redeploy stack from working directory
-      const output = await this._deployStack(name);
+      // Step 5: Pull images first
+      await this._pullStackImages(name);
 
-      // Get new container names
+      // Step 6: Try to start containers (images are pulled, so containers can be created)
+      let deploymentError = null;
+      let output = { stdout: '', stderr: '' };
+
+      try {
+        output = await this._deployStack(name);
+      } catch (deployError) {
+        deploymentError = deployError;
+
+        // Stop all containers to ensure a clean stopped state
+        await this._stopStack(name);
+      }
+
+      // Get new container names REGARDLESS of deployment success (containers might be created but stopped)
       const containerNames = await this._getStackContainers(name);
 
-      // Update Docker group
+      // Update Docker group (even if deployment failed)
       const groups = await dockerService.getContainerGroups();
       const existingGroup = groups.find(g => g.name === name && g.compose === true);
 
@@ -1048,12 +1195,10 @@ class DockerComposeService {
         });
       }
 
-      // Update compose-containers file with image SHAs, autostart and webui (non-critical)
+      // Update compose-containers file (even with 0 containers, so the stack entry exists)
       // webui: undefined = preserve, null = clear, string = set
       const webuiValue = webui === undefined ? null : webui;
-      if (containerNames.length > 0) {
-        await this._updateStackInComposeContainers(name, autostart, webuiValue);
-      }
+      await this._updateStackInComposeContainers(name, autostart, webuiValue);
 
       // Get current values for response
       const composeContainers = await this._readComposeContainers();
@@ -1070,8 +1215,8 @@ class DockerComposeService {
         combinedOutput += '=== Starting stack ===\n' + (output.stdout || output.stderr);
       }
 
-      return {
-        success: true,
+      const result = {
+        success: !deploymentError,
         stack: name,
         services: services,
         containers: containerNames,
@@ -1080,6 +1225,12 @@ class DockerComposeService {
         webui: currentWebui,
         output: combinedOutput || ''
       };
+
+      if (deploymentError) {
+        result.warning = `Stack updated but deployment failed: ${deploymentError.message}. Fix the issue and update again.`;
+      }
+
+      return result;
     } catch (error) {
       throw new Error(`Failed to update stack: ${error.message}`);
     }
@@ -1113,11 +1264,7 @@ class DockerComposeService {
 
       if (existingIndex === -1) {
         // Stack exists in boot but not in compose-containers, create entry
-        // null or empty string clears the webui, also convert [IP] to [ADDRESS]
-        let webuiValue = (settings.webui === '' || settings.webui === null) ? null : settings.webui;
-        if (webuiValue && webuiValue.includes('[IP]')) {
-          webuiValue = webuiValue.replace(/\[IP\]/g, '[ADDRESS]');
-        }
+        const webuiValue = this._normalizeWebui(settings.webui);
         const stackEntry = {
           stack: name,
           autostart: settings.autostart !== undefined ? settings.autostart : false,
@@ -1131,12 +1278,7 @@ class DockerComposeService {
           composeContainers[existingIndex].autostart = settings.autostart;
         }
         if (settings.webui !== undefined) {
-          // null or empty string clears the webui, also convert [IP] to [ADDRESS]
-          let webuiValue = (settings.webui === '' || settings.webui === null) ? null : settings.webui;
-          if (webuiValue && webuiValue.includes('[IP]')) {
-            webuiValue = webuiValue.replace(/\[IP\]/g, '[ADDRESS]');
-          }
-          composeContainers[existingIndex].webui = webuiValue;
+          composeContainers[existingIndex].webui = this._normalizeWebui(settings.webui);
         }
       }
 
@@ -1471,88 +1613,140 @@ class DockerComposeService {
   }
 
   /**
-   * Get all removed (deleted) stacks
-   * @returns {Promise<Array>} Array of removed stack names
+   * Get all compose template names grouped by installed and removed
+   * @returns {Promise<Object>} Object containing installed and removed template names
    */
-  async getRemovedStacks() {
+  async getAllTemplates() {
     try {
+      const basePath = this._getBasePath();
       const removedBasePath = this._getRemovedBasePath();
 
-      // Check if removed directory exists
+      // Get installed stack names
+      let installed = [];
       try {
-        await fs.access(removedBasePath);
+        const entries = await fs.readdir(basePath, { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.isDirectory()) {
+            const composePath = path.join(basePath, entry.name, 'compose.yaml');
+            try {
+              await fs.access(composePath);
+              installed.push(entry.name);
+            } catch (err) {
+              // Skip directories without compose.yaml
+            }
+          }
+        }
       } catch (err) {
-        // Directory doesn't exist, return empty array
-        return [];
+        if (err.code !== 'ENOENT') throw err;
       }
 
-      // Read directory
-      const entries = await fs.readdir(removedBasePath, { withFileTypes: true });
+      // Get removed stack names
+      let removed = [];
+      try {
+        const entries = await fs.readdir(removedBasePath, { withFileTypes: true });
+        removed = entries
+          .filter(entry => entry.isDirectory())
+          .map(entry => entry.name);
+      } catch (err) {
+        if (err.code !== 'ENOENT') {
+          // Directory doesn't exist, that's ok
+        }
+      }
 
-      // Filter directories only and return stack names
-      const stacks = entries
-        .filter(entry => entry.isDirectory())
-        .map(entry => ({ name: entry.name }));
-
-      return stacks;
+      return {
+        installed: installed.sort(),
+        removed: removed.sort()
+      };
     } catch (error) {
-      throw new Error(`Failed to get removed stacks: ${error.message}`);
+      throw new Error(`Failed to get all templates: ${error.message}`);
     }
   }
 
   /**
-   * Get details of a removed stack
+   * Get a specific compose template by name, preferring installed over removed
    * @param {string} name - Stack name
-   * @returns {Promise<Object>} Stack details (yaml, env, icon)
+   * @param {boolean} edit - If false (default), appends '_new' to the name if it exists in installed
+   * @returns {Promise<Object>} Template with yaml, env, icon
    */
-  async getRemovedStackDetails(name) {
+  async getTemplate(name, edit = false) {
     try {
-      const removedBasePath = this._getRemovedBasePath();
-      const stackPath = path.join(removedBasePath, name);
+      this._validateStackName(name);
 
-      // Check if stack exists
+      // Try installed first
+      const installedPath = path.join(this._getBasePath(), name);
+      const removedPath = path.join(this._getRemovedBasePath(), name);
+
+      let stackPath = null;
+      let source = null;
+
       try {
-        await fs.access(stackPath);
+        await fs.access(path.join(installedPath, 'compose.yaml'));
+        stackPath = installedPath;
+        source = 'installed';
       } catch (err) {
-        throw new Error(`Removed stack '${name}' not found`);
+        // Not in installed, try removed
+        try {
+          await fs.access(removedPath);
+          stackPath = removedPath;
+          source = 'removed';
+        } catch (err2) {
+          throw new Error(`Template '${name}' not found in installed or removed stacks`);
+        }
+      }
+
+      // Determine the returned name
+      let templateName = name;
+      if (!edit && source === 'installed') {
+        // If not editing and stack is installed, append '_new' so user can create a copy
+        templateName = name + '_new';
       }
 
       // Read compose.yaml
-      const composePath = path.join(stackPath, 'compose.yaml');
       let yaml = null;
       try {
-        yaml = await fs.readFile(composePath, 'utf8');
+        yaml = await fs.readFile(path.join(stackPath, 'compose.yaml'), 'utf8');
       } catch (err) {
         // File doesn't exist
       }
 
       // Read .env
-      const envPath = path.join(stackPath, '.env');
       let envContent = null;
       try {
-        envContent = await fs.readFile(envPath, 'utf8');
+        envContent = await fs.readFile(path.join(stackPath, '.env'), 'utf8');
       } catch (err) {
         // File doesn't exist
       }
 
-      // Read mos.override.yaml for icon URL
-      const mosOverridePath = path.join(stackPath, 'mos.override.yaml');
+      // Read icon URL from mos.override.yaml
       let iconUrl = null;
       try {
-        const mosOverride = await fs.readFile(mosOverridePath, 'utf8');
+        const mosOverride = await fs.readFile(path.join(stackPath, 'mos.override.yaml'), 'utf8');
         iconUrl = this._extractIconUrl(mosOverride);
       } catch (err) {
         // File doesn't exist
       }
 
+      // Get autostart and webui from compose-containers (only for installed)
+      let autostart = false;
+      let webui = null;
+      if (source === 'installed') {
+        const composeContainers = await this._readComposeContainers();
+        const stackEntry = composeContainers.find(s => s.stack === name);
+        autostart = stackEntry ? (stackEntry.autostart || false) : false;
+        webui = stackEntry ? (stackEntry.webui || null) : null;
+      }
+
       return {
-        name: name,
+        name: templateName,
         yaml: yaml,
         env: envContent,
-        iconUrl: iconUrl
+        iconUrl: iconUrl,
+        autostart: autostart,
+        webui: webui,
+        source: source
       };
     } catch (error) {
-      throw new Error(`Failed to get removed stack details: ${error.message}`);
+      throw new Error(`Failed to get template: ${error.message}`);
     }
   }
 

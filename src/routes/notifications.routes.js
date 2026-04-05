@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const notificationsService = require('../services/notifications.service');
+const webpushService = require('../services/webpush.service');
 const { checkRole } = require('../middleware/auth.middleware');
 
 /**
@@ -552,6 +553,243 @@ router.put('/read/all', async (req, res) => {
   try {
     const result = await notificationsService.markAllNotificationsAsRead();
     res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /notifications/push/vapid-key:
+ *   get:
+ *     summary: Get VAPID public key
+ *     description: Returns the VAPID public key needed by the frontend to create a push subscription - admin only
+ *     tags: [Notifications]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: VAPID public key retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 publicKey:
+ *                   type: string
+ *                   description: VAPID public key (base64url encoded)
+ *                   example: "BNbxGYNMhEIi..."
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+router.get('/push/vapid-key', async (req, res) => {
+  try {
+    await webpushService.init();
+    const publicKey = webpushService.getPublicKey();
+    res.json({ publicKey });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /notifications/push/subscribe:
+ *   post:
+ *     summary: Subscribe to push notifications
+ *     description: Register a browser push subscription for the authenticated user. The subscription object is provided by the browser Push API - admin only
+ *     tags: [Notifications]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - endpoint
+ *               - keys
+ *             properties:
+ *               endpoint:
+ *                 type: string
+ *                 description: Push service endpoint URL (provided by browser)
+ *                 example: "https://fcm.googleapis.com/fcm/send/..."
+ *               keys:
+ *                 type: object
+ *                 required:
+ *                   - p256dh
+ *                   - auth
+ *                 properties:
+ *                   p256dh:
+ *                     type: string
+ *                     description: User public encryption key (base64url)
+ *                   auth:
+ *                     type: string
+ *                     description: User auth secret (base64url)
+ *     responses:
+ *       201:
+ *         description: Push subscription registered
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "Push subscription registered"
+ *       400:
+ *         description: Invalid subscription object
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+router.post('/push/subscribe', async (req, res) => {
+  try {
+    await webpushService.init();
+    const { endpoint, keys } = req.body;
+
+    if (!endpoint || !keys || !keys.p256dh || !keys.auth) {
+      return res.status(400).json({ error: 'Invalid push subscription. Required: endpoint, keys.p256dh, keys.auth' });
+    }
+
+    const userId = req.user.id || 'admin';
+    const username = req.user.username || 'admin';
+    const result = await webpushService.subscribe(userId, username, { endpoint, keys });
+    res.status(201).json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /notifications/push/subscribe:
+ *   delete:
+ *     summary: Unsubscribe from push notifications
+ *     description: Remove a browser push subscription. The endpoint URL identifies the subscription to remove - admin only
+ *     tags: [Notifications]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - endpoint
+ *             properties:
+ *               endpoint:
+ *                 type: string
+ *                 description: Push service endpoint URL to unsubscribe
+ *                 example: "https://fcm.googleapis.com/fcm/send/..."
+ *     responses:
+ *       200:
+ *         description: Push subscription removed
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "Push subscription removed"
+ *       400:
+ *         description: Endpoint is required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Subscription not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: false
+ *                 message:
+ *                   type: string
+ *                   example: "Subscription not found"
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+router.delete('/push/subscribe', async (req, res) => {
+  try {
+    await webpushService.init();
+    const { endpoint } = req.body;
+
+    if (!endpoint) {
+      return res.status(400).json({ error: 'Endpoint is required' });
+    }
+
+    const result = await webpushService.unsubscribe(endpoint);
+
+    if (result.success) {
+      res.json(result);
+    } else {
+      res.status(404).json(result);
+    }
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

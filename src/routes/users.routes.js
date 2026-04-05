@@ -272,6 +272,8 @@ router.get('/', authenticateToken, async (req, res) => {
  *               language: "en"
  *               primary_color: "#607d8b"
  *               darkmode: false
+ *               hide_inactive_menus: true
+ *               group_menus: false
  *       401:
  *         description: Not authenticated
  *         content:
@@ -295,8 +297,7 @@ router.get('/', authenticateToken, async (req, res) => {
 // Get own profile
 router.get('/me', authenticateToken, async (req, res) => {
   try {
-    const users = await userService.loadUsers();
-    const user = users.find(u => u.id === req.user.id);
+    const user = await userService._ensureUserDefaults(req.user.id);
 
     if (!user) {
       return res.status(404).json({
@@ -348,6 +349,16 @@ router.get('/me', authenticateToken, async (req, res) => {
  *                 description: Byte format preference for displaying file sizes
  *                 default: "binary"
  *                 example: "binary"
+ *               hide_inactive_menus:
+ *                 type: boolean
+ *                 description: Hide inactive menus
+ *                 default: true
+ *                 example: true
+ *               group_menus:
+ *                 type: boolean
+ *                 description: Group menus
+ *                 default: false
+ *                 example: false
  *               password:
  *                 type: string
  *                 description: New password (minimum 4 characters)

@@ -128,6 +128,28 @@ class UserService {
     }
   }
 
+  async _ensureUserDefaults(userId) {
+    const users = await this.loadUsers();
+    const index = users.findIndex(u => u.id === userId);
+    if (index === -1) return null;
+
+    let dirty = false;
+    if (users[index].hide_inactive_menus === undefined) {
+      users[index].hide_inactive_menus = true;
+      dirty = true;
+    }
+    if (users[index].group_menus === undefined) {
+      users[index].group_menus = false;
+      dirty = true;
+    }
+
+    if (dirty) {
+      await this.saveUsers(users);
+    }
+
+    return users[index];
+  }
+
   _sanitizeUser(user) {
     const sanitizedUser = { ...user };
     sanitizedUser.password = 'SECRET';
@@ -211,6 +233,8 @@ class UserService {
       samba_user: samba_user || role === 'samba_only',
       byte_format: 'binary', // Default byte format setting
       show_menu: true, // Default menu visibility setting
+      hide_inactive_menus: true, // Default hide inactive menus
+      group_menus: false, // Default group menus
       createdAt: new Date().toISOString()
     };
 
@@ -306,7 +330,7 @@ class UserService {
           throw new Error('You are not allowed to change your role to admin. Only administrators can modify user roles.');
         }
 
-        const allowedFields = ['language', 'primary_color', 'darkmode', 'password', 'show_menu'];
+        const allowedFields = ['language', 'primary_color', 'darkmode', 'password', 'show_menu', 'hide_inactive_menus', 'group_menus'];
         const filteredUpdates = {};
 
         for (const [key, value] of Object.entries(updates)) {

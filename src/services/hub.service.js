@@ -1011,12 +1011,14 @@ class HubService {
     // Read template.json for name and icon
     const template = await this._readJsonFile(templatePath);
 
+    const webuiValue = template?.web_ui_url || null;
     const result = {
       name: template?.name || null,
       yaml: null,
       env: null,
       icon: template?.icon || null,
-      web_ui_url: template?.web_ui_url || null
+      web_ui_url: webuiValue,
+      webui: webuiValue
     };
 
     // Read yaml content

@@ -2291,7 +2291,7 @@ router.delete('/mos/unusedimages', async (req, res) => {
  */
 
 // Proxy für Docker REST API
-router.use('/{*splat}', checkRole('admin'), async (req, res) => {
+router.use('/', checkRole('admin'), async (req, res) => {
   // Define variables outside try block so they're available in catch
   const isStreamingEndpoint = req.originalUrl.includes('/logs') ||
                              req.originalUrl.includes('/attach') ||
@@ -2311,11 +2311,14 @@ router.use('/{*splat}', checkRole('admin'), async (req, res) => {
     const axiosConfig = {
       method: req.method,
       url: `http://localhost${req.originalUrl.replace('/api/v1/docker', '')}`,
-      headers: { ...req.headers, host: undefined },
+      headers: {
+        'Content-Type': req.headers['content-type'] || 'application/json',
+      },
       data: req.body,
       socketPath: '/var/run/docker.sock',
       validateStatus: () => true,
-      timeout: 30000
+      timeout: 30000,
+      responseType: 'json'
     };
 
     // Use Stream-Mode only for real Streaming Endpoints

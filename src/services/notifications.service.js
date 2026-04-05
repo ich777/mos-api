@@ -1,9 +1,97 @@
 const fs = require('fs').promises;
+const fsSync = require('fs');
 const path = require('path');
 
 class NotificationsService {
   constructor() {
     this.notificationsPath = '/var/mos/notify/notifications.json';
+    this._knownIds = new Set();
+    this._watcher = null;
+    this._debounceTimer = null;
+    this._initFileWatcher();
+  }
+
+  /**
+   * Initializes a file watcher on notifications.json to detect new notifications
+   * and automatically send Web Push to all subscribers
+   * @private
+   */
+  _initFileWatcher() {
+    const dir = path.dirname(this.notificationsPath);
+
+    // Ensure directory exists before watching
+    fsSync.mkdirSync(dir, { recursive: true });
+
+    // Load initial IDs so we don't push existing notifications on startup
+    this._loadKnownIds();
+
+    try {
+      this._watcher = fsSync.watch(this.notificationsPath, () => {
+        // Debounce: the file may be written multiple times in quick succession
+        if (this._debounceTimer) clearTimeout(this._debounceTimer);
+        this._debounceTimer = setTimeout(() => this._onFileChanged(), 500);
+      });
+
+      this._watcher.on('error', () => {
+        // File might not exist yet, retry after delay
+        setTimeout(() => this._initFileWatcher(), 5000);
+      });
+    } catch {
+      // File doesn't exist yet, retry after delay
+      setTimeout(() => this._initFileWatcher(), 5000);
+    }
+  }
+
+  /**
+   * Loads all current notification IDs into the known set
+   * @private
+   */
+  async _loadKnownIds() {
+    try {
+      const data = await fs.readFile(this.notificationsPath, 'utf8');
+      const notifications = JSON.parse(data);
+      if (Array.isArray(notifications)) {
+        this._knownIds = new Set(notifications.map(n => n.id));
+      }
+    } catch {
+      this._knownIds = new Set();
+    }
+  }
+
+  /**
+   * Called when notifications.json changes, detects new notifications and sends Web Push
+   * @private
+   */
+  async _onFileChanged() {
+    try {
+      const data = await fs.readFile(this.notificationsPath, 'utf8');
+      const notifications = JSON.parse(data);
+      if (!Array.isArray(notifications)) return;
+
+      // Find notifications with IDs we haven't seen before
+      const newNotifications = notifications.filter(n => !this._knownIds.has(n.id));
+
+      // Update known IDs
+      this._knownIds = new Set(notifications.map(n => n.id));
+
+      if (newNotifications.length === 0) return;
+
+      // Send Web Push for each new notification
+      const webpushService = require('./webpush.service');
+      await webpushService.init();
+
+      for (const notification of newNotifications) {
+        const title = notification.title || 'MOS';
+        const body = notification.message || '';
+        const priority = notification.priority || 'normal';
+        await webpushService.sendToAll(title, body, priority);
+      }
+    } catch (error) {
+      // Silent fail — web push is best-effort, don't break notification reading
+      if (error.code !== 'ENOENT') {
+        console.error('Web Push dispatch error:', error.message);
+      }
+    }
   }
 
   /**
@@ -333,6 +421,20 @@ class NotificationsService {
        ['high', 'normal', 'low'].includes(notification.priority)) &&
       (notification.read === undefined || typeof notification.read === 'boolean')
     );
+  }
+
+  /**
+   * Stops the file watcher (for graceful shutdown)
+   */
+  destroy() {
+    if (this._watcher) {
+      this._watcher.close();
+      this._watcher = null;
+    }
+    if (this._debounceTimer) {
+      clearTimeout(this._debounceTimer);
+      this._debounceTimer = null;
+    }
   }
 }
 

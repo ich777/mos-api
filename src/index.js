@@ -1,6 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
+const { rateLimit } = require('express-rate-limit');
 const swaggerUi = require('swagger-ui-express');
 const swaggerSpecs = require('./config/swagger');
 const config = require('./config');
@@ -10,9 +10,12 @@ const { execSync } = require('child_process');
 const net = require('net');
 const WebSocket = require('ws');
 
-// Enable timestamp logging and format as YYYY-MM-DD HH:MM:SS
+// Enable timestamp logging and format as YYYY-MM-DD HH:MM:SS (local time)
 require('log-timestamp')(function() {
-  return '[' + new Date().toISOString().replace('T', ' ').substring(0, 19) + ']';
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return '[' + now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate()) + ' ' +
+    pad(now.getHours()) + ':' + pad(now.getMinutes()) + ':' + pad(now.getSeconds()) + ']';
 });
 
 // Set high priority for API process (only affects this process, not child processes)
@@ -87,7 +90,7 @@ async function startServer() {
       if (req.headers['x-real-ip']) {
         return req.headers['x-real-ip'];
       }
-      return ipKeyGenerator(req, res);
+      return req.ip;
     },
     standardHeaders: true,
     legacyHeaders: false

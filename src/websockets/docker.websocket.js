@@ -993,7 +993,8 @@ class DockerWebSocketManager extends EventEmitter {
    * Execute Docker Compose stack creation with streaming output
    */
   async executeComposeCreate(operationId, params) {
-    const { name, yaml, env, icon, webui } = params || {};
+    const { name, yaml, env, icon } = params || {};
+    const webui = params?.webui !== undefined ? params.webui : params?.web_ui_url;
 
     if (!name || !yaml) {
       this.sendUpdate(null, operationId, 'error', {
@@ -1007,6 +1008,9 @@ class DockerWebSocketManager extends EventEmitter {
       name
     });
 
+    // Track pull success so outer catch knows whether to clean up
+    let pullSucceeded = false;
+
     try {
       const fs = require('fs').promises;
       const path = require('path');
@@ -1017,17 +1021,28 @@ class DockerWebSocketManager extends EventEmitter {
       // Get stack path
       const stackPath = this.dockerComposeService._getStackPath(name);
 
-      // Check if stack already exists
+      // Check if stack already exists (directory + group = real active stack)
+      let stackDirExists = false;
       try {
         await fs.access(stackPath);
-        throw new Error(`Stack '${name}' already exists`);
+        stackDirExists = true;
       } catch (err) {
         if (err.code !== 'ENOENT') {
           throw err;
         }
       }
 
-      // Create stack directory
+      if (stackDirExists) {
+        const groups = await this.dockerService.getContainerGroups();
+        const existingGroup = groups.find(g => g.name === name && g.compose === true);
+
+        if (existingGroup) {
+          throw new Error(`Stack '${name}' already exists`);
+        }
+        // Directory exists but no group = orphaned files, safe to overwrite
+      }
+
+      // Create stack directory (mkdir is safe even if exists)
       await fs.mkdir(stackPath, { recursive: true });
 
       this.sendUpdate(null, operationId, 'running', {
@@ -1120,22 +1135,87 @@ class DockerWebSocketManager extends EventEmitter {
       // Get working path for deployment
       const workingPath = await this.dockerComposeService._getWorkingPath(name);
 
-      // Deploy stack with streaming from working directory
+      // Phase 1: Pull images first
       this.sendUpdate(null, operationId, 'running', {
-        output: `\nDeploying stack from working directory...\n`,
+        output: `\nPulling images...\n`,
         stream: 'stdout'
       });
 
-      await this.executeCommandWithStream(
-        operationId,
-        'docker-compose',
-        ['-f', 'compose.yaml', '-f', 'mos.override.yaml', 'up', '-d'],
-        'compose-create-deploy',
-        params,
-        { cwd: workingPath }
-      );
+      try {
+        await this.executeCommandWithStream(
+          operationId,
+          'docker-compose',
+          ['-f', 'compose.yaml', '-f', 'mos.override.yaml', 'pull'],
+          'compose-create-deploy',
+          params,
+          { cwd: workingPath }
+        );
+      } catch (pullError) {
+        // Pull failed - no images available, clean up everything
+        this.sendUpdate(null, operationId, 'running', {
+          output: `\nImage pull failed, cleaning up...\n`,
+          stream: 'stderr'
+        });
 
-      // Get containers after deployment
+        // Delete group
+        try {
+          const groups = await this.dockerService.getContainerGroups();
+          const group = groups.find(g => g.name === name && g.compose === true);
+          if (group) await this.dockerService.deleteContainerGroup(group.id);
+        } catch (groupError) { /* ignore */ }
+
+        // Delete stack files
+        try {
+          await require('fs').promises.rm(this.dockerComposeService._getStackPath(name), { recursive: true, force: true });
+        } catch (cleanupError) { /* ignore */ }
+
+        this.activeOperations.delete(operationId);
+        this.sendUpdate(null, operationId, 'error', {
+          message: `Compose create failed: Could not pull images - ${pullError.message}`
+        });
+        return;
+      }
+
+      pullSucceeded = true;
+
+      // Phase 2: Start containers (pull succeeded, so images exist)
+      this.sendUpdate(null, operationId, 'running', {
+        output: `\nStarting containers...\n`,
+        stream: 'stdout'
+      });
+
+      let deploymentFailed = false;
+      let deployError = null;
+
+      try {
+        await this.executeCommandWithStream(
+          operationId,
+          'docker-compose',
+          ['-f', 'compose.yaml', '-f', 'mos.override.yaml', 'up', '-d'],
+          'compose-create-deploy',
+          params,
+          { cwd: workingPath }
+        );
+      } catch (upError) {
+        // Start failed (e.g. port conflict) - but images are pulled and containers may be created
+        deploymentFailed = true;
+        deployError = upError;
+
+        // Stop all containers in the stack to ensure a clean stopped state
+        this.sendUpdate(null, operationId, 'running', {
+          output: `\nDeployment failed, stopping partially started containers...\n`,
+          stream: 'stderr'
+        });
+
+        await this.dockerComposeService._stopStack(name);
+
+        this.sendUpdate(null, operationId, 'running', {
+          output: `Stack files are preserved - fix the issue and use update to redeploy.\n`,
+          stream: 'stderr'
+        });
+      }
+
+      // Get containers REGARDLESS of deployment success (containers might be created but not started)
       const containerNames = await this.dockerComposeService._getStackContainers(name);
 
       this.sendUpdate(null, operationId, 'running', {
@@ -1143,7 +1223,7 @@ class DockerWebSocketManager extends EventEmitter {
         stream: 'stdout'
       });
 
-      // Update group with containers
+      // Update group with containers (even if deployment failed)
       const groups = await this.dockerService.getContainerGroups();
       const group = groups.find(g => g.name === name && g.compose === true);
       if (group) {
@@ -1152,24 +1232,34 @@ class DockerWebSocketManager extends EventEmitter {
         });
       }
 
-      // Update compose-containers file with image SHAs
-      if (containerNames.length > 0) {
-        await this.dockerComposeService._updateStackInComposeContainers(name, null, webui);
-        this.sendUpdate(null, operationId, 'running', {
-          output: `Updated compose-containers file\n`,
-          stream: 'stdout'
+      // Update compose-containers file (even with 0 containers, so the stack entry exists)
+      await this.dockerComposeService._updateStackInComposeContainers(name, null, webui);
+      this.sendUpdate(null, operationId, 'running', {
+        output: `Updated compose-containers file\n`,
+        stream: 'stdout'
+      });
+
+      // Send completion (with warning if deployment failed)
+      this.activeOperations.delete(operationId);
+
+      if (deploymentFailed) {
+        this.sendUpdate(null, operationId, 'completed', {
+          success: false,
+          stack: name,
+          services: services,
+          containers: containerNames,
+          iconPath: iconPath,
+          warning: `Stack created but deployment failed: ${deployError.message}. Use update to fix and redeploy.`
+        });
+      } else {
+        this.sendUpdate(null, operationId, 'completed', {
+          success: true,
+          stack: name,
+          services: services,
+          containers: containerNames,
+          iconPath: iconPath
         });
       }
-
-      // Send completion
-      this.activeOperations.delete(operationId);
-      this.sendUpdate(null, operationId, 'completed', {
-        success: true,
-        stack: name,
-        services: services,
-        containers: containerNames,
-        iconPath: iconPath
-      });
 
     } catch (error) {
       this.activeOperations.delete(operationId);
@@ -1177,12 +1267,18 @@ class DockerWebSocketManager extends EventEmitter {
         message: `Compose create failed: ${error.message}`
       });
 
-      // Cleanup on error
-      const stackPath = this.dockerComposeService._getStackPath(name);
-      try {
-        await require('fs').promises.rm(stackPath, { recursive: true, force: true });
-      } catch (cleanupError) {
-        // Ignore cleanup errors
+      // Only clean up if we failed BEFORE pull (validation, file creation, etc.)
+      // If pull already succeeded, keep everything (files, group, containers) for user to fix
+      if (!pullSucceeded) {
+        const stackPath = this.dockerComposeService._getStackPath(name);
+        try {
+          const groups = await this.dockerService.getContainerGroups();
+          const group = groups.find(g => g.name === name && g.compose === true);
+          if (group) await this.dockerService.deleteContainerGroup(group.id);
+        } catch (groupError) { /* ignore */ }
+        try {
+          await require('fs').promises.rm(stackPath, { recursive: true, force: true });
+        } catch (cleanupError) { /* ignore */ }
       }
     }
   }
@@ -1191,7 +1287,8 @@ class DockerWebSocketManager extends EventEmitter {
    * Execute Docker Compose stack update with streaming output
    */
   async executeComposeUpdate(operationId, params) {
-    const { name, yaml, env, icon, webui } = params || {};
+    const { name, yaml, env, icon } = params || {};
+    const webui = params?.webui !== undefined ? params.webui : params?.web_ui_url;
 
     if (!name || !yaml) {
       this.sendUpdate(null, operationId, 'error', {
@@ -1338,22 +1435,68 @@ class DockerWebSocketManager extends EventEmitter {
         stream: 'stdout'
       });
 
+      // Phase 1: Pull images first
       this.sendUpdate(null, operationId, 'running', {
-        output: `\nRedeploying stack from working directory...\n`,
+        output: `\nPulling images...\n`,
         stream: 'stdout'
       });
 
-      // Redeploy stack with streaming from working directory
-      await this.executeCommandWithStream(
-        operationId,
-        'docker-compose',
-        ['-f', 'compose.yaml', '-f', 'mos.override.yaml', 'up', '-d'],
-        'compose-update-up',
-        params,
-        { cwd: workingPath }
-      );
+      try {
+        await this.executeCommandWithStream(
+          operationId,
+          'docker-compose',
+          ['-f', 'compose.yaml', '-f', 'mos.override.yaml', 'pull'],
+          'compose-update-up',
+          params,
+          { cwd: workingPath }
+        );
+      } catch (pullError) {
+        // Pull failed - report error but don't destroy the stack
+        this.activeOperations.delete(operationId);
+        this.sendUpdate(null, operationId, 'error', {
+          message: `Compose update failed: Could not pull images - ${pullError.message}. Stack files are preserved.`
+        });
+        return;
+      }
 
-      // Get new container names
+      // Phase 2: Start containers
+      this.sendUpdate(null, operationId, 'running', {
+        output: `\nStarting containers...\n`,
+        stream: 'stdout'
+      });
+
+      let deploymentFailed = false;
+      let deployError = null;
+
+      try {
+        await this.executeCommandWithStream(
+          operationId,
+          'docker-compose',
+          ['-f', 'compose.yaml', '-f', 'mos.override.yaml', 'up', '-d'],
+          'compose-update-up',
+          params,
+          { cwd: workingPath }
+        );
+      } catch (upError) {
+        // Start failed (e.g. port conflict) - but images are pulled and containers may be created
+        deploymentFailed = true;
+        deployError = upError;
+
+        // Stop all containers in the stack to ensure a clean stopped state
+        this.sendUpdate(null, operationId, 'running', {
+          output: `\nDeployment failed, stopping partially started containers...\n`,
+          stream: 'stderr'
+        });
+
+        await this.dockerComposeService._stopStack(name);
+
+        this.sendUpdate(null, operationId, 'running', {
+          output: `Stack files are preserved - fix the issue and update again.\n`,
+          stream: 'stderr'
+        });
+      }
+
+      // Get new container names REGARDLESS of deployment success
       const containerNames = await this.dockerComposeService._getStackContainers(name);
 
       this.sendUpdate(null, operationId, 'running', {
@@ -1361,7 +1504,7 @@ class DockerWebSocketManager extends EventEmitter {
         stream: 'stdout'
       });
 
-      // Update Docker group
+      // Update Docker group (even if deployment failed)
       const groups = await this.dockerService.getContainerGroups();
       const existingGroup = groups.find(g => g.name === name && g.compose === true);
 
@@ -1372,24 +1515,34 @@ class DockerWebSocketManager extends EventEmitter {
         });
       }
 
-      // Update compose-containers file with image SHAs
-      if (containerNames.length > 0) {
-        await this.dockerComposeService._updateStackInComposeContainers(name, null, webui);
-        this.sendUpdate(null, operationId, 'running', {
-          output: `Updated compose-containers file\n`,
-          stream: 'stdout'
+      // Update compose-containers file (even with 0 containers, so the stack entry exists)
+      await this.dockerComposeService._updateStackInComposeContainers(name, null, webui);
+      this.sendUpdate(null, operationId, 'running', {
+        output: `Updated compose-containers file\n`,
+        stream: 'stdout'
+      });
+
+      // Send completion (with warning if deployment failed)
+      this.activeOperations.delete(operationId);
+
+      if (deploymentFailed) {
+        this.sendUpdate(null, operationId, 'completed', {
+          success: false,
+          stack: name,
+          services: services,
+          containers: containerNames,
+          iconPath: iconPath,
+          warning: `Stack updated but deployment failed: ${deployError.message}. Fix the issue and update again.`
+        });
+      } else {
+        this.sendUpdate(null, operationId, 'completed', {
+          success: true,
+          stack: name,
+          services: services,
+          containers: containerNames,
+          iconPath: iconPath
         });
       }
-
-      // Send completion
-      this.activeOperations.delete(operationId);
-      this.sendUpdate(null, operationId, 'completed', {
-        success: true,
-        stack: name,
-        services: services,
-        containers: containerNames,
-        iconPath: iconPath
-      });
 
     } catch (error) {
       this.activeOperations.delete(operationId);

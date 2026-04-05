@@ -502,6 +502,8 @@ router.put('/users/:id', authenticateToken, async (req, res) => {
  *               id: "1"
  *               username: "admin"
  *               role: "admin"
+ *               hide_inactive_menus: true
+ *               group_menus: false
  *       401:
  *         description: Not authenticated
  *         content:
@@ -523,8 +525,7 @@ router.put('/users/:id', authenticateToken, async (req, res) => {
  */
 router.get('/profile', authenticateToken, async (req, res) => {
   try {
-    const users = await userService.loadUsers();
-    const user = users.find(u => u.id === req.user.id);
+    const user = await userService._ensureUserDefaults(req.user.id);
 
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
