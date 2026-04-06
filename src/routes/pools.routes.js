@@ -3,6 +3,7 @@ const router = express.Router();
 const { checkRole, authenticateToken } = require('../middleware/auth.middleware');
 const PoolsService = require('../services/pools.service');
 const disksService = require('../services/disks.service');
+const smartService = require('../services/smart.service');
 
 // Initialize pools service for all operations
 const poolsService = new PoolsService();
@@ -73,6 +74,9 @@ const poolsService = new PoolsService();
  *                 type: number
  *                 nullable: true
  *                 description: Temperature in Celsius (only with includeMetrics=true, null if standby)
+ *               smartWarning:
+ *                 type: boolean
+ *                 description: True if any monitored SMART attribute has a non-zero value
  *         parity_devices:
  *           type: array
  *           description: Parity devices in the pool
@@ -289,6 +293,17 @@ router.get('/', authenticateToken, async (req, res) => {
       }));
     }
 
+    for (const pool of pools) {
+      for (const device of pool.data_devices || []) {
+        const serial = device.diskInfo?.diskSerial;
+        device.smartWarning = serial ? smartService.hasDiskWarning(serial) : false;
+      }
+      for (const device of pool.parity_devices || []) {
+        const serial = device.diskInfo?.diskSerial;
+        device.smartWarning = serial ? smartService.hasDiskWarning(serial) : false;
+      }
+    }
+
     res.json(pools);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -378,6 +393,15 @@ router.get('/:id', authenticateToken, async (req, res) => {
 
     if (!pool) {
       return res.status(404).json({ error: `Pool with ID "${id}" not found` });
+    }
+
+    for (const device of pool.data_devices || []) {
+      const serial = device.diskInfo?.diskSerial;
+      device.smartWarning = serial ? smartService.hasDiskWarning(serial) : false;
+    }
+    for (const device of pool.parity_devices || []) {
+      const serial = device.diskInfo?.diskSerial;
+      device.smartWarning = serial ? smartService.hasDiskWarning(serial) : false;
     }
 
     res.json(pool);

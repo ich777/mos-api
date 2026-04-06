@@ -56,6 +56,7 @@ const terminalRoutes = require('./routes/terminal.routes');
 const notificationsRoutes = require('./routes/notifications.routes');
 const hubRoutes = require('./routes/hub.routes');
 const pluginsRoutes = require('./routes/plugins.routes');
+const smartRoutes = require('./routes/smart.routes');
 const poolsWebSocketRoutes = require('./routes/websocket/pools.websocket.routes');
 const systemWebSocketRoutes = require('./routes/websocket/system.websocket.routes');
 const terminalWebSocketRoutes = require('./routes/websocket/terminal.websocket.routes');
@@ -152,6 +153,7 @@ async function startServer() {
   // Routes
   app.use('/api/v1/auth', authRoutes);
   app.use('/api/v1/system', authenticateToken, systemRoutes);
+  app.use('/api/v1/disks/smart', authenticateToken, smartRoutes);
   app.use('/api/v1/disks', authenticateToken, disksRoutes);
   app.use('/api/v1/pools', authenticateToken, poolsRoutes);
   app.use('/api/v1/docker/mos/compose', authenticateToken, dockerComposeRoutes);
@@ -549,6 +551,14 @@ async function startServer() {
       await disksService.initializeStartupCache({ wakeStandbyDisks: false });
     } catch (error) {
       console.error(`Error initializing Disk Startup-Cache: ${error.message}`);
+    }
+
+    // Initialize SMART monitoring service
+    try {
+      const smartService = require('./services/smart.service');
+      await smartService.initialize();
+    } catch (error) {
+      console.error(`Error initializing SMART service: ${error.message}`);
     }
 
     // Initialize Pools after server start

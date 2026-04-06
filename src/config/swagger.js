@@ -22,6 +22,10 @@ const options = {
         description: 'Disk and Storage Management'
       },
       {
+        name: 'SMART',
+        description: 'SMART Monitoring Configuration and Status'
+      },
+      {
         name: 'Disks WebSocket',
         description: 'Real-time disk monitoring via WebSocket'
       },

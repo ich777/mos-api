@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const disksService = require('../services/disks.service');
+const smartService = require('../services/smart.service');
 const { checkRole, authenticateToken } = require('../middleware/auth.middleware');
 
 /**
@@ -167,6 +168,10 @@ const { checkRole, authenticateToken } = require('../middleware/auth.middleware'
  *         preclearRunning:
  *           type: boolean
  *           description: Whether a preClear operation is currently running on this disk
+ *           example: false
+ *         smartWarning:
+ *           type: boolean
+ *           description: True if any monitored SMART attribute has a non-zero raw value
  *           example: false
  *     DiskUsage:
  *       type: object
@@ -515,6 +520,9 @@ router.get('/', authenticateToken, async (req, res) => {
     };
 
     const disks = await disksService.getAllDisks(options, req.user);
+    for (const disk of disks) {
+      disk.smartWarning = disk.serial ? smartService.hasDiskWarning(disk.serial) : false;
+    }
     res.json(disks);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -812,7 +820,11 @@ router.post('/:device/sleep', checkRole(['admin']), async (req, res) => {
  * /disks/{device}/smart:
  *   get:
  *     summary: Get SMART information
- *     description: Retrieve SMART data and health information for a specific disk
+ *     description: |
+ *       Retrieve comprehensive SMART data for a specific disk. Data is sourced from
+ *       smartd state files (no disk I/O) or smartctl (live). If the disk is sleeping,
+ *       all SMART fields are null unless wakeUp=true is specified.
+ *       Response structure is always consistent - fields are null when unavailable.
  *     tags: [Disks]
  *     security:
  *       - bearerAuth: []
@@ -824,13 +836,106 @@ router.post('/:device/sleep', checkRole(['admin']), async (req, res) => {
  *           type: string
  *         description: Device name (e.g., sda)
  *         example: "sda"
+ *       - in: query
+ *         name: wakeUp
+ *         schema:
+ *           type: string
+ *           enum: [true, false]
+ *           default: "false"
+ *         description: Wake the disk from standby before reading SMART data
  *     responses:
  *       200:
  *         description: SMART information retrieved successfully
  *         content:
  *           application/json:
  *             schema:
- *               $ref: '#/components/schemas/SmartInfo'
+ *               type: object
+ *               properties:
+ *                 device:
+ *                   type: string
+ *                   example: "/dev/sda"
+ *                 deviceName:
+ *                   type: string
+ *                   example: "sda"
+ *                 serial:
+ *                   type: string
+ *                   nullable: true
+ *                   example: "5PJJ26DF"
+ *                 model:
+ *                   type: string
+ *                   nullable: true
+ *                   example: "WDC WD120EDAZ-11F3RA0"
+ *                 diskType:
+ *                   type: string
+ *                   enum: [hdd, ssd, nvme, unknown]
+ *                 sleeping:
+ *                   type: boolean
+ *                 warning:
+ *                   type: boolean
+ *                   description: True if any monitored attribute has a non-zero raw value
+ *                 smartStatus:
+ *                   type: string
+ *                   nullable: true
+ *                   enum: [PASSED, FAILED]
+ *                 temperature:
+ *                   type: object
+ *                   nullable: true
+ *                   properties:
+ *                     current:
+ *                       type: integer
+ *                       nullable: true
+ *                     min:
+ *                       type: integer
+ *                       nullable: true
+ *                     max:
+ *                       type: integer
+ *                       nullable: true
+ *                 powerOnHours:
+ *                   type: integer
+ *                   nullable: true
+ *                 powerCycleCount:
+ *                   type: integer
+ *                   nullable: true
+ *                 errorCount:
+ *                   type: integer
+ *                   nullable: true
+ *                 attributes:
+ *                   type: array
+ *                   nullable: true
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       id:
+ *                         type: integer
+ *                       name:
+ *                         type: string
+ *                       value:
+ *                         type: integer
+ *                         nullable: true
+ *                       worst:
+ *                         type: integer
+ *                         nullable: true
+ *                       threshold:
+ *                         type: integer
+ *                         nullable: true
+ *                       rawValue:
+ *                         type: integer
+ *                         nullable: true
+ *                       status:
+ *                         type: string
+ *                         enum: [ok, ok_past_failure, failing, warning]
+ *                 source:
+ *                   type: string
+ *                   nullable: true
+ *                   enum: [smartctl_live, smartd_state]
+ *                   description: Where the SMART data was sourced from
+ *                 monitoringConfig:
+ *                   type: object
+ *                   properties:
+ *                     temperatureWarning:
+ *                       type: integer
+ *                     temperatureCritical:
+ *                       type: integer
  *       401:
  *         description: Not authenticated
  *         content:
@@ -845,10 +950,30 @@ router.post('/:device/sleep', checkRole(['admin']), async (req, res) => {
  *               $ref: '#/components/schemas/Error'
  */
 
-// Get SMART information
+// Get SMART information (enhanced, uses smart.service)
 router.get('/:device/smart', async (req, res) => {
   try {
-    const smartInfo = await disksService.getSmartInfo(req.params.device);
+    const { wakeUp = 'false' } = req.query;
+    const device = req.params.device;
+    const devicePath = device.startsWith('/dev/') ? device : `/dev/${device}`;
+
+    let sleeping = false;
+
+    if (wakeUp === 'true') {
+      await disksService.wakeDisk(device);
+    } else {
+      try {
+        const powerStatus = await disksService._getDiskPowerStatus(devicePath);
+        sleeping = powerStatus.active === false;
+      } catch {
+        sleeping = false;
+      }
+    }
+
+    const smartInfo = await smartService.getSmartInfo(device, {
+      wakeUp: wakeUp === 'true',
+      sleeping
+    });
     res.json(smartInfo);
   } catch (error) {
     res.status(500).json({ error: error.message });
