@@ -1895,7 +1895,7 @@ router.post('/nonraid/addparity', checkRole(['admin']), async (req, res) => {
 router.post('/:id/mount', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    const { passphrase, mountOptions } = req.body;
+    const { passphrase, mountOptions } = req.body || {};
 
     // Get the pool first to determine the appropriate service
     const pools = await poolsService.listPools({}, req.user);
@@ -1909,7 +1909,7 @@ router.post('/:id/mount', authenticateToken, async (req, res) => {
     const result = await poolsService.mountPoolById(id, {
       passphrase,
       mountOptions,
-      ...req.body
+      ...(req.body || {})
     });
 
     res.json(result);
@@ -1971,7 +1971,7 @@ router.post('/:id/mount', authenticateToken, async (req, res) => {
 router.post('/:id/unmount', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    const { force = false } = req.body;
+    const { force = false } = req.body || {};
 
     // Get the pool first to determine the appropriate service
     const pools = await poolsService.listPools({}, req.user);
@@ -1984,7 +1984,7 @@ router.post('/:id/unmount', authenticateToken, async (req, res) => {
     // Get the appropriate service and unmount the pool
     const result = await poolsService.unmountPoolById(id, {
       force,
-      ...req.body
+      ...(req.body || {})
     });
 
     res.json(result);
@@ -2045,7 +2045,7 @@ router.delete('/:id', checkRole(['admin']), async (req, res) => {
     }
 
     // Get the appropriate service and remove the pool
-    const result = await poolsService.removePoolById(id, req.body);
+    const result = await poolsService.removePoolById(id, req.body || {});
 
     res.json(result);
   } catch (error) {

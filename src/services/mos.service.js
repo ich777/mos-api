@@ -2334,13 +2334,62 @@ class MosService {
   }
 
   /**
+   * Checks if Tailscale is online via CLI.
+   * @returns {Promise<boolean>} true if connected, false on any error
+   */
+  async _getTailscaleOnline() {
+    try {
+      const { stdout } = await execPromise('tailscale status --json');
+      const status = JSON.parse(stdout);
+      return status?.Self?.Online === true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Checks if Netbird is online via CLI.
+   * @returns {Promise<boolean>} true if management is connected, false on any error
+   */
+  async _getNetbirdOnline() {
+    try {
+      const { stdout } = await execPromise('netbird status --json');
+      const status = JSON.parse(stdout);
+      return status?.management?.connected === true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Reads only the network services from the network.json file.
+   * Injects runtime 'online' status for tailscale and netbird if enabled.
    * @returns {Promise<Object>} Network services object
    */
   async getNetworkServices() {
     try {
       const settings = await this.getNetworkSettings();
-      return settings.services || {};
+      const services = settings.services || {};
+
+      // Inject runtime online status for VPN services (not persisted)
+      const checks = [];
+      if (services.tailscale) {
+        if (services.tailscale.enabled) {
+          checks.push(this._getTailscaleOnline().then(online => { services.tailscale.online = online; }));
+        } else {
+          services.tailscale.online = null;
+        }
+      }
+      if (services.netbird) {
+        if (services.netbird.enabled) {
+          checks.push(this._getNetbirdOnline().then(online => { services.netbird.online = online; }));
+        } else {
+          services.netbird.online = null;
+        }
+      }
+      if (checks.length) await Promise.all(checks);
+
+      return services;
     } catch (error) {
       throw new Error(`Error reading network services: ${error.message}`);
     }
@@ -5269,6 +5318,44 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
       console.error('Error reading file:', error.message);
       throw error;
     }
+  }
+
+  /**
+   * Validates and returns metadata for a file download
+   * @param {string} filePath - Absolute path to the file to download
+   * @returns {Promise<Object>} File metadata for streaming (resolvedPath, filename, size, modified)
+   */
+  async getFileForDownload(filePath) {
+    if (!filePath) {
+      throw new Error('File path is required');
+    }
+
+    const resolvedPath = path.resolve(filePath);
+
+    if (resolvedPath !== path.normalize(filePath)) {
+      throw new Error('Invalid file path');
+    }
+
+    let stats;
+    try {
+      stats = await fs.stat(resolvedPath);
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        throw new Error(`File does not exist: ${filePath}`);
+      }
+      throw error;
+    }
+
+    if (stats.isDirectory()) {
+      throw new Error(`Path is a directory, not a file: ${filePath}`);
+    }
+
+    return {
+      resolvedPath,
+      filename: path.basename(resolvedPath),
+      size: stats.size,
+      modified: stats.mtime
+    };
   }
 
   /**

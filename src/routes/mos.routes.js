@@ -1,4 +1,6 @@
 const express = require('express');
+const fs = require('fs');
+const path = require('path');
 const router = express.Router();
 const mosService = require('../services/mos.service');
 const zramService = require('../services/zram.service');
@@ -1747,6 +1749,15 @@ router.delete('/settings/network/interfaces/:interfaceName/vlans/:vlanId', async
  *                 enabled: false
  *               nut:
  *                 enabled: false
+ *               tailscale:
+ *                 enabled: true
+ *                 update_check: false
+ *                 tailscaled_params: ""
+ *                 online: true
+ *               netbird:
+ *                 enabled: false
+ *                 update_check: false
+ *                 netbird_service_params: ""
  *       401:
  *         description: Not authenticated
  *         content:
@@ -5446,6 +5457,127 @@ router.get('/fsnavigator', async (req, res) => {
     } else {
       res.status(500).json({ error: error.message });
     }
+  }
+});
+
+/**
+ * @swagger
+ * /mos/download:
+ *   get:
+ *     summary: Download a file from the filesystem
+ *     description: |
+ *       Downloads a file as a binary stream. Supports any file type and size.
+ *       The file is streamed directly without loading it entirely into memory.
+ *       Use the filesystem navigator (`GET /mos/fsnavigator`) to browse available files.
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: path
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Absolute path to the file to download
+ *         example: "/mnt/Pool1/backups/archive.tar.gz"
+ *     responses:
+ *       200:
+ *         description: File download stream
+ *         headers:
+ *           Content-Disposition:
+ *             schema:
+ *               type: string
+ *             description: Attachment with filename
+ *             example: "attachment; filename=\"archive.tar.gz\""
+ *           Content-Length:
+ *             schema:
+ *               type: integer
+ *             description: File size in bytes
+ *           Last-Modified:
+ *             schema:
+ *               type: string
+ *             description: File last modification date
+ *         content:
+ *           application/octet-stream:
+ *             schema:
+ *               type: string
+ *               format: binary
+ *       400:
+ *         description: Bad request - missing or invalid path parameter
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *             examples:
+ *               missing:
+ *                 value:
+ *                   error: "path query parameter is required"
+ *               directory:
+ *                 value:
+ *                   error: "Path is a directory, not a file: /mnt/Pool1"
+ *               invalid:
+ *                 value:
+ *                   error: "Invalid file path"
+ *       404:
+ *         description: File not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *             example:
+ *               error: "File does not exist: /mnt/Pool1/missing.txt"
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+
+// GET: Download a file from the filesystem as binary stream
+router.get('/download', checkRole(['admin']), async (req, res) => {
+  try {
+    const filePath = req.query.path;
+
+    if (!filePath) {
+      return res.status(400).json({ error: 'path query parameter is required' });
+    }
+
+    const fileInfo = await mosService.getFileForDownload(filePath);
+
+    res.set({
+      'Content-Type': 'application/octet-stream',
+      'Content-Disposition': `attachment; filename="${encodeURIComponent(fileInfo.filename)}"`,
+      'Content-Length': fileInfo.size,
+      'Last-Modified': fileInfo.modified.toUTCString()
+    });
+
+    const stream = fs.createReadStream(fileInfo.resolvedPath);
+
+    stream.on('error', (err) => {
+      console.error('File download stream error:', err.message);
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Failed to stream file' });
+      } else {
+        res.destroy();
+      }
+    });
+
+    stream.pipe(res);
+  } catch (error) {
+    if (error.message.includes('File does not exist')) {
+      return res.status(404).json({ error: error.message });
+    }
+    if (error.message.includes('directory, not a file') || error.message.includes('Invalid file path')) {
+      return res.status(400).json({ error: error.message });
+    }
+    res.status(500).json({ error: error.message });
   }
 });
 
