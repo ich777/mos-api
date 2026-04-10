@@ -1905,7 +1905,7 @@ class MosService {
       if (e.code !== 'ENOENT') throw e;
     }
 
-    if (!sysSettings.webui) sysSettings.webui = { ports: { http: 80 }, listen_interfaces: ['eth0'] };
+    if (!sysSettings.webui) sysSettings.webui = { ports: { http: 80, https: 443 }, https_enabled: false, local_dns_searchname: '', listen_interfaces: ['eth0'] };
     if (!Array.isArray(sysSettings.webui.listen_interfaces)) sysSettings.webui.listen_interfaces = ['eth0'];
 
     // Empty list = nginx listens on all interfaces (default), nothing to do
@@ -3394,8 +3394,11 @@ class MosService {
       },
       webui: {
         ports: {
-          http: 80
+          http: 80,
+          https: 443
         },
+        https_enabled: false,
+        local_dns_searchname: '',
         listen_interfaces: ['eth0']
       },
       update_check: {
@@ -3473,6 +3476,7 @@ class MosService {
       let cpufreqChanged = false;
       let binfmtChanged = false;
       let webuiChanged = false;
+      let localDnsSearchnameChanged = false;
       let updateCheckChanged = false;
 
       for (const key of Object.keys(updates)) {
@@ -3633,15 +3637,24 @@ class MosService {
           if (!current.webui) {
             current.webui = {
               ports: {
-                http: 80
+                http: 80,
+                https: 443
               },
+              https_enabled: true,
+              local_dns_searchname: '',
               listen_interfaces: [
                 'eth0'
               ]
             };
           }
           if (!current.webui.ports) {
-            current.webui.ports = { http: 80 };
+            current.webui.ports = { http: 80, https: 443 };
+          }
+          if (current.webui.https_enabled === undefined) {
+            current.webui.https_enabled = false;
+          }
+          if (current.webui.local_dns_searchname === undefined) {
+            current.webui.local_dns_searchname = '';
           }
           if (!Array.isArray(current.webui.listen_interfaces)) {
             current.webui.listen_interfaces = [];
@@ -3654,10 +3667,31 @@ class MosService {
               if (updates.webui.ports.http !== undefined && updates.webui.ports.http !== current.webui.ports.http) {
                 webuiChanged = true;
               }
+              // Check if https port changed
+              if (updates.webui.ports.https !== undefined && updates.webui.ports.https !== current.webui.ports.https) {
+                webuiChanged = true;
+              }
 
               current.webui.ports = {
-                http: updates.webui.ports.http !== undefined ? updates.webui.ports.http : current.webui.ports.http
+                http: updates.webui.ports.http !== undefined ? updates.webui.ports.http : current.webui.ports.http,
+                https: updates.webui.ports.https !== undefined ? updates.webui.ports.https : current.webui.ports.https
               };
+            }
+
+            // Check if https_enabled changed
+            if (updates.webui.https_enabled !== undefined && updates.webui.https_enabled !== current.webui.https_enabled) {
+              webuiChanged = true;
+            }
+            if (updates.webui.https_enabled !== undefined) {
+              current.webui.https_enabled = updates.webui.https_enabled;
+            }
+
+            // Check if local_dns_searchname changed
+            if (updates.webui.local_dns_searchname !== undefined && updates.webui.local_dns_searchname !== current.webui.local_dns_searchname) {
+              localDnsSearchnameChanged = true;
+            }
+            if (updates.webui.local_dns_searchname !== undefined) {
+              current.webui.local_dns_searchname = updates.webui.local_dns_searchname;
             }
 
             // Check if listen_interfaces changed
@@ -3802,8 +3836,22 @@ class MosService {
         }
       }
 
-      // Restart nginx if webui settings changed (http port or listen_interfaces)
-      if (webuiChanged) {
+      // Recreate certs and restart nginx if local_dns_searchname changed
+      if (localDnsSearchnameChanged) {
+        try {
+          await execPromise('/etc/init.d/nginx recreatecerts');
+        } catch (error) {
+          console.warn('Warning: nginx recreatecerts failed:', error.message);
+        }
+        try {
+          await execPromise('/etc/init.d/nginx restart');
+        } catch (error) {
+          console.warn('Warning: Could not restart nginx after recreatecerts:', error.message);
+        }
+      }
+
+      // Restart nginx if webui settings changed (http/https port, https_enabled, or listen_interfaces)
+      if (webuiChanged && !localDnsSearchnameChanged) {
         try {
           await execPromise('/etc/init.d/nginx restart');
         } catch (error) {
@@ -3983,6 +4031,117 @@ class MosService {
    */
   async updateNginx() {
     return await this.updateService('nginx');
+  }
+
+  /**
+   * Recreates SSL certificates and restarts nginx
+   * @returns {Promise<Object>} Result with recreatecerts and restart status
+   */
+  async recreateCerts() {
+    const result = { recreatecerts: null, nginx_restart: null };
+
+    try {
+      await execPromise('/etc/init.d/nginx recreatecerts');
+      result.recreatecerts = 'success';
+    } catch (error) {
+      result.recreatecerts = `failed: ${error.message}`;
+    }
+
+    try {
+      await execPromise('/etc/init.d/nginx restart');
+      result.nginx_restart = 'success';
+    } catch (error) {
+      result.nginx_restart = `failed: ${error.message}`;
+    }
+
+    return result;
+  }
+
+  /**
+   * Reads SSL certificate information from /boot/config/system/ssl/
+   * Returns validity, subject, issuer, serial for nginx cert and root CA
+   * @returns {Promise<Object>} Certificate information
+   */
+  async getCertificatesInfo() {
+    const sslDir = '/boot/config/system/ssl';
+    const certs = [
+      { name: 'nginx', path: `${sslDir}/nginx.crt` },
+      { name: 'root_ca', path: `${sslDir}/root/ca.crt` }
+    ];
+
+    const result = {};
+
+    const parseDistinguishedName = (dn) => {
+      const result = {};
+      const parts = dn.split(',').map(p => p.trim());
+      for (const part of parts) {
+        const idx = part.indexOf('=');
+        if (idx !== -1) {
+          const key = part.substring(0, idx).trim();
+          const value = part.substring(idx + 1).trim();
+          result[key] = value;
+        }
+      }
+      return result;
+    };
+
+    for (const cert of certs) {
+      const info = {
+        subject: null,
+        issuer: null,
+        not_before: null,
+        not_after: null,
+        serial: null,
+        fingerprint_sha256: null,
+        san: null,
+        days_remaining: null,
+        expired: null,
+        file: cert.path
+      };
+
+      try {
+        await fs.access(cert.path);
+        const { stdout } = await execPromise(
+          `openssl x509 -in ${cert.path} -noout -subject -issuer -dates -serial -sha256 -fingerprint -ext subjectAltName 2>&1`
+        );
+
+        const lines = stdout.split('\n').filter(l => l.trim());
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (trimmed.startsWith('subject=')) {
+            info.subject = parseDistinguishedName(trimmed.replace('subject=', '').trim());
+          } else if (trimmed.startsWith('issuer=')) {
+            info.issuer = parseDistinguishedName(trimmed.replace('issuer=', '').trim());
+          } else if (trimmed.startsWith('notBefore=')) {
+            info.not_before = trimmed.replace('notBefore=', '').trim();
+          } else if (trimmed.startsWith('notAfter=')) {
+            info.not_after = trimmed.replace('notAfter=', '').trim();
+          } else if (trimmed.startsWith('serial=')) {
+            info.serial = trimmed.replace('serial=', '').trim();
+          } else if (trimmed.toLowerCase().includes('fingerprint=')) {
+            info.fingerprint_sha256 = trimmed.split('=').slice(1).join('=').trim();
+          } else if (trimmed.startsWith('DNS:') || trimmed.startsWith('IP Address:')) {
+            info.san = trimmed.split(',').map(s => s.trim().replace(/^DNS:|^IP Address:/i, '').trim());
+          }
+        }
+
+        // Calculate days remaining
+        if (info.not_after) {
+          const expiry = new Date(info.not_after);
+          const now = new Date();
+          const diffMs = expiry - now;
+          info.days_remaining = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+          info.expired = info.days_remaining < 0;
+        }
+      } catch (_) {
+        // Certificate not readable — all fields remain null
+      }
+
+      result[cert.name] = info;
+    }
+
+    return result;
   }
 
   /**

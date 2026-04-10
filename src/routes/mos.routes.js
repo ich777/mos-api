@@ -2143,7 +2143,7 @@ router.get('/settings/system', async (req, res) => {
  *                     example: ["aarch64"]
  *               webui:
  *                 type: object
- *                 description: WebUI configuration settings. Changing the HTTP port or listen_interfaces triggers nginx restart.
+ *                 description: WebUI configuration settings. Changing ports, https_enabled, or listen_interfaces triggers nginx restart. Changing local_dns_searchname triggers certificate recreation and nginx restart.
  *                 properties:
  *                   ports:
  *                     type: object
@@ -2153,6 +2153,18 @@ router.get('/settings/system', async (req, res) => {
  *                         type: integer
  *                         description: HTTP port for the WebUI (default 80). Changing this triggers nginx restart.
  *                         example: 80
+ *                       https:
+ *                         type: integer
+ *                         description: HTTPS port for the WebUI (default 443). Changing this triggers nginx restart.
+ *                         example: 443
+ *                   https_enabled:
+ *                     type: boolean
+ *                     description: Enable HTTPS for the WebUI (default false). Changing this triggers nginx restart.
+ *                     example: false
+ *                   local_dns_searchname:
+ *                     type: string
+ *                     description: Local DNS search name for the WebUI. Changing this triggers certificate recreation and nginx restart.
+ *                     example: "myserver.local"
  *                   listen_interfaces:
  *                     type: array
  *                     items:
@@ -2371,6 +2383,175 @@ router.post('/update_ui', async (req, res) => {
     if (!res.headersSent) {
       res.status(500).json({ error: error.message });
     }
+  }
+});
+
+/**
+ * @swagger
+ * /mos/recreatecerts:
+ *   post:
+ *     summary: Recreate SSL certificates
+ *     description: Recreates SSL certificates via nginx recreatecerts and restarts nginx (admin only)
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: false
+ *     responses:
+ *       200:
+ *         description: Certificate recreation result
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 recreatecerts:
+ *                   type: string
+ *                   description: Status of the recreatecerts command
+ *                   example: "success"
+ *                 nginx_restart:
+ *                   type: string
+ *                   description: Status of the nginx restart
+ *                   example: "success"
+ *                 timestamp:
+ *                   type: string
+ *                   example: "2024-01-15T10:30:00.000Z"
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+
+// POST: Recreate SSL certificates and restart nginx
+router.post('/recreatecerts', async (req, res) => {
+  try {
+    const result = await mosService.recreateCerts();
+    res.json({
+      success: true,
+      ...result,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /mos/certificates:
+ *   get:
+ *     summary: Get SSL certificate information
+ *     description: Returns validity, subject, issuer, fingerprint and expiry information for the nginx and root CA certificates (admin only)
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Certificate information retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 nginx:
+ *                   type: object
+ *                   description: Nginx server certificate info
+ *                   properties:
+ *                     subject:
+ *                       type: string
+ *                       example: "CN = MOS"
+ *                     issuer:
+ *                       type: string
+ *                       example: "CN = MOS Root CA"
+ *                     not_before:
+ *                       type: string
+ *                       example: "Jan 15 10:30:00 2024 GMT"
+ *                     not_after:
+ *                       type: string
+ *                       example: "Jan 15 10:30:00 2025 GMT"
+ *                     serial:
+ *                       type: string
+ *                       example: "1000"
+ *                     fingerprint_sha256:
+ *                       type: string
+ *                       example: "AA:BB:CC:..."
+ *                     days_remaining:
+ *                       type: integer
+ *                       description: Days until certificate expires
+ *                       example: 365
+ *                     expired:
+ *                       type: boolean
+ *                       example: false
+ *                     file:
+ *                       type: string
+ *                       example: "/boot/config/system/ssl/nginx.crt"
+ *                 root_ca:
+ *                   type: object
+ *                   description: Root CA certificate info
+ *                   properties:
+ *                     subject:
+ *                       type: string
+ *                     issuer:
+ *                       type: string
+ *                     not_before:
+ *                       type: string
+ *                     not_after:
+ *                       type: string
+ *                     serial:
+ *                       type: string
+ *                     fingerprint_sha256:
+ *                       type: string
+ *                     days_remaining:
+ *                       type: integer
+ *                     expired:
+ *                       type: boolean
+ *                     file:
+ *                       type: string
+ *                       example: "/boot/config/system/ssl/root/ca.crt"
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+
+// GET: Certificate information
+router.get('/certificates', async (req, res) => {
+  try {
+    const info = await mosService.getCertificatesInfo();
+    res.json(info);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 
