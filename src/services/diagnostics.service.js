@@ -93,8 +93,6 @@ const collectors = [
 
 class DiagnosticsService {
   async collect({ types } = {}) {
-    await this._sendNotification('Diagnostics', 'Diagnostics collection started');
-
     await fs.mkdir(TEMP_DIR, { recursive: true });
     const tempDir = await fs.mkdtemp(path.join(TEMP_DIR, 'run-'));
     const errors = [];
