@@ -3397,7 +3397,7 @@ class MosService {
           http: 80,
           https: 443
         },
-        https_enabled: false,
+        https_enabled: true,
         local_dns_searchname: '',
         listen_interfaces: ['eth0']
       },
