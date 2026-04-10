@@ -3398,12 +3398,12 @@ class MosService {
           https: 443
         },
         https_enabled: true,
-        local_dns_searchname: '',
-        listen_interfaces: ['eth0']
+        local_dns_searchname: 'local',
+        listen_interfaces: []
       },
       update_check: {
         enabled: false,
-        update_check_schedule: '0 1 * * *'
+        update_check_schedule: '15 9 * * *'
       }
     };
   }
