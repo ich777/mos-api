@@ -7,7 +7,7 @@ const hubService = require('../services/hub.service');
  * /mos/hub/settings:
  *   get:
  *     summary: Get hub settings
- *     description: Retrieves hub configuration (enabled, initial_update, schedule)
+ *     description: Retrieves hub configuration (enabled, initial_update, schedule, update_check)
  *     tags: [MOS Hub]
  *     security:
  *       - bearerAuth: []
@@ -27,6 +27,20 @@ const hubService = require('../services/hub.service');
  *                   type: string
  *                 page_entries:
  *                   type: integer
+ *                 update_check:
+ *                   type: object
+ *                   properties:
+ *                     enabled:
+ *                       type: boolean
+ *                     update_check_schedule:
+ *                       type: string
+ *                     auto_update:
+ *                       type: object
+ *                       properties:
+ *                         enabled:
+ *                           type: boolean
+ *                         auto_update_schedule:
+ *                           type: string
  *       500:
  *         description: Server error
  */
@@ -44,7 +58,7 @@ router.get('/settings', async (req, res) => {
  * /mos/hub/settings:
  *   post:
  *     summary: Update hub settings
- *     description: Updates hub configuration (enabled, initial_update, schedule)
+ *     description: Updates hub configuration (enabled, initial_update, schedule, update_check)
  *     tags: [MOS Hub]
  *     security:
  *       - bearerAuth: []
@@ -61,15 +75,38 @@ router.get('/settings', async (req, res) => {
  *                 type: boolean
  *               schedule:
  *                 type: string
- *                 description: Cron schedule string
+ *                 description: Cron schedule for hub repository updates
  *               page_entries:
  *                 type: integer
  *                 description: Number of entries per page
+ *               update_check:
+ *                 type: object
+ *                 description: Plugin update check settings
+ *                 properties:
+ *                   enabled:
+ *                     type: boolean
+ *                   update_check_schedule:
+ *                     type: string
+ *                     description: Cron schedule for plugin update checks
+ *                   auto_update:
+ *                     type: object
+ *                     properties:
+ *                       enabled:
+ *                         type: boolean
+ *                       auto_update_schedule:
+ *                         type: string
+ *                         description: Cron schedule for automatic plugin updates
  *           example:
  *             enabled: true
  *             initial_update: false
  *             schedule: "0 3 * * *"
  *             page_entries: 24
+ *             update_check:
+ *               enabled: true
+ *               update_check_schedule: "0 1 * * *"
+ *               auto_update:
+ *                 enabled: false
+ *                 auto_update_schedule: "0 2 * * SAT"
  *     responses:
  *       200:
  *         description: Updated settings

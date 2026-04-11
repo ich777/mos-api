@@ -46,6 +46,14 @@ class HubService {
       initial_update: false,
       schedule: '',
       page_entries: 24,
+      update_check: {
+        enabled: false,
+        update_check_schedule: '10 1 * * *',
+        auto_update: {
+          enabled: false,
+          auto_update_schedule: '10 2 * * SAT'
+        }
+      },
       repositories: []
     };
   }
@@ -81,7 +89,20 @@ class HubService {
     const config = JSON.parse(data);
 
     // Merge with defaults to ensure all fields exist
-    return { ...this._getDefaultConfig(), ...config };
+    const defaults = this._getDefaultConfig();
+    const merged = { ...defaults, ...config };
+
+    // Deep merge update_check to preserve nested defaults
+    merged.update_check = {
+      ...defaults.update_check,
+      ...(config.update_check || {}),
+      auto_update: {
+        ...defaults.update_check.auto_update,
+        ...((config.update_check && config.update_check.auto_update) || {})
+      }
+    };
+
+    return merged;
   }
 
   /**
@@ -131,11 +152,12 @@ class HubService {
   async setSettings(settings) {
     try {
       const current = await this._readConfig();
-      let scheduleChanged = false;
+      let hubCronChanged = false;
 
       // Update only provided fields
-      if (typeof settings.enabled === 'boolean') {
+      if (typeof settings.enabled === 'boolean' && current.enabled !== settings.enabled) {
         current.enabled = settings.enabled;
+        hubCronChanged = true;
       }
       if (typeof settings.initial_update === 'boolean') {
         current.initial_update = settings.initial_update;
@@ -143,7 +165,7 @@ class HubService {
       if (settings.schedule !== undefined && (typeof settings.schedule === 'string' || settings.schedule === null)) {
         const newSchedule = settings.schedule || '';
         if (current.schedule !== newSchedule) {
-          scheduleChanged = true;
+          hubCronChanged = true;
         }
         current.schedule = newSchedule;
       }
@@ -151,14 +173,53 @@ class HubService {
         current.page_entries = settings.page_entries;
       }
 
+      let updateCronChanged = false;
+      if (settings.update_check && typeof settings.update_check === 'object') {
+        if (!current.update_check) {
+          current.update_check = this._getDefaultConfig().update_check;
+        }
+        if (typeof settings.update_check.enabled === 'boolean' && current.update_check.enabled !== settings.update_check.enabled) {
+          current.update_check.enabled = settings.update_check.enabled;
+          updateCronChanged = true;
+        }
+        if (typeof settings.update_check.update_check_schedule === 'string') {
+          if (current.update_check.update_check_schedule !== settings.update_check.update_check_schedule) {
+            updateCronChanged = true;
+          }
+          current.update_check.update_check_schedule = settings.update_check.update_check_schedule;
+        }
+        if (settings.update_check.auto_update && typeof settings.update_check.auto_update === 'object') {
+          if (!current.update_check.auto_update) {
+            current.update_check.auto_update = this._getDefaultConfig().update_check.auto_update;
+          }
+          if (typeof settings.update_check.auto_update.enabled === 'boolean' && current.update_check.auto_update.enabled !== settings.update_check.auto_update.enabled) {
+            current.update_check.auto_update.enabled = settings.update_check.auto_update.enabled;
+            updateCronChanged = true;
+          }
+          if (typeof settings.update_check.auto_update.auto_update_schedule === 'string') {
+            if (current.update_check.auto_update.auto_update_schedule !== settings.update_check.auto_update.auto_update_schedule) {
+              updateCronChanged = true;
+            }
+            current.update_check.auto_update.auto_update_schedule = settings.update_check.auto_update.auto_update_schedule;
+          }
+        }
+      }
+
       await this._writeConfig(current);
 
-      // Trigger cron update if schedule changed
-      if (scheduleChanged) {
+      if (hubCronChanged) {
         try {
           await execPromise('/usr/local/bin/mos-cron_update');
         } catch (cronError) {
           console.warn(`Hub: Failed to update cron: ${cronError.message}`);
+        }
+      }
+
+      if (updateCronChanged) {
+        try {
+          await execPromise('/usr/local/bin/mos-cron_update');
+        } catch (cronError) {
+          console.warn(`Hub: Failed to update plugin cron: ${cronError.message}`);
         }
       }
 
