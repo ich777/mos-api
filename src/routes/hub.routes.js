@@ -275,6 +275,12 @@ router.post('/update', async (req, res) => {
  *         schema:
  *           type: integer
  *         description: Number of results to skip for pagination
+ *       - in: query
+ *         name: arch_filter
+ *         schema:
+ *           type: boolean
+ *           default: true
+ *         description: Filter templates by system architecture (enabled by default). Set to false to show all architectures.
  *     responses:
  *       200:
  *         description: Template index with results and count
@@ -328,7 +334,7 @@ router.post('/update', async (req, res) => {
  */
 router.get('/index', async (req, res) => {
   try {
-    const { search, category, type, sort, order, limit, skip } = req.query;
+    const { search, category, type, sort, order, limit, skip, arch_filter } = req.query;
     const result = await hubService.getIndex({
       search,
       category,
@@ -336,7 +342,8 @@ router.get('/index', async (req, res) => {
       sort,
       order,
       limit: limit ? parseInt(limit, 10) : undefined,
-      skip: skip ? parseInt(skip, 10) : undefined
+      skip: skip ? parseInt(skip, 10) : undefined,
+      arch_filter: arch_filter !== 'false'
     });
     res.json(result);
   } catch (error) {

@@ -72,6 +72,11 @@ async function getPlugins() {
       const manifestContent = await fs.readFile(manifestPath, 'utf8');
       const manifest = JSON.parse(manifestContent);
 
+      // Ensure widget field defaults to false
+      if (manifest.widget === undefined) {
+        manifest.widget = false;
+      }
+
       // Add update_available status
       let updateAvailable = false;
       if (versionsExists) {
@@ -919,9 +924,11 @@ async function setPluginSettings(pluginName, settings) {
 /**
  * Check for plugin updates
  * Compares installed plugins with latest available versions
+ * @param {Object} [options] - Options
+ * @param {boolean} [options.notify] - Send notification if updates are found
  * @returns {Promise<Array>} Update check results
  */
-async function checkUpdates() {
+async function checkUpdates(options = {}) {
   const results = [];
   const versionsPath = path.join(PLUGINS_CACHE_DIR, 'versions.json');
 
@@ -978,6 +985,15 @@ async function checkUpdates() {
   // Save to versions.json
   await fs.mkdir(PLUGINS_CACHE_DIR, { recursive: true });
   await fs.writeFile(versionsPath, JSON.stringify(results, null, 2), 'utf8');
+
+  // Send notification if updates found and notify flag is set
+  if (options.notify) {
+    const updatable = results.filter(r => r.update_available);
+    if (updatable.length > 0) {
+      const names = updatable.map(r => r.plugin).join(', ');
+      await _sendNotification('Plugin', `Update for Plugins: ${names} found.`, 'normal');
+    }
+  }
 
   return results;
 }

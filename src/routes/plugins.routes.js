@@ -431,6 +431,16 @@ router.post('/settings/:pluginName', async (req, res) => {
  *     tags: [MOS Plugins]
  *     security:
  *       - bearerAuth: []
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               notify:
+ *                 type: boolean
+ *                 description: Send notification if updates are found
  *     responses:
  *       200:
  *         description: Update check results
@@ -456,7 +466,8 @@ router.post('/settings/:pluginName', async (req, res) => {
  */
 router.post('/updatecheck', async (req, res) => {
   try {
-    const result = await pluginsService.checkUpdates();
+    const { notify } = req.body || {};
+    const result = await pluginsService.checkUpdates({ notify: !!notify });
     res.json(result);
   } catch (error) {
     res.status(500).json({ error: error.message });

@@ -1,5 +1,6 @@
 const fs = require('fs').promises;
 const path = require('path');
+const os = require('os');
 const { exec } = require('child_process');
 const util = require('util');
 const execPromise = util.promisify(exec);
@@ -10,6 +11,30 @@ class HubService {
     this.indexPath = '/var/mos/hub/repositories.json';
     this.allowedTypes = ['docker', 'compose', 'lxc', 'plugin', 'vm'];
     this.allowedCategories = ['AI', 'Backup', 'Hosting', 'Crypto', 'Downloader', 'Driver', 'Game Server', 'Home Automation', 'Media', 'Network', 'Productivity', 'Monitoring', 'Security', 'System', 'Utilities', 'Misc'];
+  }
+
+  /**
+   * Returns the system architecture in template format (amd64/arm64)
+   * @returns {string} System architecture
+   */
+  _getSystemArch() {
+    const arch = os.arch();
+    const archMap = { x64: 'amd64', arm64: 'arm64' };
+    return archMap[arch] || arch;
+  }
+
+  /**
+   * Filters templates by system architecture
+   * Templates without architectures field or with matching arch are kept
+   * @param {Array} templates - Array of template objects
+   * @returns {Array} Filtered templates
+   */
+  _filterByArch(templates) {
+    const sysArch = this._getSystemArch();
+    return templates.filter(t => {
+      if (!Array.isArray(t.architectures) || t.architectures.length === 0) return true;
+      return t.architectures.includes(sysArch);
+    });
   }
 
   /**
@@ -394,7 +419,7 @@ class HubService {
    * @returns {Promise<Object>} Object with results array and count
    */
   async getIndex(options = {}) {
-    const { search, category, type, sort, order = 'asc', limit, skip } = options;
+    const { search, category, type, sort, order = 'asc', limit, skip, arch_filter = true } = options;
 
     // Try to read cached index
     let indexData;
@@ -407,6 +432,12 @@ class HubService {
     }
 
     let filtered = indexData.results || [];
+
+    // Filter by system architecture (enabled by default)
+    if (arch_filter) {
+      filtered = this._filterByArch(filtered);
+    }
+
     const searchLower = search ? search.toLowerCase() : null;
     const categoryLower = category ? category.toLowerCase() : null;
     const typeLower = type ? type.toLowerCase() : null;
@@ -614,6 +645,14 @@ class HubService {
     // Get git timestamps
     const { created_at, updated_at } = await this._getGitTimestamps(jsonPath, repoPath);
 
+    // Extract architectures (array or null)
+    let architectures = null;
+    if (Array.isArray(template.architectures) && template.architectures.length > 0) {
+      architectures = template.architectures;
+    } else if (typeof template.architecture === 'string') {
+      architectures = [template.architecture];
+    }
+
     return {
       name: template.name || '',
       maintainer: maintainerInfo.maintainer || '',
@@ -627,6 +666,7 @@ class HubService {
       website: template.project || '',
       icon: template.icon || '',
       repository: template.repo || '',
+      architectures,
       created_at,
       updated_at,
       stack_images: [],
@@ -766,7 +806,7 @@ class HubService {
    * @returns {Promise<Object>} Object with results array and count
    */
   async buildIndex(options = {}) {
-    const { search, category, type, sort, order = 'asc', limit, skip } = options;
+    const { search, category, type, sort, order = 'asc', limit, skip, arch_filter = true } = options;
     const reposPath = '/var/mos/hub/repositories';
     const templates = [];
     const searchLower = search ? search.toLowerCase() : null;
@@ -852,6 +892,11 @@ class HubService {
 
     // Filter results
     let filtered = templates;
+
+    // Filter by system architecture (enabled by default)
+    if (arch_filter) {
+      filtered = this._filterByArch(filtered);
+    }
 
     // Filter by type (docker/compose/plugin)
     if (typeLower) {

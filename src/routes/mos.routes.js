@@ -5,6 +5,7 @@ const router = express.Router();
 const mosService = require('../services/mos.service');
 const zramService = require('../services/zram.service');
 const swapService = require('../services/swap.service');
+const pluginsService = require('../services/plugins.service');
 const { checkRole } = require('../middleware/auth.middleware');
 
 /**
@@ -2844,10 +2845,15 @@ router.post('/restart/service', async (req, res) => {
  *                 type: boolean
  *                 description: Whether to update kernel (default true, omit from script if false)
  *                 example: true
+ *               update_plugins:
+ *                 type: boolean
+ *                 description: Update all plugins before OS update (checks for updates, updates if available, sends notifications)
+ *                 example: true
  *           example:
  *             version: "latest"
  *             channel: "stable"
  *             update_kernel: true
+ *             update_plugins: true
  *     responses:
  *       200:
  *         description: OS update initiated successfully
@@ -2920,7 +2926,7 @@ router.post('/restart/service', async (req, res) => {
 // POST: OS Update
 router.post('/updateos', async (req, res) => {
   try {
-    const { version, channel, update_kernel } = req.body;
+    const { version, channel, update_kernel, update_plugins } = req.body;
 
     if (!version) {
       return res.status(400).json({
@@ -2940,6 +2946,21 @@ router.post('/updateos', async (req, res) => {
     const updateKernel = update_kernel !== false;
 
     const result = await mosService.updateOS(version, channel, updateKernel);
+
+    // Update plugins last (after OS update has completed)
+    if (update_plugins) {
+      try {
+        const versions = await pluginsService.checkUpdates();
+        const updatable = versions.filter(v => v.update_available);
+        if (updatable.length > 0) {
+          await pluginsService.updatePlugins();
+        } else {
+          await pluginsService.sendNotification('Plugin', 'All Plugins up-to-date', 'normal');
+        }
+      } catch {
+        // Plugin update errors should not block response
+      }
+    }
 
     if (result.success) {
       res.json(result);
