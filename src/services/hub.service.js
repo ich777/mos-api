@@ -32,8 +32,8 @@ class HubService {
   _filterByArch(templates) {
     const sysArch = this._getSystemArch();
     return templates.filter(t => {
-      if (!Array.isArray(t.architectures) || t.architectures.length === 0) return true;
-      return t.architectures.includes(sysArch);
+      if (!Array.isArray(t.architecture) || t.architecture.length === 0) return true;
+      return t.architecture.includes(sysArch);
     });
   }
 
@@ -706,12 +706,12 @@ class HubService {
     // Get git timestamps
     const { created_at, updated_at } = await this._getGitTimestamps(jsonPath, repoPath);
 
-    // Extract architectures (array or null)
-    let architectures = null;
-    if (Array.isArray(template.architectures) && template.architectures.length > 0) {
-      architectures = template.architectures;
+    // Extract architecture (array or null)
+    let architecture = null;
+    if (Array.isArray(template.architecture) && template.architecture.length > 0) {
+      architecture = template.architecture;
     } else if (typeof template.architecture === 'string') {
-      architectures = [template.architecture];
+      architecture = [template.architecture];
     }
 
     return {
@@ -727,7 +727,7 @@ class HubService {
       website: template.project || '',
       icon: template.icon || '',
       repository: template.repo || '',
-      architectures,
+      architecture,
       created_at,
       updated_at,
       stack_images: [],
@@ -756,12 +756,12 @@ class HubService {
     // Get git timestamps
     const { created_at, updated_at } = await this._getGitTimestamps(jsonPath, repoPath);
 
-    // Extract architectures (array or null)
-    let architectures = null;
-    if (Array.isArray(template.architectures) && template.architectures.length > 0) {
-      architectures = template.architectures;
+    // Extract architecture (array or null)
+    let architecture = null;
+    if (Array.isArray(template.architecture) && template.architecture.length > 0) {
+      architecture = template.architecture;
     } else if (typeof template.architecture === 'string') {
-      architectures = [template.architecture];
+      architecture = [template.architecture];
     }
 
     return {
@@ -778,7 +778,7 @@ class HubService {
       icon: template.icon || '',
       repository: template.repository || '',
       driver: template.driver || false,
-      architectures,
+      architecture,
       created_at,
       updated_at,
       stack_images: [],
@@ -821,12 +821,12 @@ class HubService {
     // Get git timestamps
     const { created_at, updated_at } = await this._getGitTimestamps(templatePath, repoPath);
 
-    // Extract architectures (array or null)
-    let architectures = null;
-    if (Array.isArray(template.architectures) && template.architectures.length > 0) {
-      architectures = template.architectures;
+    // Extract architecture (array or null)
+    let architecture = null;
+    if (Array.isArray(template.architecture) && template.architecture.length > 0) {
+      architecture = template.architecture;
     } else if (typeof template.architecture === 'string') {
-      architectures = [template.architecture];
+      architecture = [template.architecture];
     }
 
     return {
@@ -842,7 +842,7 @@ class HubService {
       website: template.website || '',
       icon: template.icon || '',
       repository: template.repository || '',
-      architectures,
+      architecture,
       created_at,
       updated_at,
       stack_images: Object.keys(stackImages).length > 0 ? [stackImages] : [],
