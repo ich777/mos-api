@@ -4,6 +4,8 @@ const { exec } = require('child_process');
 const util = require('util');
 const execPromise = util.promisify(exec);
 const crypto = require('crypto');
+const dns = require('dns');
+const dnsLookup = util.promisify(dns.lookup);
 
 // Timestamp-basierter ID-Generator
 const generateId = () => Date.now().toString();
@@ -537,11 +539,24 @@ class RemotesService {
         throw new Error(`Connection test failed: ${testResult.message}`);
       }
 
+      // Resolve hostname to IP before mounting (mount.cifs kernel resolver
+      // does not support DNS search domains and may fail with bare hostnames)
+      let resolvedServer = remote.server;
+      try {
+        const resolved = await dnsLookup(remote.server);
+        resolvedServer = resolved.address;
+        if (resolvedServer !== remote.server) {
+          console.log(`Resolved ${remote.server} to ${resolvedServer}`);
+        }
+      } catch (dnsError) {
+        console.warn(`DNS lookup failed for ${remote.server}, using as-is: ${dnsError.message}`);
+      }
+
       let mountCommand;
 
       if (remote.type === 'smb') {
         // Build SMB mount command
-        const server = remote.server;
+        const server = resolvedServer;
         const share = remote.share;
         const username = remote.username;
         const domain = remote.domain;
@@ -571,7 +586,7 @@ class RemotesService {
         mountCommand = `mount -t cifs //${server}/${share} "${mountPath}" -o ${options}`;
       } else if (remote.type === 'nfs') {
         // Build NFS mount command
-        const server = remote.server;
+        const server = resolvedServer;
         const share = remote.share;
 
         let options = 'vers=4,rsize=1048576,wsize=1048576,hard,intr,timeo=600';
@@ -593,6 +608,9 @@ class RemotesService {
       try {
         await execPromise(mountCommand);
       } catch (mountError) {
+        // Log actual error for diagnosis (stderr often contains the real reason)
+        const errMsg = (mountError.stderr || mountError.message || '').replace(/password=[^\s,]*/gi, 'password=***');
+        console.error(`Mount failed for //${remote.server}/${remote.share}: ${errMsg}`);
         // Don't expose the mount command (which may contain password) in error message
         throw new Error(`Unable to mount ${remote.type.toUpperCase()} share //${remote.server}/${remote.share}`);
       }
