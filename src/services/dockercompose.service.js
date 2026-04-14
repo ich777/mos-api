@@ -1448,8 +1448,8 @@ class DockerComposeService {
         await this._copyStackToWorking(name);
       }
 
-      // Start stack from working directory
-      const { stdout, stderr } = await execCompose('docker-compose -f compose.yaml -f mos.override.yaml start', {
+      // Start stack from working directory (up -d creates containers if they don't exist)
+      const { stdout, stderr } = await execComposeWithAuth('docker-compose -f compose.yaml -f mos.override.yaml up -d', {
         cwd: workingPath
       });
 
@@ -1541,8 +1541,11 @@ class DockerComposeService {
         await this._copyStackToWorking(name);
       }
 
-      // Restart stack from working directory
-      const { stdout, stderr } = await execCompose('docker-compose -f compose.yaml -f mos.override.yaml restart', {
+      // Restart stack: stop then up -d (handles missing containers)
+      await execCompose('docker-compose -f compose.yaml -f mos.override.yaml stop', {
+        cwd: workingPath
+      });
+      const { stdout, stderr } = await execComposeWithAuth('docker-compose -f compose.yaml -f mos.override.yaml up -d', {
         cwd: workingPath
       });
 
