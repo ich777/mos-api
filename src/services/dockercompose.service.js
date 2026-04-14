@@ -66,6 +66,47 @@ async function execWithAuth(command, options = {}) {
   }
 }
 
+/**
+ * Check if stderr output contains only docker-compose warnings (not real errors)
+ * @param {string} stderr - stderr output
+ * @returns {boolean}
+ */
+function isStderrOnlyWarnings(stderr) {
+  if (!stderr || !stderr.trim()) return true;
+  return stderr.trim().split('\n').every(line => {
+    const t = line.trim();
+    return !t || /^WARN\[/i.test(t) || /^WARNING:/i.test(t);
+  });
+}
+
+/**
+ * Execute a docker-compose command, treating warning-only stderr as success
+ */
+async function execCompose(command, options = {}) {
+  try {
+    return await execPromise(command, options);
+  } catch (error) {
+    if (error.stderr && isStderrOnlyWarnings(error.stderr)) {
+      return { stdout: error.stdout || '', stderr: error.stderr || '' };
+    }
+    throw error;
+  }
+}
+
+/**
+ * Execute a docker-compose command with auth, treating warning-only stderr as success
+ */
+async function execComposeWithAuth(command, options = {}) {
+  try {
+    return await execWithAuth(command, options);
+  } catch (error) {
+    if (error.stderr && isStderrOnlyWarnings(error.stderr)) {
+      return { stdout: error.stdout || '', stderr: error.stderr || '' };
+    }
+    throw error;
+  }
+}
+
 class DockerComposeService {
 
   /**
@@ -656,7 +697,7 @@ class DockerComposeService {
   async _pullStackImages(stackName) {
     try {
       const workingPath = await this._getWorkingPath(stackName);
-      const { stdout, stderr } = await execWithAuth('docker-compose -f compose.yaml -f mos.override.yaml pull', {
+      const { stdout, stderr } = await execComposeWithAuth('docker-compose -f compose.yaml -f mos.override.yaml pull', {
         cwd: workingPath
       });
       return { stdout: stdout || '', stderr: stderr || '' };
@@ -673,7 +714,7 @@ class DockerComposeService {
   async _deployStack(stackName) {
     try {
       const workingPath = await this._getWorkingPath(stackName);
-      const { stdout, stderr } = await execWithAuth('docker-compose -f compose.yaml -f mos.override.yaml up -d', {
+      const { stdout, stderr } = await execComposeWithAuth('docker-compose -f compose.yaml -f mos.override.yaml up -d', {
         cwd: workingPath
       });
       return { stdout: stdout || '', stderr: stderr || '' };
@@ -1408,7 +1449,7 @@ class DockerComposeService {
       }
 
       // Start stack from working directory
-      const { stdout, stderr } = await execPromise('docker-compose -f compose.yaml -f mos.override.yaml start', {
+      const { stdout, stderr } = await execCompose('docker-compose -f compose.yaml -f mos.override.yaml start', {
         cwd: workingPath
       });
 
@@ -1456,7 +1497,7 @@ class DockerComposeService {
       }
 
       // Stop stack from working directory
-      const { stdout, stderr } = await execPromise('docker-compose -f compose.yaml -f mos.override.yaml stop', {
+      const { stdout, stderr } = await execCompose('docker-compose -f compose.yaml -f mos.override.yaml stop', {
         cwd: workingPath
       });
 
@@ -1501,7 +1542,7 @@ class DockerComposeService {
       }
 
       // Restart stack from working directory
-      const { stdout, stderr } = await execPromise('docker-compose -f compose.yaml -f mos.override.yaml restart', {
+      const { stdout, stderr } = await execCompose('docker-compose -f compose.yaml -f mos.override.yaml restart', {
         cwd: workingPath
       });
 
@@ -1549,7 +1590,7 @@ class DockerComposeService {
       }
 
       // Pull images from working directory (with auth if tokens available)
-      const { stdout, stderr } = await execWithAuth('docker-compose -f compose.yaml -f mos.override.yaml pull', {
+      const { stdout, stderr } = await execComposeWithAuth('docker-compose -f compose.yaml -f mos.override.yaml pull', {
         cwd: workingPath
       });
 
