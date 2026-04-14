@@ -1,35 +1,7 @@
 const express = require('express');
-const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const multer = require('multer');
-const uploadStorage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const targetDir = req.body.path;
-    if (!targetDir) {
-      return cb(new Error('path field is required'));
-    }
-    const resolved = path.resolve(targetDir);
-    if (resolved !== path.normalize(targetDir)) {
-      return cb(new Error('Invalid target directory path'));
-    }
-    // Verify directory exists
-    fs.stat(resolved, (err, stats) => {
-      if (err) {
-        return cb(new Error(`Target directory does not exist: ${targetDir}`));
-      }
-      if (!stats.isDirectory()) {
-        return cb(new Error(`Target path is not a directory: ${targetDir}`));
-      }
-      cb(null, resolved);
-    });
-  },
-  filename: (req, file, cb) => {
-    const tempName = `.upload-${crypto.randomBytes(8).toString('hex')}`;
-    cb(null, tempName);
-  }
-});
-const upload = multer({ storage: uploadStorage });
+const fileUpload = require('express-fileupload');
 const router = express.Router();
 const mosService = require('../services/mos.service');
 const zramService = require('../services/zram.service');
@@ -5889,30 +5861,27 @@ router.get('/download', checkRole(['admin']), async (req, res) => {
  */
 
 // POST: Upload a file to the filesystem
-router.post('/upload', checkRole(['admin']), (req, res) => {
-  upload.single('file')(req, res, async (err) => {
-    if (err) {
-      const msg = err.message;
-      if (msg.includes('does not exist')) {
-        return res.status(404).json({ error: msg });
-      }
-      if (msg.includes('not a directory') || msg.includes('Invalid') || msg.includes('path field is required')) {
-        return res.status(400).json({ error: msg });
-      }
-      return res.status(500).json({ error: msg });
+router.post('/upload', checkRole(['admin']), fileUpload({ useTempFiles: false }), async (req, res) => {
+  try {
+    if (!req.body.path) {
+      return res.status(400).json({ error: 'path field is required' });
     }
 
-    if (!req.file) {
+    if (!req.files || !req.files.file) {
       return res.status(400).json({ error: 'file is required' });
     }
 
-    try {
-      const result = await mosService.finalizeUpload(req.file);
-      res.json(result);
-    } catch (finalizeErr) {
-      return res.status(500).json({ error: finalizeErr.message });
+    const result = await mosService.uploadFile(req.body.path, req.files.file);
+    res.json(result);
+  } catch (error) {
+    if (error.message.includes('does not exist')) {
+      return res.status(404).json({ error: error.message });
     }
-  });
+    if (error.message.includes('not a directory') || error.message.includes('Invalid')) {
+      return res.status(400).json({ error: error.message });
+    }
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // ============================================================

@@ -5518,31 +5518,45 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
   }
 
   /**
-   * Finalizes a file upload by renaming the temp file to the original name
-   * @param {Object} file - Multer file object (path, destination, originalname, size)
+   * Uploads a file to the specified target directory
+   * @param {string} targetDir - Absolute path to the target directory
+   * @param {Object} file - express-fileupload file object (name, size, mv)
    * @returns {Promise<Object>} Upload result with file info
    */
-  async finalizeUpload(file) {
+  async uploadFile(targetDir, file) {
     if (!file) {
       throw new Error('No file provided');
     }
 
-    const tempPath = file.path;
-    const finalPath = path.join(file.destination, file.originalname);
+    const resolvedDir = path.resolve(targetDir);
 
-    try {
-      await fs.rename(tempPath, finalPath);
-    } catch (error) {
-      // Cleanup temp file on failure
-      try { await fs.unlink(tempPath); } catch {}
-      throw new Error(`Failed to finalize upload: ${error.message}`);
+    if (resolvedDir !== path.normalize(targetDir)) {
+      throw new Error('Invalid target directory path');
     }
+
+    let dirStats;
+    try {
+      dirStats = await fs.stat(resolvedDir);
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        throw new Error(`Target directory does not exist: ${targetDir}`);
+      }
+      throw error;
+    }
+
+    if (!dirStats.isDirectory()) {
+      throw new Error(`Target path is not a directory: ${targetDir}`);
+    }
+
+    const finalPath = path.join(resolvedDir, file.name);
+
+    await file.mv(finalPath);
 
     return {
       success: true,
       message: 'File uploaded successfully',
       file: {
-        name: file.originalname,
+        name: file.name,
         size: file.size,
         path: finalPath
       }
