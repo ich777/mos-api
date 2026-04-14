@@ -5518,6 +5518,38 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
   }
 
   /**
+   * Finalizes a file upload by renaming the temp file to the original name
+   * @param {Object} file - Multer file object (path, destination, originalname, size)
+   * @returns {Promise<Object>} Upload result with file info
+   */
+  async finalizeUpload(file) {
+    if (!file) {
+      throw new Error('No file provided');
+    }
+
+    const tempPath = file.path;
+    const finalPath = path.join(file.destination, file.originalname);
+
+    try {
+      await fs.rename(tempPath, finalPath);
+    } catch (error) {
+      // Cleanup temp file on failure
+      try { await fs.unlink(tempPath); } catch {}
+      throw new Error(`Failed to finalize upload: ${error.message}`);
+    }
+
+    return {
+      success: true,
+      message: 'File uploaded successfully',
+      file: {
+        name: file.originalname,
+        size: file.size,
+        path: finalPath
+      }
+    };
+  }
+
+  /**
    * Edits a file on the filesystem
    * @param {string} filePath - Path to the file to edit
    * @param {string} content - New content for the file

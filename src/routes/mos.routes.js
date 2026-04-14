@@ -1,6 +1,35 @@
 const express = require('express');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const multer = require('multer');
+const uploadStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const targetDir = req.body.path;
+    if (!targetDir) {
+      return cb(new Error('path field is required'));
+    }
+    const resolved = path.resolve(targetDir);
+    if (resolved !== path.normalize(targetDir)) {
+      return cb(new Error('Invalid target directory path'));
+    }
+    // Verify directory exists
+    fs.stat(resolved, (err, stats) => {
+      if (err) {
+        return cb(new Error(`Target directory does not exist: ${targetDir}`));
+      }
+      if (!stats.isDirectory()) {
+        return cb(new Error(`Target path is not a directory: ${targetDir}`));
+      }
+      cb(null, resolved);
+    });
+  },
+  filename: (req, file, cb) => {
+    const tempName = `.upload-${crypto.randomBytes(8).toString('hex')}`;
+    cb(null, tempName);
+  }
+});
+const upload = multer({ storage: uploadStorage });
 const router = express.Router();
 const mosService = require('../services/mos.service');
 const zramService = require('../services/zram.service');
@@ -5781,6 +5810,109 @@ router.get('/download', checkRole(['admin']), async (req, res) => {
     }
     res.status(500).json({ error: error.message });
   }
+});
+
+/**
+ * @swagger
+ * /mos/upload:
+ *   post:
+ *     summary: Upload a file to the filesystem
+ *     description: |
+ *       Uploads a single file to the specified target directory.
+ *       The file is sent as multipart/form-data.
+ *       Use the filesystem navigator (`GET /mos/fsnavigator`) to browse available directories.
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - file
+ *               - path
+ *             properties:
+ *               file:
+ *                 type: string
+ *                 format: binary
+ *                 description: The file to upload
+ *               path:
+ *                 type: string
+ *                 description: Absolute path to the target directory
+ *                 example: "/mnt/Pool1/backups/"
+ *     responses:
+ *       200:
+ *         description: File uploaded successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "File uploaded successfully"
+ *                 file:
+ *                   type: object
+ *                   properties:
+ *                     name:
+ *                       type: string
+ *                       example: "backup.tar.gz"
+ *                     size:
+ *                       type: integer
+ *                       example: 1048576
+ *                     path:
+ *                       type: string
+ *                       example: "/mnt/Pool1/backups/backup.tar.gz"
+ *       400:
+ *         description: Bad request (missing file or path)
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Target directory not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+
+// POST: Upload a file to the filesystem
+router.post('/upload', checkRole(['admin']), (req, res) => {
+  upload.single('file')(req, res, async (err) => {
+    if (err) {
+      const msg = err.message;
+      if (msg.includes('does not exist')) {
+        return res.status(404).json({ error: msg });
+      }
+      if (msg.includes('not a directory') || msg.includes('Invalid') || msg.includes('path field is required')) {
+        return res.status(400).json({ error: msg });
+      }
+      return res.status(500).json({ error: msg });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ error: 'file is required' });
+    }
+
+    try {
+      const result = await mosService.finalizeUpload(req.file);
+      res.json(result);
+    } catch (finalizeErr) {
+      return res.status(500).json({ error: finalizeErr.message });
+    }
+  });
 });
 
 // ============================================================

@@ -2117,7 +2117,8 @@ router.delete('/mos/unusedimages', async (req, res) => {
     }
 
     const result = await dockerService.deleteUnusedImages(imageIds);
-    res.json(result);
+    const statusCode = result.success ? 200 : 400;
+    res.status(statusCode).json(result);
   } catch (error) {
     res.status(400).json({ error: error.message });
   }

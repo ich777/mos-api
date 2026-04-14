@@ -1788,10 +1788,7 @@ class DockerService {
 
       // Get all images via Docker API
       const imagesResponse = await axios.get('http://localhost/images/json', {
-        socketPath: dockerSocketPath,
-        params: {
-          filters: JSON.stringify({ dangling: ['false'] })
-        }
+        socketPath: dockerSocketPath
       });
 
       const images = imagesResponse.data;
@@ -1863,17 +1860,23 @@ class DockerService {
           : `${sizeInMB}MB`;
 
         // Handle images with RepoTags
-        if (image.RepoTags && image.RepoTags.length > 0) {
+        if (image.RepoTags && image.RepoTags.length > 0 && image.RepoTags[0] !== '<none>:<none>') {
           image.RepoTags.forEach(repoTag => {
-            if (repoTag !== '<none>:<none>') {
-              const [repository, tag] = repoTag.split(':');
-              formattedImages.push({
-                repository,
-                tag,
-                id: shortId,
-                size
-              });
-            }
+            const [repository, tag] = repoTag.split(':');
+            formattedImages.push({
+              repository,
+              tag,
+              id: shortId,
+              size
+            });
+          });
+        } else {
+          // Dangling/untagged image
+          formattedImages.push({
+            repository: '<untagged>',
+            tag: '<none>',
+            id: shortId,
+            size
           });
         }
       });
@@ -1922,8 +1925,14 @@ class DockerService {
 
       for (const image of imagesToDelete) {
         try {
+          // Use repo:tag reference to avoid "referenced in multiple repositories" error
+          // Fall back to ID for untagged/dangling images
+          const imageRef = (image.repository !== '<untagged>' && image.tag !== '<none>')
+            ? `${image.repository}:${image.tag}`
+            : image.id;
+
           // Use Docker API to delete image
-          await axios.delete(`http://localhost/images/${image.id}`, {
+          await axios.delete(`http://localhost/images/${encodeURIComponent(imageRef)}`, {
             socketPath: dockerSocketPath,
             params: {
               force: false // Don't force delete, only delete if truly unused
