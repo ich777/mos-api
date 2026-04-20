@@ -955,6 +955,84 @@ class CronService {
   }
 
   /**
+   * Reads system cron jobs from crontab that start with "# MOS"
+   * @returns {Promise<Array>} Array of system cron jobs
+   */
+  async getSystemCronJobs() {
+    try {
+      const { stdout } = await execPromise('crontab -l 2>/dev/null');
+      const lines = stdout.split('\n');
+      const systemJobs = [];
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+
+        // Check if this is a MOS comment line
+        if (line.startsWith('# MOS ')) {
+          // Extract name from comment (remove "# MOS " prefix and trailing ":")
+          let name = line.substring(6).trim();
+          if (name.endsWith(':')) {
+            name = name.slice(0, -1).trim();
+          }
+
+          // Next non-empty line should be the cron entry
+          let cronLine = null;
+          for (let j = i + 1; j < lines.length; j++) {
+            const nextLine = lines[j].trim();
+            if (nextLine && !nextLine.startsWith('#')) {
+              cronLine = nextLine;
+              i = j; // Skip to this line
+              break;
+            }
+          }
+
+          if (cronLine) {
+            let schedule, command;
+
+            // Handle special schedules like @reboot
+            if (cronLine.startsWith('@')) {
+              const parts = cronLine.split(/\s+/);
+              schedule = parts[0];
+              command = parts.slice(1).join(' ');
+            } else {
+              // Standard cron: first 5 fields are the schedule
+              const parts = cronLine.split(/\s+/);
+              if (parts.length >= 6) {
+                schedule = parts.slice(0, 5).join(' ');
+                command = parts.slice(5).join(' ');
+              } else {
+                continue;
+              }
+            }
+
+            systemJobs.push({
+              name,
+              schedule,
+              command
+            });
+          }
+        }
+      }
+
+      // Add running status for each system job
+      const jobsWithStatus = await Promise.all(
+        systemJobs.map(async (job) => ({
+          ...job,
+          status: await this._getJobStatus(job)
+        }))
+      );
+
+      return jobsWithStatus;
+    } catch (error) {
+      // If crontab is empty or not available
+      if (error.message.includes('no crontab')) {
+        return [];
+      }
+      throw new Error(`Error reading system cron jobs: ${error.message}`);
+    }
+  }
+
+  /**
    * Deletes a Cron-Script
    * @param {string} scriptName - Name of the script (with or without .sh) or job name
    * @param {boolean} deleteDependentJobs - Whether dependent Cron-Jobs should also be deleted (default: false)

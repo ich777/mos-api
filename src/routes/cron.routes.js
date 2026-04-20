@@ -631,6 +631,76 @@ router.delete('/scripts/:scriptName', checkRole(['admin']), async (req, res) => 
 
 /**
  * @swagger
+ * /cron/system:
+ *   get:
+ *     summary: Get system cron jobs
+ *     description: Retrieve all system cron jobs from crontab that are marked with "# MOS" comments (admin only)
+ *     tags: [Cron]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: System cron jobs retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 systemCronJobs:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       name:
+ *                         type: string
+ *                         description: Name extracted from the MOS comment
+ *                         example: "Update Check Interval"
+ *                       schedule:
+ *                         type: string
+ *                         description: Cron schedule expression
+ *                         example: "15 9 * * *"
+ *                       command:
+ *                         type: string
+ *                         description: Command to execute
+ *                         example: "/usr/local/bin/mos-update_check > /dev/null 2>&1"
+ *                 count:
+ *                   type: integer
+ *                   description: Total number of system cron jobs
+ *                   example: 7
+ *       401:
+ *         description: Not authenticated
+ *       403:
+ *         description: Admin permission required
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+
+// Get system cron jobs (# MOS entries from crontab)
+router.get('/system', checkRole(['admin']), async (req, res) => {
+  try {
+    const systemCronJobs = await cronService.getSystemCronJobs();
+    res.json({
+      success: true,
+      systemCronJobs,
+      count: systemCronJobs.length
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * @swagger
  * /cron/{identifier}:
  *   get:
  *     summary: Get specific cron job
