@@ -686,11 +686,7 @@ router.delete('/scripts/:scriptName', checkRole(['admin']), async (req, res) => 
 router.get('/system', checkRole(['admin']), async (req, res) => {
   try {
     const systemCronJobs = await cronService.getSystemCronJobs();
-    res.json({
-      success: true,
-      systemCronJobs,
-      count: systemCronJobs.length
-    });
+    res.json(systemCronJobs);
   } catch (error) {
     res.status(500).json({
       success: false,
