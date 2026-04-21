@@ -2231,6 +2231,76 @@ class MosService {
   }
 
   /**
+   * Validates a CIDR value for IPv4 (must be integer 0–32).
+   * Strips leading '/' if present (e.g., "/24" → 24).
+   * @param {*} cidr - CIDR value to validate
+   * @returns {number} Validated CIDR as integer
+   * @throws {Error} If CIDR is not a valid number between 0 and 32
+   * @private
+   */
+  _validateCidr(cidr) {
+    let value = cidr;
+    if (typeof value === 'string') {
+      value = value.replace(/^\//, '');
+    }
+    const parsed = parseInt(value, 10);
+    if (isNaN(parsed) || parsed < 0 || parsed > 32) {
+      throw new Error(`Invalid CIDR value '${cidr}': must be a number between 0 and 32`);
+    }
+    return parsed;
+  }
+
+  /**
+   * Strips CIDR notation from IPv4 addresses and exposes it as a separate field.
+   * E.g., "192.168.0.5/24" → { address: "192.168.0.5", cidr: 24, ... }
+   * If no CIDR is present in the address, defaults cidr to 24.
+   * @param {Array} ipv4Array - Array of IPv4 config objects
+   * @returns {Array} Transformed array with cidr field
+   * @private
+   */
+  _stripCidrFromIpv4(ipv4Array) {
+    if (!Array.isArray(ipv4Array)) return ipv4Array;
+    return ipv4Array.map(entry => {
+      if (!entry.address) return entry;
+      const result = { ...entry };
+      if (result.address.includes('/')) {
+        const [ip, cidrStr] = result.address.split('/');
+        result.address = ip;
+        result.cidr = this._validateCidr(cidrStr);
+      } else {
+        result.cidr = 24;
+      }
+      return result;
+    });
+  }
+
+  /**
+   * Appends CIDR notation to IPv4 addresses before saving to file.
+   * Uses the provided cidr field, or defaults to /24 if not specified.
+   * E.g., { address: "192.168.0.5", cidr: 16 } → { address: "192.168.0.5/16", ... }
+   * The cidr field is removed from the object after merging.
+   * @param {Array} ipv4Array - Array of IPv4 config objects
+   * @returns {Array} Transformed array with CIDR in address
+   * @private
+   */
+  _appendCidrToIpv4(ipv4Array) {
+    if (!Array.isArray(ipv4Array)) return ipv4Array;
+    return ipv4Array.map(entry => {
+      if (!entry.address) return entry;
+      const result = { ...entry };
+      // Don't double-append if already has CIDR
+      if (!result.address.includes('/')) {
+        const cidr = result.cidr !== undefined && result.cidr !== null
+          ? this._validateCidr(result.cidr)
+          : 24;
+        result.address = `${result.address}/${cidr}`;
+      }
+      delete result.cidr;
+      return result;
+    });
+  }
+
+  /**
    * Reads the Network-Settings from the network.json file.
    * Ensures all expected fields are present by merging with defaults.
    * @returns {Promise<Object>} The Network-Settings as an object
@@ -2302,6 +2372,17 @@ class MosService {
       // Merge live info into each interface (without modifying config)
       const enriched = interfaces.map(iface => {
         const result = { ...iface };
+
+        // Strip CIDR from IPv4 addresses and expose as separate field
+        if (result.ipv4) {
+          result.ipv4 = this._stripCidrFromIpv4(result.ipv4);
+        }
+        if (Array.isArray(result.vlans)) {
+          result.vlans = result.vlans.map(vlan => ({
+            ...vlan,
+            ipv4: this._stripCidrFromIpv4(vlan.ipv4)
+          }));
+        }
 
         // Match by MAC first, then by name
         const hw = (iface.mac && hwByMac.get(iface.mac.toLowerCase())) ||
@@ -2882,6 +2963,18 @@ class MosService {
         if (iface.hw_addr === undefined) iface.hw_addr = null;
         if (iface.status === undefined) iface.status = 'enabled';
         if (!Array.isArray(iface.vlans)) iface.vlans = [];
+
+        // Append CIDR to IPv4 addresses for file storage
+        if (iface.ipv4 && Array.isArray(iface.ipv4)) {
+          iface.ipv4 = this._appendCidrToIpv4(iface.ipv4);
+        }
+        if (Array.isArray(iface.vlans)) {
+          for (const vlan of iface.vlans) {
+            if (vlan.ipv4 && Array.isArray(vlan.ipv4)) {
+              vlan.ipv4 = this._appendCidrToIpv4(vlan.ipv4);
+            }
+          }
+        }
       }
 
       // Check if primary interface has changed
@@ -2999,6 +3092,9 @@ class MosService {
           throw new Error(`VLAN ${vlanId}: address is required when dhcp=false`);
         }
       }
+
+      // Append CIDR to IPv4 addresses for file storage
+      newVlan.ipv4 = this._appendCidrToIpv4(newVlan.ipv4);
 
       // Add VLAN to interface
       iface.vlans.push(newVlan);

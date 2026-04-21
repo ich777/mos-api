@@ -33,7 +33,7 @@ class HubService {
     const sysArch = this._getSystemArch();
     return templates.filter(t => {
       if (!Array.isArray(t.architecture) || t.architecture.length === 0) return true;
-      return t.architecture.includes(sysArch);
+      return t.architecture.includes(sysArch) || t.architecture.includes('all');
     });
   }
 

@@ -1701,6 +1701,53 @@ class DisksService {
   }
 
   /**
+   * Propagate mount status across BTRFS multi-device filesystems.
+   * BTRFS multi-device pools share a single UUID across all member partitions,
+   * but lsblk only shows the mountpoint for one of them.
+   * This method finds mounted BTRFS partitions and copies their mount/status
+   * to sibling partitions that share the same UUID (consistent with pools service).
+   * @param {Array} disks - Array of disk objects from getAllDisks
+   */
+  _propagateBtrfsMountStatus(disks) {
+    // Phase 1: Collect all BTRFS partitions grouped by UUID
+    const btrfsByUuid = new Map(); // uuid -> array of partition refs
+
+    for (const disk of disks) {
+      for (const partition of disk.partitions || []) {
+        if (partition.filesystem === 'btrfs' && partition.uuid) {
+          if (!btrfsByUuid.has(partition.uuid)) {
+            btrfsByUuid.set(partition.uuid, []);
+          }
+          btrfsByUuid.get(partition.uuid).push(partition);
+        }
+      }
+    }
+
+    // Phase 2: For each BTRFS UUID group, mark all partitions as shared
+    // and propagate mountpoint/status for multi-device members
+    for (const [uuid, partitions] of btrfsByUuid) {
+      // For multi-device: propagate mountpoint/status from the mounted member
+      if (partitions.length > 1) {
+        const mountedPartition = partitions.find(p => p.mountpoint);
+        if (mountedPartition) {
+          for (const partition of partitions) {
+            if (!partition.mountpoint) {
+              partition.mountpoint = mountedPartition.mountpoint;
+              partition.status = { ...mountedPartition.status };
+            }
+          }
+        }
+      }
+
+      // Mark ALL BTRFS partitions (single and multi-device) consistently
+      // so the frontend can always check isSharedBtrfs for BTRFS filesystems
+      for (const partition of partitions) {
+        partition.status.isSharedBtrfs = true;
+      }
+    }
+  }
+
+  /**
    * Gets Mount-Status of a partition in the uniform format (like pools)
    */
   async _getPartitionMountStatus(device, mountpoint) {
@@ -1817,14 +1864,18 @@ class DisksService {
         physicalDisks.map(disk => this._getLiveDiskPowerStatus(`/dev/${disk.name}`))
       );
 
-      // Phase 2: For active disks, query partitions + performance in parallel
-      // Standby disks are skipped (no disk access, no wake-up)
+      // Phase 2: Query partitions for ALL disks (lsblk/df are safe, no disk I/O).
+      // Performance data is only fetched for active disks (standby disks skip it).
       const disks = await Promise.all(physicalDisks.map(async (disk, index) => {
         const device = `/dev/${disk.name}`;
         const powerStatus = powerStatuses[index];
 
-        // Skip Disks in Standby if desired (standby handling preserved exactly as before)
+        // Standby disks: Skip only performance data (which requires disk I/O).
+        // Partition info (lsblk) and mount status (df) are safe — they read
+        // kernel metadata / sysfs only and do NOT wake up sleeping disks.
         if (skipStandby && powerStatus.status === 'standby') {
+          const partitions = await this._getPartitions(device);
+
           return {
             device,
             name: disk.name,
@@ -1837,7 +1888,7 @@ class DisksService {
             rotational: powerStatus.rotational,
             removable: powerStatus.removable,
             usbInfo: powerStatus.usbInfo,
-            partitions: [],
+            partitions,
             performance: null,
             standbySkipped: true,
             preclearRunning: this.isPreclearRunning(device)
@@ -1898,6 +1949,11 @@ class DisksService {
           preclearRunning: false // ZRAM devices cannot have preclear
         });
       }
+
+      // Post-processing: Propagate mount status for BTRFS multi-device filesystems.
+      // lsblk only shows the mountpoint for one device in a multi-device BTRFS,
+      // but all devices sharing the same UUID are part of the same mounted filesystem.
+      this._propagateBtrfsMountStatus(disks);
 
       return disks;
     } catch (error) {
