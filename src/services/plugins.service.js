@@ -804,7 +804,7 @@ async function installPlugin(templatePath, tag) {
     try {
       await fs.access(functionsPath);
       // Source the functions file and run the install function
-      await execPromise(`bash -c 'source "${functionsPath}" && if type install &>/dev/null; then install; fi'`, {
+      await execPromise(`bash -c 'source "${functionsPath}"; if declare -f install &>/dev/null; then install; fi'`, {
         cwd: pluginTagDir,
         timeout: 600000 // 10min timeout for install
       });
@@ -1196,7 +1196,7 @@ async function updatePlugins(pluginName = null) {
         const functionsPath = path.join(newTagDir, 'functions');
         try {
           await fs.access(functionsPath);
-          await execPromise(`bash -c 'source "${functionsPath}" && if type plugin_update &>/dev/null; then plugin_update; fi'`, {
+          await execPromise(`bash -c 'source "${functionsPath}"; if declare -f plugin_update &>/dev/null; then plugin_update; fi'`, {
             cwd: newTagDir,
             timeout: 600000
           });
@@ -1325,7 +1325,7 @@ async function uninstallPlugin(pluginName) {
           const functionsPath = path.join(entryPath, 'functions');
           try {
             await fs.access(functionsPath);
-            await execPromise(`bash -c 'source "${functionsPath}" && if type uninstall &>/dev/null; then uninstall; fi'`, {
+            await execPromise(`bash -c 'source "${functionsPath}"; if declare -f uninstall &>/dev/null; then uninstall; fi'`, {
               cwd: entryPath,
               timeout: 600000 // 10min timeout for uninstall
             });
@@ -1451,7 +1451,7 @@ async function executeFunction(pluginName, functionName, displayName = null, res
   }
 
   try {
-    await execPromise(`bash -c 'source "${functionsPath}" && if type ${safeFunctionName} &>/dev/null; then ${safeFunctionName}; else echo "Function not found" >&2; exit 1; fi'`, {
+    await execPromise(`bash -c 'source "${functionsPath}"; if declare -f ${safeFunctionName} &>/dev/null; then ${safeFunctionName}; else echo "Function not found" >&2; exit 1; fi'`, {
       cwd: tagDir,
       timeout: 600000 // 10min timeout
     });
