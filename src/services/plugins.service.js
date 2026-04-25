@@ -1460,8 +1460,16 @@ async function executeFunction(pluginName, functionName, displayName = null, res
     await _sendNotification('Plugin', successMsg, restart ? 'warning' : 'normal');
 
   } catch (error) {
-    await _sendNotification('Plugin', `${notifyName} failed: ${error.message}`, 'alert');
-    throw error;
+    let errorMsg = 'unknown error';
+    if (error.killed) {
+      errorMsg = 'timed out';
+    } else if (error.stderr) {
+      errorMsg = error.stderr.trim();
+    } else if (error.message) {
+      errorMsg = error.message.replace(/Command failed:.*?\n?/s, '').trim() || error.message;
+    }
+    await _sendNotification('Plugin', `${notifyName} failed: ${errorMsg}`, 'alert');
+    throw new Error(`${notifyName} failed: ${errorMsg}`);
   }
 }
 
