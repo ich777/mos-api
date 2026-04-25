@@ -23,6 +23,8 @@
     "jsonwebtoken": "9.0.2",
     "log-timestamp": "0.3.0",
     "node-pty": "1.0.0",
+    "otplib": "^13.4.0",
+    "qrcode": "^1.5.4",
     "socket.io": "4.8.1",
     "swagger-jsdoc": "6.2.8",
     "swagger-ui-express": "5.0.1",

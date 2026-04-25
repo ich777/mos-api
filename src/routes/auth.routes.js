@@ -282,8 +282,204 @@ router.post('/login', loginRateLimiter, async (req, res) => {
     const remaining = res.locals.remainingLoginAttempts;
     const triesText = remaining === 1 ? '1 attempt remaining' : `${remaining} attempts remaining`;
     res.status(401).json({
-      error: `${error.message} (${triesText})`
+      error: `${error.message} (${triesText})`,
+      mfa_required: false
     });
+  }
+});
+
+/**
+ * @swagger
+ * /auth/mfa:
+ *   post:
+ *     summary: Verify MFA code during login
+ *     description: Verify TOTP code or recovery code to complete MFA login. Accepts the temporary mfa_token from login response. If recovery code is used, MFA is automatically disabled.
+ *     tags: [Authentication]
+ *     security: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - mfa_token
+ *               - code
+ *             properties:
+ *               mfa_token:
+ *                 type: string
+ *                 description: Temporary MFA JWT token from login response
+ *               code:
+ *                 type: string
+ *                 description: 6-digit TOTP code or recovery code (XXXX-XXXX-XXXX)
+ *     responses:
+ *       200:
+ *         description: MFA verification successful
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 token:
+ *                   type: string
+ *                 user:
+ *                   $ref: '#/components/schemas/User'
+ *                 mfa_disabled:
+ *                   type: boolean
+ *                   description: True if recovery code was used and MFA was disabled
+ *       401:
+ *         description: Invalid MFA code or expired token
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+router.post('/mfa', loginRateLimiter, async (req, res) => {
+  try {
+    const { mfa_token, code } = req.body;
+
+    if (!mfa_token || !code) {
+      return res.status(400).json({ error: 'mfa_token and code are required' });
+    }
+
+    const result = await userService.verifyMfa(mfa_token, code);
+    resetLoginAttempts(req);
+    res.json(result);
+  } catch (error) {
+    res.status(401).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /auth/mfa/setup:
+ *   post:
+ *     summary: Setup or confirm MFA
+ *     description: |
+ *       Two-step MFA setup:
+ *       - Without `code`: Generates TOTP secret, returns QR code and secret for manual entry
+ *       - With `code`: Verifies TOTP code and activates MFA, returns recovery code
+ *       Password is always required for security.
+ *     tags: [Authentication]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - password
+ *             properties:
+ *               password:
+ *                 type: string
+ *                 description: Current password for confirmation
+ *               code:
+ *                 type: string
+ *                 description: 6-digit TOTP code from authenticator app (for confirmation step)
+ *     responses:
+ *       200:
+ *         description: MFA setup or confirmation successful
+ *         content:
+ *           application/json:
+ *             schema:
+ *               oneOf:
+ *                 - type: object
+ *                   description: Setup response (without code)
+ *                   properties:
+ *                     secret:
+ *                       type: string
+ *                     otpauth_url:
+ *                       type: string
+ *                     qr_code:
+ *                       type: string
+ *                       description: Base64-encoded PNG QR code
+ *                 - type: object
+ *                   description: Confirmation response (with code)
+ *                   properties:
+ *                     mfa_enabled:
+ *                       type: boolean
+ *                     recovery_code:
+ *                       type: string
+ *                       description: Single-use recovery code (XXXX-XXXX-XXXX)
+ *       400:
+ *         description: Bad request or MFA already enabled
+ *       401:
+ *         description: Not authenticated or invalid password
+ */
+router.post('/mfa/setup', authenticateToken, async (req, res) => {
+  try {
+    const { password, code } = req.body;
+
+    if (!password) {
+      return res.status(400).json({ error: 'Password is required' });
+    }
+
+    if (code) {
+      // Step 2: Confirm MFA with TOTP code
+      const result = await userService.confirmMfa(req.user.id, password, code);
+      res.json(result);
+    } else {
+      // Step 1: Generate secret and QR code
+      const result = await userService.setupMfa(req.user.id, password);
+      res.json(result);
+    }
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /auth/mfa:
+ *   delete:
+ *     summary: Disable MFA
+ *     description: Disable MFA for the authenticated user. Requires password confirmation. Removes all MFA data.
+ *     tags: [Authentication]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - password
+ *             properties:
+ *               password:
+ *                 type: string
+ *                 description: Current password for confirmation
+ *     responses:
+ *       200:
+ *         description: MFA disabled successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 message:
+ *                   type: string
+ *       400:
+ *         description: Bad request or MFA not enabled
+ *       401:
+ *         description: Not authenticated or invalid password
+ */
+router.delete('/mfa', authenticateToken, async (req, res) => {
+  try {
+    const { password } = req.body;
+
+    if (!password) {
+      return res.status(400).json({ error: 'Password is required' });
+    }
+
+    const result = await userService.disableMfa(req.user.id, password);
+    res.json(result);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
   }
 });
 

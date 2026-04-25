@@ -5,6 +5,8 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const { exec, spawn } = require('child_process');
 const util = require('util');
+const { authenticator } = require('otplib');
+const QRCode = require('qrcode');
 const config = require('../config');
 
 const execAsync = util.promisify(exec);
@@ -153,6 +155,9 @@ class UserService {
   _sanitizeUser(user) {
     const sanitizedUser = { ...user };
     sanitizedUser.password = 'SECRET';
+    delete sanitizedUser.mfa_secret;
+    delete sanitizedUser.mfa_recovery_code;
+    delete sanitizedUser.mfa_pending_secret;
     return sanitizedUser;
   }
 
@@ -287,6 +292,25 @@ class UserService {
       throw new Error('Invalid username or password');
     }
 
+    // If MFA is enabled, return mfa_token instead of real JWT
+    if (user.mfa_enabled && user.mfa_secret) {
+      const mfaToken = jwt.sign(
+        {
+          id: user.id,
+          purpose: 'mfa_verify'
+        },
+        process.env.JWT_SECRET,
+        { expiresIn: '2m' }
+      );
+
+      return {
+        user: null,
+        token: null,
+        mfa_required: true,
+        mfa_token: mfaToken
+      };
+    }
+
     const token = jwt.sign(
       {
         id: user.id,
@@ -299,7 +323,8 @@ class UserService {
 
     return {
       user: this._sanitizeUser(user),
-      token
+      token,
+      mfa_required: false
     };
   }
 
@@ -419,7 +444,30 @@ class UserService {
       }
     }
 
+    // Handle admin MFA disable
+    if (updates.hasOwnProperty('mfa_enabled') && updates.mfa_enabled === false && requestingUser &&
+        (requestingUser.role === 'admin' || requestingUser.isBootToken || requestingUser.isAdminToken)) {
+      if (currentUser.mfa_enabled) {
+        updates.mfa_enabled = false;
+        updates.mfa_secret = undefined;
+        updates.mfa_recovery_code = undefined;
+        updates.mfa_pending_secret = undefined;
+      }
+    } else {
+      // Non-admin cannot change MFA via updateUser
+      delete updates.mfa_enabled;
+      delete updates.mfa_secret;
+      delete updates.mfa_recovery_code;
+      delete updates.mfa_pending_secret;
+    }
+
     users[index] = { ...users[index], ...updates };
+
+    // Clean up undefined fields (from MFA disable)
+    if (users[index].mfa_secret === undefined) delete users[index].mfa_secret;
+    if (users[index].mfa_recovery_code === undefined) delete users[index].mfa_recovery_code;
+    if (users[index].mfa_pending_secret === undefined) delete users[index].mfa_pending_secret;
+
     await this.saveUsers(users);
 
     return this._sanitizeUser(users[index]);
@@ -1022,6 +1070,225 @@ class UserService {
     } catch (error) {
       throw new Error(`Failed to delete boot token: ${error.message}`);
     }
+  }
+
+  // MFA (TOTP) Methods
+
+  /**
+   * Generate MFA secret and QR code for setup
+   * @param {string} userId - User ID
+   * @param {string} password - Password confirmation
+   * @returns {Promise<Object>} Secret, otpauth URL and QR code
+   */
+  async setupMfa(userId, password) {
+    const users = await this.loadUsers();
+    const user = users.find(u => u.id === userId);
+
+    if (!user) {
+      throw new Error('User not found');
+    }
+
+    const validPassword = await bcrypt.compare(password, user.password);
+    if (!validPassword) {
+      throw new Error('Invalid password');
+    }
+
+    if (user.mfa_enabled) {
+      throw new Error('MFA is already enabled');
+    }
+
+    const secret = authenticator.generateSecret();
+    const otpauthUrl = authenticator.keyuri(user.username, 'MOS', secret);
+    const qrCode = await QRCode.toDataURL(otpauthUrl);
+
+    // Store pending secret (not yet active)
+    const index = users.findIndex(u => u.id === userId);
+    users[index].mfa_pending_secret = secret;
+    await this.saveUsers(users);
+
+    return {
+      secret,
+      otpauth_url: otpauthUrl,
+      qr_code: qrCode
+    };
+  }
+
+  /**
+   * Confirm MFA setup with TOTP code and activate MFA
+   * @param {string} userId - User ID
+   * @param {string} password - Password confirmation
+   * @param {string} code - TOTP code from authenticator app
+   * @returns {Promise<Object>} MFA status and recovery code
+   */
+  async confirmMfa(userId, password, code) {
+    const users = await this.loadUsers();
+    const user = users.find(u => u.id === userId);
+
+    if (!user) {
+      throw new Error('User not found');
+    }
+
+    const validPassword = await bcrypt.compare(password, user.password);
+    if (!validPassword) {
+      throw new Error('Invalid password');
+    }
+
+    if (user.mfa_enabled) {
+      throw new Error('MFA is already enabled');
+    }
+
+    if (!user.mfa_pending_secret) {
+      throw new Error('No MFA setup in progress. Call setup first.');
+    }
+
+    const isValid = authenticator.verify({ token: code, secret: user.mfa_pending_secret });
+    if (!isValid) {
+      throw new Error('Invalid MFA code');
+    }
+
+    // Generate recovery code
+    const recoveryCode = crypto.randomBytes(6).toString('hex').toUpperCase().match(/.{4}/g).join('-');
+    const hashedRecovery = await bcrypt.hash(recoveryCode, 10);
+
+    // Activate MFA
+    const index = users.findIndex(u => u.id === userId);
+    users[index].mfa_enabled = true;
+    users[index].mfa_secret = user.mfa_pending_secret;
+    users[index].mfa_recovery_code = hashedRecovery;
+    delete users[index].mfa_pending_secret;
+    await this.saveUsers(users);
+
+    return {
+      mfa_enabled: true,
+      recovery_code: recoveryCode
+    };
+  }
+
+  /**
+   * Verify MFA code during login (TOTP or recovery code)
+   * @param {string} mfaToken - Short-lived MFA JWT token
+   * @param {string} code - TOTP code or recovery code
+   * @returns {Promise<Object>} JWT token and user data
+   */
+  async verifyMfa(mfaToken, code) {
+    // Verify mfa_token JWT
+    let decoded;
+    try {
+      decoded = jwt.verify(mfaToken, process.env.JWT_SECRET);
+    } catch (error) {
+      if (error.name === 'TokenExpiredError') {
+        throw new Error('MFA token expired. Please login again.');
+      }
+      throw new Error('Invalid MFA token');
+    }
+
+    if (decoded.purpose !== 'mfa_verify') {
+      throw new Error('Invalid MFA token');
+    }
+
+    const users = await this.loadUsers();
+    const user = users.find(u => u.id === decoded.id);
+
+    if (!user || !user.mfa_enabled || !user.mfa_secret) {
+      throw new Error('Invalid MFA token');
+    }
+
+    // Try TOTP code first
+    const isValidTotp = authenticator.verify({ token: code, secret: user.mfa_secret });
+
+    if (!isValidTotp) {
+      // Try recovery code
+      if (user.mfa_recovery_code) {
+        const isValidRecovery = await bcrypt.compare(code, user.mfa_recovery_code);
+        if (isValidRecovery) {
+          // Recovery code used - disable MFA
+          const index = users.findIndex(u => u.id === decoded.id);
+          users[index].mfa_enabled = false;
+          delete users[index].mfa_secret;
+          delete users[index].mfa_recovery_code;
+          delete users[index].mfa_pending_secret;
+          await this.saveUsers(users);
+
+          // Reload user after MFA disable
+          const updatedUser = users[index];
+          const token = jwt.sign(
+            {
+              id: updatedUser.id,
+              username: updatedUser.username,
+              role: updatedUser.role
+            },
+            process.env.JWT_SECRET,
+            { expiresIn: config.jwtExpiryString }
+          );
+
+          return {
+            user: this._sanitizeUser(updatedUser),
+            token,
+            mfa_disabled: true
+          };
+        }
+      }
+
+      throw new Error('Invalid MFA code');
+    }
+
+    // Valid TOTP code - issue real JWT
+    const token = jwt.sign(
+      {
+        id: user.id,
+        username: user.username,
+        role: user.role
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: config.jwtExpiryString }
+    );
+
+    return {
+      user: this._sanitizeUser(user),
+      token
+    };
+  }
+
+  /**
+   * Disable MFA for a user
+   * @param {string} userId - User ID
+   * @param {string} password - Password confirmation (null for admin override)
+   * @param {boolean} adminOverride - If true, skip password check (admin action)
+   * @returns {Promise<Object>} Result
+   */
+  async disableMfa(userId, password = null, adminOverride = false) {
+    const users = await this.loadUsers();
+    const user = users.find(u => u.id === userId);
+
+    if (!user) {
+      throw new Error('User not found');
+    }
+
+    if (!user.mfa_enabled) {
+      throw new Error('MFA is not enabled');
+    }
+
+    if (!adminOverride) {
+      if (!password) {
+        throw new Error('Password is required');
+      }
+      const validPassword = await bcrypt.compare(password, user.password);
+      if (!validPassword) {
+        throw new Error('Invalid password');
+      }
+    }
+
+    const index = users.findIndex(u => u.id === userId);
+    users[index].mfa_enabled = false;
+    delete users[index].mfa_secret;
+    delete users[index].mfa_recovery_code;
+    delete users[index].mfa_pending_secret;
+    await this.saveUsers(users);
+
+    return {
+      success: true,
+      message: 'MFA disabled successfully'
+    };
   }
 
   /**

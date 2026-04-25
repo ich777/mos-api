@@ -779,6 +779,7 @@ class SystemService {
           return (name.startsWith('eth') ||   // Physical Ethernet
                   name.startsWith('bond') ||  // Bonding
                   name.startsWith('br')) &&    // Bridges (br0, br1, ...)
+                 !name.startsWith('br-') &&   // Exclude Docker bridge networks (br-xxxx)
                  !name.includes('docker') &&  // Exclude Docker interfaces
                  !name.startsWith('veth');    // Exclude virtual ethernet
         };
@@ -936,6 +937,7 @@ class SystemService {
                 return (name.startsWith('eth') ||   // Physical Ethernet
                         name.startsWith('bond') ||  // Bonding
                         name.startsWith('br')) &&    // Bridges (br0, br1, ...)
+                       !name.startsWith('br-') &&   // Exclude Docker bridge networks (br-xxxx)
                        !name.includes('docker') &&  // Exclude Docker interfaces
                        !name.startsWith('veth');    // Exclude virtual ethernet
               };
@@ -972,7 +974,7 @@ class SystemService {
         const isRelevantInterface = (ifaceName) => {
           const name = ifaceName.toLowerCase();
           return (name.startsWith('eth') || name.startsWith('bond') || name.startsWith('br')) &&
-                 !name.includes('docker') && !name.startsWith('veth');
+                 !name.startsWith('br-') && !name.includes('docker') && !name.startsWith('veth');
         };
         for (const line of lines) {
           if (line.trim()) {
