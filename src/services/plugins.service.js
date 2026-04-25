@@ -1444,9 +1444,11 @@ async function executeFunction(pluginName, functionName, displayName = null, res
     throw new Error(`No functions file found for plugin: ${pluginName}`);
   }
 
-  const notifyName = displayName || functionName;
+  const notifyName = displayName || null;
 
-  await _sendNotification('Plugin', `Executing ${notifyName}`, 'normal');
+  if (notifyName) {
+    await _sendNotification('Plugin', `Executing ${notifyName}`, 'normal');
+  }
 
   try {
     await execPromise(`bash -c 'source "${functionsPath}" && if type ${safeFunctionName} &>/dev/null; then ${safeFunctionName}; else echo "Function not found" >&2; exit 1; fi'`, {
@@ -1454,10 +1456,12 @@ async function executeFunction(pluginName, functionName, displayName = null, res
       timeout: 600000 // 10min timeout
     });
 
-    const successMsg = restart
-      ? `${notifyName} completed successfully, please reboot your server`
-      : `${notifyName} completed successfully`;
-    await _sendNotification('Plugin', successMsg, restart ? 'warning' : 'normal');
+    if (notifyName) {
+      const successMsg = restart
+        ? `${notifyName} completed successfully, please reboot your server`
+        : `${notifyName} completed successfully`;
+      await _sendNotification('Plugin', successMsg, restart ? 'warning' : 'normal');
+    }
 
   } catch (error) {
     let errorMsg = 'unknown error';
@@ -1468,8 +1472,10 @@ async function executeFunction(pluginName, functionName, displayName = null, res
     } else if (error.message) {
       errorMsg = error.message.replace(/Command failed:.*?\n?/s, '').trim() || error.message;
     }
-    await _sendNotification('Plugin', `${notifyName} failed: ${errorMsg}`, 'alert');
-    throw new Error(`${notifyName} failed: ${errorMsg}`);
+    if (notifyName) {
+      await _sendNotification('Plugin', `${notifyName} failed: ${errorMsg}`, 'alert');
+    }
+    throw new Error(`${notifyName || functionName} failed: ${errorMsg}`);
   }
 }
 
