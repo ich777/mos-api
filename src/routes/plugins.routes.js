@@ -649,17 +649,13 @@ router.post('/executefunction', async (req, res) => {
     return res.status(400).json({ error: 'Function name is required' });
   }
 
-  // Validate before starting async execution
   try {
-    // Check blocked functions
-    const blockedFunctions = ['install', 'uninstall', 'mos-start', 'plugin-update', 'mos-osupdate'];
-    if (blockedFunctions.includes(functionName)) {
-      return res.status(400).json({ error: `Function '${functionName}' is not allowed to be executed` });
-    }
+    // Validate plugin exists, function file exists, and function is not blocked
+    await pluginsService.validateFunction(plugin, functionName);
 
     // Start execution in background
-    pluginsService.executeFunction(plugin, functionName, name, restart === true).catch(() => {
-      // Errors are handled via notifications
+    pluginsService.executeFunction(plugin, functionName, name, restart === true).catch((err) => {
+      console.error(`[executefunction] ${plugin}/${functionName} failed:`, err.message);
     });
 
     res.json({ status: 'started', message: `Executing ${name || functionName}` });

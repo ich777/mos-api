@@ -1595,6 +1595,54 @@ async function setPluginSettings(pluginName, settings) {
   return settings;
 }
 
+/**
+ * Validate that a plugin function can be executed
+ * @param {string} pluginName - Plugin name
+ * @param {string} functionName - Function to execute
+ * @returns {Promise<void>}
+ */
+async function validateFunction(pluginName, functionName) {
+  if (!pluginName || typeof pluginName !== 'string') {
+    throw new Error('Plugin name is required');
+  }
+  if (!functionName || typeof functionName !== 'string') {
+    throw new Error('Function name is required');
+  }
+
+  const safeName = path.basename(pluginName);
+  if (safeName !== pluginName || pluginName.includes('..')) {
+    throw new Error('Invalid plugin name');
+  }
+
+  const safeFunctionName = functionName.replace(/[^a-zA-Z0-9_-]/g, '');
+  if (safeFunctionName !== functionName) {
+    throw new Error('Invalid function name');
+  }
+
+  if (BLOCKED_FUNCTIONS.includes(functionName)) {
+    throw new Error(`Function '${functionName}' is not allowed to be executed`);
+  }
+
+  const pluginConfigDir = path.join(PLUGINS_CONFIG_DIR, safeName);
+
+  let tagDir = null;
+  try {
+    const templatePath = path.join(pluginConfigDir, 'template.json');
+    const templateData = await fs.readFile(templatePath, 'utf8');
+    const template = JSON.parse(templateData);
+    tagDir = path.join(pluginConfigDir, template.tag);
+  } catch {
+    throw new Error(`Plugin not found: ${pluginName}`);
+  }
+
+  const functionsPath = path.join(tagDir, 'functions');
+  try {
+    await fs.access(functionsPath);
+  } catch {
+    throw new Error(`No functions file found for plugin: ${pluginName}`);
+  }
+}
+
 module.exports = {
   getPlugins,
   executeQuery,
@@ -1602,6 +1650,7 @@ module.exports = {
   installPlugin,
   uninstallPlugin,
   executeFunction,
+  validateFunction,
   getDriverPackage,
   getPluginSettings,
   setPluginSettings,
