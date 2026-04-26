@@ -156,6 +156,7 @@ class UserService {
   _sanitizeUser(user) {
     const sanitizedUser = { ...user };
     sanitizedUser.password = 'SECRET';
+    sanitizedUser.mfa_enabled = !!user.mfa_enabled;
     delete sanitizedUser.mfa_secret;
     delete sanitizedUser.mfa_recovery_code;
     return sanitizedUser;
