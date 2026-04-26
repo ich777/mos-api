@@ -203,16 +203,20 @@ class SystemService {
             actuallyUsed: actuallyUsed,
             dirtyCaches: dirtyCaches
           },
-          swap: {
-            total: mem.swaptotal,
-            used: mem.swapused,
-            free: mem.swapfree
-          },
           percentage: {
             used: Math.round((mem.used / mem.total) * 100),
             actuallyUsed: Math.round((actuallyUsed / mem.total) * 100),
             dirtyCaches: Math.round((dirtyCaches / mem.total) * 100)
           }
+        },
+        swap: {
+          total: mem.swaptotal,
+          total_human: this.formatMemoryBytes(mem.swaptotal),
+          available: mem.swaptotal - mem.swapused,
+          available_human: this.formatMemoryBytes(mem.swaptotal - mem.swapused),
+          used: mem.swapused,
+          used_human: this.formatMemoryBytes(mem.swapused),
+          percentage: mem.swaptotal > 0 ? Math.round((mem.swapused / mem.swaptotal) * 100) : 0
         }
       };
     } catch (error) {
@@ -504,6 +508,15 @@ class SystemService {
           used: Math.round((mem.used / mem.total) * 100),
           actuallyUsed: Math.round((actuallyUsed / mem.total) * 100),
           dirtyCaches: Math.round((dirtyCaches / mem.total) * 100)
+        },
+        swap: {
+          total: mem.swaptotal,
+          total_human: this.formatMemoryBytes(mem.swaptotal),
+          available: mem.swaptotal - mem.swapused,
+          available_human: this.formatMemoryBytes(mem.swaptotal - mem.swapused),
+          used: mem.swapused,
+          used_human: this.formatMemoryBytes(mem.swapused),
+          percentage: mem.swaptotal > 0 ? Math.round((mem.swapused / mem.swaptotal) * 100) : 0
         }
       };
     } catch (error) {
@@ -521,14 +534,18 @@ class SystemService {
 
       const reserved = staticInfo.installed - dynamicUsage.total;
 
+      // Extract swap from dynamic usage (comes from same si.mem() call)
+      const { swap, ...memoryUsage } = dynamicUsage;
+
       return {
         memory: {
           ...staticInfo,
           reserved: reserved,
           reserved_human: this.formatMemoryBytes(reserved),
           breakdown: dynamicServices,
-          ...dynamicUsage
-        }
+          ...memoryUsage
+        },
+        swap: swap
       };
     } catch (error) {
       throw new Error(`Error getting memory load: ${error.message}`);

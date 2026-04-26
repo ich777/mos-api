@@ -1306,6 +1306,7 @@ class SystemLoadWebSocketManager {
         dirty: fullData.memory.dirty,
         percentage: fullData.memory.percentage
       },
+      swap: fullData.swap || null,
       network: {
         interfaces: fullData.network.interfaces.map(iface => ({
           interface: iface.interface,

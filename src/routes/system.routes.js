@@ -235,21 +235,6 @@ const mosService = require('../services/mos.service');
  *               example: 8589934592
  *             used:
  *               $ref: '#/components/schemas/MemoryUsage'
- *             swap:
- *               type: object
- *               properties:
- *                 total:
- *                   type: integer
- *                   description: Total swap in bytes
- *                   example: 2147483648
- *                 used:
- *                   type: integer
- *                   description: Used swap in bytes
- *                   example: 0
- *                 free:
- *                   type: integer
- *                   description: Free swap in bytes
- *                   example: 2147483648
  *             percentage:
  *               type: object
  *               properties:
@@ -265,6 +250,8 @@ const mosService = require('../services/mos.service');
  *                   type: integer
  *                   description: Dirty caches percentage
  *                   example: 25
+ *         swap:
+ *           $ref: '#/components/schemas/SwapInfo'
  *     CoreLoad:
  *       type: object
  *       properties:
@@ -372,6 +359,38 @@ const mosService = require('../services/mos.service');
  *           type: string
  *           description: Operation result message
  *           example: "System update completed successfully"
+ *     SwapInfo:
+ *       type: object
+ *       description: Swap space usage information. Returns zero values when no swap is configured.
+ *       properties:
+ *         total:
+ *           type: integer
+ *           description: Total swap space in bytes
+ *           example: 8589934592
+ *         total_human:
+ *           type: string
+ *           description: Total swap space in human-readable format
+ *           example: "8.0 GiB"
+ *         available:
+ *           type: integer
+ *           description: Available (free) swap space in bytes
+ *           example: 8589934592
+ *         available_human:
+ *           type: string
+ *           description: Available swap space in human-readable format
+ *           example: "8.0 GiB"
+ *         used:
+ *           type: integer
+ *           description: Used swap space in bytes
+ *           example: 0
+ *         used_human:
+ *           type: string
+ *           description: Used swap space in human-readable format
+ *           example: "0 B"
+ *         percentage:
+ *           type: integer
+ *           description: Swap usage percentage (0 when no swap configured)
+ *           example: 0
  */
 
 
@@ -400,14 +419,18 @@ const mosService = require('../services/mos.service');
  *                   total: 8589934592
  *                   actuallyUsed: 4294967296
  *                   dirtyCaches: 4294967296
- *                 swap:
- *                   total: 2147483648
- *                   used: 0
- *                   free: 2147483648
  *                 percentage:
  *                   used: 50
  *                   actuallyUsed: 25
  *                   dirtyCaches: 25
+ *               swap:
+ *                 total: 2147483648
+ *                 total_human: "2.0 GiB"
+ *                 available: 2147483648
+ *                 available_human: "2.0 GiB"
+ *                 used: 0
+ *                 used_human: "0 B"
+ *                 percentage: 0
  *       401:
  *         description: Not authenticated
  *         content:
@@ -606,6 +629,8 @@ router.get('/detailed', checkRole(['admin']), async (req, res) => {
  *                       example: [65.5, 67.2, 72.1, 61.3, 69.8, 63.4, 70.1, 64.9]
  *                 memory:
  *                   $ref: '#/components/schemas/MemoryInfo'
+ *                 swap:
+ *                   $ref: '#/components/schemas/SwapInfo'
  *                 network:
  *                   type: object
  *                   properties:
@@ -890,6 +915,14 @@ router.get('/detailed', checkRole(['admin']), async (req, res) => {
  *                   used: 98
  *                   actuallyUsed: 25
  *                   dirtyCaches: 73
+ *               swap:
+ *                 total: 8589934592
+ *                 total_human: "8.0 GiB"
+ *                 available: 8589934592
+ *                 available_human: "8.0 GiB"
+ *                 used: 0
+ *                 used_human: "0 B"
+ *                 percentage: 0
  *               network:
  *                 interfaces:
  *                   - interface: "eth0"
