@@ -5,7 +5,7 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const { exec, spawn } = require('child_process');
 const util = require('util');
-const { authenticator } = require('otplib');
+const { generateSecret, generateURI, verifySync } = require('otplib');
 const QRCode = require('qrcode');
 const config = require('../config');
 
@@ -21,6 +21,7 @@ class UserService {
     this.adminTokens = [];
     this.adminTokensLastLoad = 0;
     this.systemConfigPath = '/boot/config/system';
+    this.mfaPendingSetups = new Map();
   }
 
   async ensureUserFile() {
@@ -157,7 +158,6 @@ class UserService {
     sanitizedUser.password = 'SECRET';
     delete sanitizedUser.mfa_secret;
     delete sanitizedUser.mfa_recovery_code;
-    delete sanitizedUser.mfa_pending_secret;
     return sanitizedUser;
   }
 
@@ -303,8 +303,14 @@ class UserService {
         { expiresIn: '2m' }
       );
 
+      // Return same model as normal login, all values null
+      const nullUser = this._sanitizeUser(user);
+      for (const key of Object.keys(nullUser)) {
+        nullUser[key] = null;
+      }
+
       return {
-        user: null,
+        user: nullUser,
         token: null,
         mfa_required: true,
         mfa_token: mfaToken
@@ -451,14 +457,12 @@ class UserService {
         updates.mfa_enabled = false;
         updates.mfa_secret = undefined;
         updates.mfa_recovery_code = undefined;
-        updates.mfa_pending_secret = undefined;
       }
     } else {
       // Non-admin cannot change MFA via updateUser
       delete updates.mfa_enabled;
       delete updates.mfa_secret;
       delete updates.mfa_recovery_code;
-      delete updates.mfa_pending_secret;
     }
 
     users[index] = { ...users[index], ...updates };
@@ -466,8 +470,6 @@ class UserService {
     // Clean up undefined fields (from MFA disable)
     if (users[index].mfa_secret === undefined) delete users[index].mfa_secret;
     if (users[index].mfa_recovery_code === undefined) delete users[index].mfa_recovery_code;
-    if (users[index].mfa_pending_secret === undefined) delete users[index].mfa_pending_secret;
-
     await this.saveUsers(users);
 
     return this._sanitizeUser(users[index]);
@@ -1097,14 +1099,15 @@ class UserService {
       throw new Error('MFA is already enabled');
     }
 
-    const secret = authenticator.generateSecret();
-    const otpauthUrl = authenticator.keyuri(user.username, 'MOS', secret);
+    const secret = generateSecret();
+    const otpauthUrl = generateURI({ issuer: 'MOS', label: user.username, secret, type: 'totp' });
     const qrCode = await QRCode.toDataURL(otpauthUrl);
 
-    // Store pending secret (not yet active)
-    const index = users.findIndex(u => u.id === userId);
-    users[index].mfa_pending_secret = secret;
-    await this.saveUsers(users);
+    // Store pending secret in memory only (5 minutes TTL)
+    this.mfaPendingSetups.set(userId, {
+      secret,
+      expires: Date.now() + 5 * 60 * 1000
+    });
 
     return {
       secret,
@@ -1116,11 +1119,10 @@ class UserService {
   /**
    * Confirm MFA setup with TOTP code and activate MFA
    * @param {string} userId - User ID
-   * @param {string} password - Password confirmation
    * @param {string} code - TOTP code from authenticator app
    * @returns {Promise<Object>} MFA status and recovery code
    */
-  async confirmMfa(userId, password, code) {
+  async confirmMfa(userId, code) {
     const users = await this.loadUsers();
     const user = users.find(u => u.id === userId);
 
@@ -1128,20 +1130,22 @@ class UserService {
       throw new Error('User not found');
     }
 
-    const validPassword = await bcrypt.compare(password, user.password);
-    if (!validPassword) {
-      throw new Error('Invalid password');
-    }
-
     if (user.mfa_enabled) {
       throw new Error('MFA is already enabled');
     }
 
-    if (!user.mfa_pending_secret) {
+    const pending = this.mfaPendingSetups.get(userId);
+    if (!pending) {
       throw new Error('No MFA setup in progress. Call setup first.');
     }
 
-    const isValid = authenticator.verify({ token: code, secret: user.mfa_pending_secret });
+    // Check if pending secret has expired
+    if (Date.now() > pending.expires) {
+      this.mfaPendingSetups.delete(userId);
+      throw new Error('MFA setup expired. Please start setup again.');
+    }
+
+    const isValid = verifySync({ token: code, secret: pending.secret });
     if (!isValid) {
       throw new Error('Invalid MFA code');
     }
@@ -1153,9 +1157,9 @@ class UserService {
     // Activate MFA
     const index = users.findIndex(u => u.id === userId);
     users[index].mfa_enabled = true;
-    users[index].mfa_secret = user.mfa_pending_secret;
+    users[index].mfa_secret = pending.secret;
     users[index].mfa_recovery_code = hashedRecovery;
-    delete users[index].mfa_pending_secret;
+    this.mfaPendingSetups.delete(userId);
     await this.saveUsers(users);
 
     return {
@@ -1194,7 +1198,7 @@ class UserService {
     }
 
     // Try TOTP code first
-    const isValidTotp = authenticator.verify({ token: code, secret: user.mfa_secret });
+    const isValidTotp = verifySync({ token: code, secret: user.mfa_secret });
 
     if (!isValidTotp) {
       // Try recovery code
@@ -1206,7 +1210,6 @@ class UserService {
           users[index].mfa_enabled = false;
           delete users[index].mfa_secret;
           delete users[index].mfa_recovery_code;
-          delete users[index].mfa_pending_secret;
           await this.saveUsers(users);
 
           // Reload user after MFA disable
@@ -1282,8 +1285,8 @@ class UserService {
     users[index].mfa_enabled = false;
     delete users[index].mfa_secret;
     delete users[index].mfa_recovery_code;
-    delete users[index].mfa_pending_secret;
     await this.saveUsers(users);
+    this.mfaPendingSetups.delete(userId);
 
     return {
       success: true,

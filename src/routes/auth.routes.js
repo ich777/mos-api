@@ -412,16 +412,15 @@ router.post('/mfa/setup', authenticateToken, async (req, res) => {
   try {
     const { password, code } = req.body;
 
-    if (!password) {
-      return res.status(400).json({ error: 'Password is required' });
-    }
-
     if (code) {
-      // Step 2: Confirm MFA with TOTP code
-      const result = await userService.confirmMfa(req.user.id, password, code);
+      // Step 2: Confirm MFA with TOTP code (password not needed, was verified in step 1)
+      const result = await userService.confirmMfa(req.user.id, code);
       res.json(result);
     } else {
-      // Step 1: Generate secret and QR code
+      // Step 1: Generate secret and QR code (password required)
+      if (!password) {
+        return res.status(400).json({ error: 'Password is required' });
+      }
       const result = await userService.setupMfa(req.user.id, password);
       res.json(result);
     }
