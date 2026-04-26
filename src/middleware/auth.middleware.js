@@ -41,6 +41,11 @@ const authenticateToken = async (req, res, next) => {
     // Regular JWT verification
     const decodedUser = jwt.verify(token, process.env.JWT_SECRET);
 
+    // Reject MFA-only tokens - these are only valid on /auth/mfa
+    if (decodedUser.purpose === 'mfa_verify') {
+      return res.status(401).json({ error: 'MFA verification required. This token cannot be used for API access.' });
+    }
+
     // Check if user still exists
     const users = await userService.loadUsers();
     const currentUser = users.find(u => u.id === decodedUser.id);
