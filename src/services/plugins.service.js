@@ -434,30 +434,53 @@ async function getReleases(repository, forceRefresh = false) {
 
   const releases = await response.json();
 
-  // Extract relevant data - first release is latest
-  const releaseList = releases.map((r, index) => {
-    // Extract architectures from .deb files
-    const debAssets = r.assets.filter(a => a.name.endsWith('.deb') && !a.name.endsWith('.md5'));
-    const archs = debAssets
-      .map(a => _extractArchFromDeb(a.name))
-      .filter(a => a !== null);
-    const architectures = archs.length > 0 ? [...new Set(archs)] : null;
+  let releaseList;
 
-    return {
-      tag: r.tag_name,
-      name: r.name || r.tag_name,
-      published_at: r.published_at,
-      prerelease: r.prerelease,
-      latest: index === 0,
-      architectures,
-      assets: r.assets.map(a => ({
-        name: a.name,
-        size: a.size,
-        download_url: a.browser_download_url,
-        api_url: a.url  // For authenticated downloads
-      }))
-    };
-  });
+  if (releases.length > 0) {
+    // Extract relevant data - first release is latest
+    releaseList = releases.map((r, index) => {
+      // Extract architectures from .deb files
+      const debAssets = r.assets.filter(a => a.name.endsWith('.deb') && !a.name.endsWith('.md5'));
+      const archs = debAssets
+        .map(a => _extractArchFromDeb(a.name))
+        .filter(a => a !== null);
+      const architectures = archs.length > 0 ? [...new Set(archs)] : null;
+
+      return {
+        tag: r.tag_name,
+        name: r.name || r.tag_name,
+        published_at: r.published_at,
+        prerelease: r.prerelease,
+        latest: index === 0,
+        architectures,
+        assets: r.assets.map(a => ({
+          name: a.name,
+          size: a.size,
+          download_url: a.browser_download_url,
+          api_url: a.url  // For authenticated downloads
+        }))
+      };
+    });
+  } else {
+    // Fallback: fetch tags if no releases found
+    const tagsUrl = `https://api.github.com/repos/${owner}/${repo}/tags?per_page=50`;
+    const tagsResponse = await fetch(tagsUrl, { headers });
+
+    if (tagsResponse.ok) {
+      const tags = await tagsResponse.json();
+      releaseList = tags.map((t, index) => ({
+        tag: t.name,
+        name: t.name,
+        published_at: null,
+        prerelease: false,
+        latest: index === 0,
+        architectures: null,
+        assets: []
+      }));
+    } else {
+      releaseList = [];
+    }
+  }
 
   const result = {
     repository,
