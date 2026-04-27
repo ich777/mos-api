@@ -4517,6 +4517,24 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
         ...networkServices
       };
 
+      // Inject runtime online status for VPN services (not persisted)
+      const checks = [];
+      if (result.tailscale) {
+        if (result.tailscale.enabled) {
+          checks.push(this._getTailscaleOnline().then(online => { result.tailscale.online = online; }));
+        } else {
+          result.tailscale.online = false;
+        }
+      }
+      if (result.netbird) {
+        if (result.netbird.enabled) {
+          checks.push(this._getNetbirdOnline().then(online => { result.netbird.online = online; }));
+        } else {
+          result.netbird.online = false;
+        }
+      }
+      if (checks.length) await Promise.all(checks);
+
       return result;
     } catch (error) {
       throw new Error(`Fehler beim Abrufen des Service-Status: ${error.message}`);
