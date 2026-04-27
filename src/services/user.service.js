@@ -22,6 +22,7 @@ class UserService {
     this.adminTokensLastLoad = 0;
     this.systemConfigPath = '/boot/config/system';
     this.mfaPendingSetups = new Map();
+    this.mfaBlacklistedTokens = new Set();
   }
 
   async ensureUserFile() {
@@ -331,7 +332,9 @@ class UserService {
     return {
       user: this._sanitizeUser(user),
       token,
-      mfa_required: false
+      mfa_required: false,
+      mfa_disabled: false,
+      message: null
     };
   }
 
@@ -1146,13 +1149,19 @@ class UserService {
       throw new Error('MFA setup expired. Please start setup again.');
     }
 
-    const isValid = verifySync({ token: code, secret: pending.secret });
-    if (!isValid) {
+    let confirmValid = false;
+    try {
+      const verifyResult = verifySync({ token: code, secret: pending.secret });
+      confirmValid = verifyResult && verifyResult.valid === true;
+    } catch (e) {
+      confirmValid = false;
+    }
+    if (!confirmValid) {
       throw new Error('Invalid MFA code');
     }
 
     // Generate recovery code
-    const recoveryCode = crypto.randomBytes(6).toString('hex').toUpperCase().match(/.{4}/g).join('-');
+    const recoveryCode = crypto.randomBytes(16).toString('hex').toUpperCase().match(/.{4}/g).join('-');
     const hashedRecovery = await bcrypt.hash(recoveryCode, 10);
 
     // Activate MFA
@@ -1176,12 +1185,18 @@ class UserService {
    * @returns {Promise<Object>} JWT token and user data
    */
   async verifyMfa(mfaToken, code) {
+    // Check if token is blacklisted
+    if (this.mfaBlacklistedTokens.has(mfaToken)) {
+      throw new Error('Authentication failed. Please login again.');
+    }
+
     // Verify mfa_token JWT
     let decoded;
     try {
       decoded = jwt.verify(mfaToken, process.env.JWT_SECRET);
     } catch (error) {
       if (error.name === 'TokenExpiredError') {
+        this.mfaBlacklistedTokens.delete(mfaToken);
         throw new Error('MFA token expired. Please login again.');
       }
       throw new Error('Invalid MFA token');
@@ -1198,41 +1213,63 @@ class UserService {
       throw new Error('Invalid MFA token');
     }
 
-    // Try TOTP code first
-    const isValidTotp = verifySync({ token: code, secret: user.mfa_secret });
+    // Classify input: TOTP (6 digits), recovery code (hex with dashes, 39 chars), or invalid
+    const isTotpFormat = /^\d{6}$/.test(code);
+    const isRecoveryFormat = /^[A-F0-9]{4}(-[A-F0-9]{4}){7}$/i.test(code);
 
-    if (!isValidTotp) {
+    if (isTotpFormat) {
+      // Try TOTP verification
+      let totpValid = false;
+      try {
+        const verifyResult = verifySync({ token: code, secret: user.mfa_secret });
+        totpValid = verifyResult && verifyResult.valid === true;
+      } catch (e) {
+        totpValid = false;
+      }
+      if (!totpValid) {
+        throw new Error('Invalid MFA code');
+      }
+    } else if (isRecoveryFormat) {
       // Try recovery code
-      if (user.mfa_recovery_code) {
-        const isValidRecovery = await bcrypt.compare(code, user.mfa_recovery_code);
-        if (isValidRecovery) {
-          // Recovery code used - disable MFA
-          const index = users.findIndex(u => u.id === decoded.id);
-          users[index].mfa_enabled = false;
-          delete users[index].mfa_secret;
-          delete users[index].mfa_recovery_code;
-          await this.saveUsers(users);
-
-          // Reload user after MFA disable
-          const updatedUser = users[index];
-          const token = jwt.sign(
-            {
-              id: updatedUser.id,
-              username: updatedUser.username,
-              role: updatedUser.role
-            },
-            process.env.JWT_SECRET,
-            { expiresIn: config.jwtExpiryString }
-          );
-
-          return {
-            user: this._sanitizeUser(updatedUser),
-            token,
-            mfa_disabled: true
-          };
-        }
+      if (!user.mfa_recovery_code) {
+        this.mfaBlacklistedTokens.add(mfaToken);
+        setTimeout(() => this.mfaBlacklistedTokens.delete(mfaToken), 2 * 60 * 1000);
+        throw new Error('Authentication failed. Please login again.');
       }
 
+      const isValidRecovery = await bcrypt.compare(code, user.mfa_recovery_code);
+      if (!isValidRecovery) {
+        this.mfaBlacklistedTokens.add(mfaToken);
+        setTimeout(() => this.mfaBlacklistedTokens.delete(mfaToken), 2 * 60 * 1000);
+        throw new Error('Authentication failed. Please login again.');
+      }
+
+      // Recovery code used - disable MFA
+      const index = users.findIndex(u => u.id === decoded.id);
+      users[index].mfa_enabled = false;
+      delete users[index].mfa_secret;
+      delete users[index].mfa_recovery_code;
+      await this.saveUsers(users);
+
+      const updatedUser = users[index];
+      const token = jwt.sign(
+        {
+          id: updatedUser.id,
+          username: updatedUser.username,
+          role: updatedUser.role
+        },
+        process.env.JWT_SECRET,
+        { expiresIn: config.jwtExpiryString }
+      );
+
+      return {
+        user: this._sanitizeUser(updatedUser),
+        token,
+        mfa_disabled: true,
+        message: 'MFA has been disabled because a recovery code was used. Please reconfigure MFA in your settings.'
+      };
+    } else {
+      // Neither valid TOTP nor recovery format - generic error, no blacklist
       throw new Error('Invalid MFA code');
     }
 
@@ -1249,7 +1286,9 @@ class UserService {
 
     return {
       user: this._sanitizeUser(user),
-      token
+      token,
+      mfa_disabled: false,
+      message: null
     };
   }
 
