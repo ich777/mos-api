@@ -2948,19 +2948,21 @@ router.post('/updateos', async (req, res) => {
 
     const result = await mosService.updateOS(version, channel, updateKernel);
 
-    // Update plugins last (after OS update has completed)
+    // Update plugins in background (after OS update has completed)
     if (update_plugins) {
-      try {
-        const versions = await pluginsService.checkUpdates();
-        const updatable = versions.filter(v => v.update_available);
-        if (updatable.length > 0) {
-          await pluginsService.updatePlugins();
-        } else {
-          await pluginsService.sendNotification('Plugin', 'All Plugins up-to-date', 'normal');
+      (async () => {
+        try {
+          const versions = await pluginsService.checkUpdates();
+          const updatable = versions.filter(v => v.update_available);
+          if (updatable.length > 0) {
+            await pluginsService.updatePlugins();
+          } else {
+            await pluginsService.sendNotification('Plugin', 'All Plugins up-to-date', 'normal');
+          }
+        } catch {
+          // Plugin update errors should not block response
         }
-      } catch {
-        // Plugin update errors should not block response
-      }
+      })();
     }
 
     if (result.success) {
