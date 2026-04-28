@@ -1412,7 +1412,7 @@ async function uninstallPlugin(pluginName) {
 }
 
 // Blocked functions that cannot be executed via executeFunction
-const BLOCKED_FUNCTIONS = ['install', 'uninstall', 'mos_start', 'plugin_update', 'mos_osupdate'];
+const BLOCKED_FUNCTIONS = ['install', 'uninstall', 'mos_start', 'mos_start_after_services', 'plugin_update', 'mos_osupdate'];
 
 /**
  * Execute a function from a plugin's functions file
