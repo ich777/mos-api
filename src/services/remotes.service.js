@@ -101,7 +101,8 @@ class RemotesService {
   _generateMountPath(server, share) {
     // Sanitize server and share names for filesystem
     const cleanServer = server.replace(/[^a-zA-Z0-9.-]/g, '_');
-    const cleanShare = share.replace(/[^a-zA-Z0-9_-]/g, '_');
+    // Strip leading/trailing slashes, replace remaining slashes with _, fallback to 'root' for /
+    const cleanShare = share.replace(/^\/+|\/+$/g, '').replace(/[^a-zA-Z0-9_-]/g, '_') || 'root';
 
     return path.join(this.mountBasePath, cleanServer, cleanShare);
   }
@@ -589,7 +590,7 @@ class RemotesService {
         const server = resolvedServer;
         const share = remote.share;
 
-        let options = 'vers=4,rsize=1048576,wsize=1048576,hard,intr,timeo=600';
+        let options = 'vers=4,soft,retrans=2,timeo=50';
 
         // Add uid/gid if specified (null means root)
         if (remote.uid !== null) {
@@ -599,14 +600,16 @@ class RemotesService {
           options += `,gid=${remote.gid}`;
         }
 
-        mountCommand = `mount -t nfs ${server}:/${share} "${mountPath}" -o ${options}`;
+        // Normalize share path: ensure exactly one leading slash
+        const nfsExportPath = share.startsWith('/') ? share : `/${share}`;
+        mountCommand = `mount -t nfs ${server}:${nfsExportPath} "${mountPath}" -o ${options}`;
       } else {
         throw new Error(`Unsupported remote type: ${remote.type}`);
       }
 
       // Execute mount command with secure error handling
       try {
-        await execPromise(mountCommand);
+        await execPromise(mountCommand, { timeout: 5000 });
       } catch (mountError) {
         // Log actual error for diagnosis (stderr often contains the real reason)
         const errMsg = (mountError.stderr || mountError.message || '').replace(/password=[^\s,]*/gi, 'password=***');
@@ -806,7 +809,7 @@ class RemotesService {
         await execPromise(`ping -c 1 -W 5 ${server}`);
 
         // Get NFS exports
-        const { stdout } = await execPromise(`showmount -e ${server} 2>/dev/null`);
+        const { stdout } = await execPromise(`timeout 5 showmount -e ${server} 2>/dev/null`);
         const lines = stdout.split('\n');
 
         // Parse export paths (skip header line)
@@ -890,7 +893,7 @@ class RemotesService {
           await execPromise(`ping -c 1 -W 5 ${server}`);
 
           // Then check if the specific share is exported
-          const { stdout } = await execPromise(`showmount -e ${server} 2>&1`);
+          const { stdout } = await execPromise(`timeout 5 showmount -e ${server} 2>&1`);
           const exports = stdout.split('\n');
 
           // Check if our share is in the exports list
