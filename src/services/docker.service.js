@@ -10,6 +10,38 @@ const execPromise = util.promisify(exec);
 class DockerService {
 
   /**
+   * Normalizes a shell value from a template into a valid absolute path
+   * @param {string|undefined|null} shell - The shell value from the template
+   * @returns {string} Normalized shell path
+   */
+  normalizeShell(shell) {
+    if (!shell) {
+      return '/bin/sh';
+    }
+
+    const trimmed = shell.trim();
+
+    if (!trimmed) {
+      return '/bin/sh';
+    }
+
+    if (trimmed === 'sh') {
+      return '/bin/sh';
+    }
+
+    if (trimmed === 'bash') {
+      return '/bin/bash';
+    }
+
+    if (trimmed.startsWith('/')) {
+      return trimmed;
+    }
+
+    // Anything else that doesn't start with / and isn't sh or bash
+    return '/bin/sh';
+  }
+
+  /**
    * Reads the Docker containers file and checks for available updates
    * @returns {Promise<Array>} Array of Docker images with update status
    */
@@ -44,13 +76,28 @@ class DockerService {
         // Docker daemon not available - skip cleanup
       }
 
+      // Read templates to get shell info for each container
+      const templatesDir = '/boot/config/system/docker/templates';
+      const shellMap = {};
+      for (const image of images) {
+        try {
+          const templatePath = path.join(templatesDir, `${image.name}.json`);
+          const templateData = await fs.readFile(templatePath, 'utf8');
+          const template = JSON.parse(templateData);
+          shellMap[image.name] = this.normalizeShell(template.default_shell);
+        } catch (templateError) {
+          shellMap[image.name] = '/bin/sh';
+        }
+      }
+
       // Process each image and add update status
       return images.map(image => {
         const updateAvailable = image.local !== image.remote;
 
         return {
           ...image,
-          update_available: updateAvailable
+          update_available: updateAvailable,
+          default_shell: shellMap[image.name]
         };
       });
     } catch (error) {
