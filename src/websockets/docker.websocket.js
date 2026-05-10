@@ -449,18 +449,43 @@ class DockerWebSocketManager extends EventEmitter {
       if (!name && !force_update) {
         // Get Docker containers with updates
         const containers = await this.dockerService.getDockerImages();
-        const containersWithUpdates = containers.filter(c => c.update_available);
+        const containersWithUpdates = containers.filter(c => c.update_available && !c.no_autoupdate);
+
+        // Log skipped containers with no_autoupdate
+        const skippedContainers = containers.filter(c => c.update_available && c.no_autoupdate);
+        for (const container of skippedContainers) {
+          this.sendUpdate(null, operationId, 'running', {
+            output: `INFO: Auto update for container ${container.name} disabled, skipping\n`,
+            stream: 'stdout'
+          });
+        }
 
         // Get Compose stacks with updates
         let stacksWithUpdates = [];
+        let skippedStacks = [];
         try {
           const composeContainers = await this.dockerComposeService._readComposeContainers();
           stacksWithUpdates = composeContainers.filter(stack => {
             if (!stack.services) return false;
+            if (stack.no_autoupdate === true) return false;
             return Object.values(stack.services).some(service =>
               service.local !== service.remote
             );
           });
+
+          // Log skipped stacks with no_autoupdate
+          skippedStacks = composeContainers.filter(stack => {
+            if (!stack.services || stack.no_autoupdate !== true) return false;
+            return Object.values(stack.services).some(service =>
+              service.local !== service.remote
+            );
+          });
+          for (const stack of skippedStacks) {
+            this.sendUpdate(null, operationId, 'running', {
+              output: `INFO: Auto update for Stack ${stack.stack} disabled, skipping\n`,
+              stream: 'stdout'
+            });
+          }
         } catch (err) {
           // compose-containers file doesn't exist or error reading
         }
@@ -468,9 +493,16 @@ class DockerWebSocketManager extends EventEmitter {
         const totalUpdates = containersWithUpdates.length + stacksWithUpdates.length;
 
         if (totalUpdates === 0) {
+          const skippedCount = skippedContainers.length + skippedStacks.length;
+          if (skippedCount === 0) {
+            this.sendUpdate(null, operationId, 'running', {
+              output: `All containers up to date.\n`,
+              stream: 'stdout'
+            });
+          }
+          this.activeOperations.delete(operationId);
           this.sendUpdate(null, operationId, 'completed', {
-            success: true,
-            message: 'No updates available for any container or stack'
+            success: true
           });
           return;
         }
@@ -525,7 +557,7 @@ class DockerWebSocketManager extends EventEmitter {
             );
 
             // Sync local SHAs to remote SHAs after successful upgrade
-            await this.dockerComposeService._syncLocalShasAfterUpgrade(stack.stack);
+            await this.dockerComposeService._syncLocalShasAfterUpgrade(stack.stack, true);
           } catch (error) {
             // Continue with next stack even if one fails
           }
@@ -605,7 +637,7 @@ class DockerWebSocketManager extends EventEmitter {
           );
 
           // Sync local SHAs to remote SHAs after successful upgrade
-          await this.dockerComposeService._syncLocalShasAfterUpgrade(group.name);
+          await this.dockerComposeService._syncLocalShasAfterUpgrade(group.name, force_update);
         } catch (error) {
           // Error already handled by executeCommandWithStream
         }
@@ -995,6 +1027,7 @@ class DockerWebSocketManager extends EventEmitter {
   async executeComposeCreate(operationId, params) {
     const { name, yaml, env, icon } = params || {};
     const webui = params?.webui !== undefined ? params.webui : params?.web_ui_url;
+    const noAutoupdate = params?.no_autoupdate === true;
 
     if (!name || !yaml) {
       this.sendUpdate(null, operationId, 'error', {
@@ -1082,7 +1115,7 @@ class DockerWebSocketManager extends EventEmitter {
       });
 
       // Generate mos.override.yaml
-      const mosOverride = this.dockerComposeService._generateMosOverride(services, name, icon);
+      const mosOverride = this.dockerComposeService._generateMosOverride(services, name, icon, noAutoupdate);
       const mosOverridePath = path.join(stackPath, 'mos.override.yaml');
       await fs.writeFile(mosOverridePath, mosOverride);
 
@@ -1233,7 +1266,7 @@ class DockerWebSocketManager extends EventEmitter {
       }
 
       // Update compose-containers file (even with 0 containers, so the stack entry exists)
-      await this.dockerComposeService._updateStackInComposeContainers(name, null, webui);
+      await this.dockerComposeService._updateStackInComposeContainers(name, null, webui, noAutoupdate);
       this.sendUpdate(null, operationId, 'running', {
         output: `Updated compose-containers file\n`,
         stream: 'stdout'
@@ -1289,6 +1322,7 @@ class DockerWebSocketManager extends EventEmitter {
   async executeComposeUpdate(operationId, params) {
     const { name, yaml, env, icon } = params || {};
     const webui = params?.webui !== undefined ? params.webui : params?.web_ui_url;
+    const noAutoupdate = params?.no_autoupdate !== undefined ? params.no_autoupdate === true : null;
 
     if (!name || !yaml) {
       this.sendUpdate(null, operationId, 'error', {
@@ -1400,8 +1434,18 @@ class DockerWebSocketManager extends EventEmitter {
         stream: 'stdout'
       });
 
-      // Regenerate mos.override.yaml
-      const mosOverride = this.dockerComposeService._generateMosOverride(services, name, icon);
+      // Regenerate mos.override.yaml (read existing no_autoupdate if not explicitly set)
+      let effectiveNoAutoupdate = noAutoupdate;
+      if (effectiveNoAutoupdate === null) {
+        try {
+          const cc = await this.dockerComposeService._readComposeContainers();
+          const ccEntry = cc.find(s => s.stack === name);
+          effectiveNoAutoupdate = ccEntry ? ccEntry.no_autoupdate === true : false;
+        } catch (err) {
+          effectiveNoAutoupdate = false;
+        }
+      }
+      const mosOverride = this.dockerComposeService._generateMosOverride(services, name, icon, effectiveNoAutoupdate);
       const mosOverridePath = path.join(stackPath, 'mos.override.yaml');
       await fs.writeFile(mosOverridePath, mosOverride);
 
@@ -1516,7 +1560,7 @@ class DockerWebSocketManager extends EventEmitter {
       }
 
       // Update compose-containers file (even with 0 containers, so the stack entry exists)
-      await this.dockerComposeService._updateStackInComposeContainers(name, null, webui);
+      await this.dockerComposeService._updateStackInComposeContainers(name, null, webui, noAutoupdate);
       this.sendUpdate(null, operationId, 'running', {
         output: `Updated compose-containers file\n`,
         stream: 'stdout'
@@ -1835,7 +1879,7 @@ class DockerWebSocketManager extends EventEmitter {
       );
 
       // Sync local SHAs to remote SHAs after successful upgrade
-      await this.dockerComposeService._syncLocalShasAfterUpgrade(name);
+      await this.dockerComposeService._syncLocalShasAfterUpgrade(name, force_update);
 
       this.sendUpdate(null, operationId, 'running', {
         output: `\nUpdated compose-containers file\n`,

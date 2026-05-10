@@ -668,18 +668,14 @@ class DockerComposeService {
         return;
       }
 
-      const services = composeContainers[existingIndex].services;
-      if (services) {
-        for (const serviceName of Object.keys(services)) {
-          if (services[serviceName].remote) {
-            services[serviceName].local = services[serviceName].remote;
-          }
-        }
-      }
+      // Get actual current SHAs from running containers
+      // After upgrade, local and remote are the same (we just pulled latest)
+      const services = await this._getStackContainerDetails(stackName);
+      composeContainers[existingIndex].services = services;
 
       await this._writeComposeContainers(composeContainers);
     } catch (error) {
-      console.warn(`Failed to sync local SHAs for stack ${stackName}: ${error.message}`);
+      console.warn(`Failed to sync SHAs for stack ${stackName}: ${error.message}`);
     }
   }
 
