@@ -2234,6 +2234,494 @@ router.post('/settings/system', async (req, res) => {
 
 /**
  * @swagger
+ * /mos/settings/notifications/providers:
+ *   get:
+ *     summary: Get all notification providers
+ *     description: Retrieve all notification provider configurations (admin only)
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: All providers retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               additionalProperties:
+ *                 $ref: '#/components/schemas/NotificationProvider'
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *   post:
+ *     summary: Create a new notification provider
+ *     description: Create a new notification provider configuration (admin only). The name "email" is reserved.
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - name
+ *             properties:
+ *               name:
+ *                 type: string
+ *                 example: "discord"
+ *               enabled:
+ *                 type: boolean
+ *               user:
+ *                 oneOf:
+ *                   - type: boolean
+ *                   - type: string
+ *               token:
+ *                 oneOf:
+ *                   - type: boolean
+ *                   - type: string
+ *               url:
+ *                 type: string
+ *               method:
+ *                 type: string
+ *                 enum: [GET, POST, PUT, PATCH, DELETE]
+ *               headers:
+ *                 type: object
+ *               body:
+ *                 type: object
+ *               alert_mapping:
+ *                 type: object
+ *               color_prio:
+ *                 type: object
+ *     responses:
+ *       201:
+ *         description: Provider created successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/NotificationProvider'
+ *       400:
+ *         description: Invalid request (bad name, reserved name, or invalid fields)
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       409:
+ *         description: Provider already exists
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+
+/**
+ * @swagger
+ * /mos/settings/notifications/providers/{name}:
+ *   get:
+ *     summary: Get a single notification provider
+ *     description: Retrieve a specific notification provider configuration by name (admin only)
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: name
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Provider name (e.g. "discord", "gotify")
+ *     responses:
+ *       200:
+ *         description: Provider retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/NotificationProvider'
+ *       400:
+ *         description: Invalid provider name
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Provider not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *   patch:
+ *     summary: Update a notification provider
+ *     description: Partially update a notification provider configuration (admin only)
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: name
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Provider name
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               enabled:
+ *                 type: boolean
+ *               user:
+ *                 oneOf:
+ *                   - type: boolean
+ *                   - type: string
+ *               token:
+ *                 oneOf:
+ *                   - type: boolean
+ *                   - type: string
+ *               url:
+ *                 type: string
+ *               method:
+ *                 type: string
+ *                 enum: [GET, POST, PUT, PATCH, DELETE]
+ *               headers:
+ *                 type: object
+ *               body:
+ *                 type: object
+ *               alert_mapping:
+ *                 type: object
+ *               color_prio:
+ *                 type: object
+ *     responses:
+ *       200:
+ *         description: Provider updated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/NotificationProvider'
+ *       400:
+ *         description: Invalid request
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Provider not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *   delete:
+ *     summary: Delete a notification provider
+ *     description: Delete a notification provider configuration (admin only)
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: name
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Provider name
+ *     responses:
+ *       200:
+ *         description: Provider deleted successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *       400:
+ *         description: Invalid provider name
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Provider not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+
+// GET: List all notification providers
+router.get('/settings/notifications/providers', async (req, res) => {
+  try {
+    const providers = await mosService.getNotificationProviders();
+    res.json(providers);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET: Get single notification provider
+router.get('/settings/notifications/providers/:name', async (req, res) => {
+  try {
+    const provider = await mosService.getNotificationProvider(req.params.name);
+    res.json(provider);
+  } catch (error) {
+    if (error.message.includes('not found')) {
+      res.status(404).json({ error: error.message });
+    } else if (error.message.includes('reserved') || error.message.includes('may only contain')) {
+      res.status(400).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
+// POST: Create new notification provider
+router.post('/settings/notifications/providers', async (req, res) => {
+  try {
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      return res.status(400).json({ error: 'Request body must be a valid object.' });
+    }
+    const { name, ...config } = req.body;
+    const created = await mosService.createNotificationProvider(name, config);
+    res.status(201).json(created);
+  } catch (error) {
+    if (error.message.includes('already exists')) {
+      res.status(409).json({ error: error.message });
+    } else if (error.message.includes('reserved') || error.message.includes('may only contain') || error.message.includes('required') || error.message.includes('must be')) {
+      res.status(400).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
+// PATCH: Update notification provider
+router.patch('/settings/notifications/providers/:name', async (req, res) => {
+  try {
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      return res.status(400).json({ error: 'Request body must be a valid object.' });
+    }
+    const updated = await mosService.updateNotificationProvider(req.params.name, req.body);
+    res.json(updated);
+  } catch (error) {
+    if (error.message.includes('not found')) {
+      res.status(404).json({ error: error.message });
+    } else if (error.message.includes('reserved') || error.message.includes('may only contain') || error.message.includes('must be')) {
+      res.status(400).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
+// DELETE: Delete notification provider
+router.delete('/settings/notifications/providers/:name', async (req, res) => {
+  try {
+    const result = await mosService.deleteNotificationProvider(req.params.name);
+    res.json(result);
+  } catch (error) {
+    if (error.message.includes('not found')) {
+      res.status(404).json({ error: error.message });
+    } else if (error.message.includes('reserved') || error.message.includes('may only contain')) {
+      res.status(400).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
+/**
+ * @swagger
+ * /mos/settings/notifications/email:
+ *   get:
+ *     summary: Get email notification provider config
+ *     description: Retrieve the email notification provider configuration (admin only)
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Email config retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 enabled:
+ *                   type: boolean
+ *                 smtp_host:
+ *                   type: string
+ *                 smtp_port:
+ *                   type: integer
+ *                 smtp_tls:
+ *                   type: boolean
+ *                 smtp_user:
+ *                   type: string
+ *                 smtp_password:
+ *                   type: string
+ *                 from:
+ *                   type: string
+ *                 to:
+ *                   type: array
+ *                   items:
+ *                     type: string
+ *                 subject:
+ *                   type: string
+ *                 body:
+ *                   type: string
+ *                 alert_mapping:
+ *                   type: object
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *   post:
+ *     summary: Update email notification provider config
+ *     description: Create or update the email notification provider configuration (admin only)
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               enabled:
+ *                 type: boolean
+ *               smtp_host:
+ *                 type: string
+ *                 example: "smtp.gmail.com"
+ *               smtp_port:
+ *                 type: integer
+ *                 example: 587
+ *               smtp_tls:
+ *                 type: boolean
+ *                 example: true
+ *               smtp_user:
+ *                 type: string
+ *               smtp_password:
+ *                 type: string
+ *               from:
+ *                 type: string
+ *                 example: "server@example.com"
+ *               to:
+ *                 type: array
+ *                 items:
+ *                   type: string
+ *                 example: ["admin@example.com"]
+ *               subject:
+ *                 type: string
+ *                 example: "{{.Title}}"
+ *               body:
+ *                 type: string
+ *                 example: "{{.Message}}"
+ *               alert_mapping:
+ *                 type: object
+ *     responses:
+ *       200:
+ *         description: Email config updated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *       400:
+ *         description: Invalid request (validation error)
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+
+// GET: Read email provider config
+router.get('/settings/notifications/email', async (req, res) => {
+  try {
+    const config = await mosService.getEmailProvider();
+    res.json(config);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST: Update email provider config
+router.post('/settings/notifications/email', async (req, res) => {
+  try {
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      return res.status(400).json({ error: 'Request body must be a valid object.' });
+    }
+    const updated = await mosService.updateEmailProvider(req.body);
+    res.json(updated);
+  } catch (error) {
+    if (error.message.includes('required') || error.message.includes('must be') || error.message.includes('Invalid')) {
+      res.status(400).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
+/**
+ * @swagger
  * /mos/update_api:
  *   post:
  *     summary: Update the API service

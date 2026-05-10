@@ -19,6 +19,7 @@ class MosService {
     this.sensorsConfigPath = '/boot/config/system/sensors.json';
     this.sensorsExternalPath = '/var/mos/external-sensors.json';
     this.tokensPath = '/boot/config/system/tokens.json';
+    this.notifyProvidersPath = '/boot/config/notify/providers';
 
     // Sensors config cache
     this._sensorsConfigCache = null;
@@ -6838,6 +6839,378 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
       console.error('Error deleting item:', error.message);
       throw error;
     }
+  }
+
+  /**
+   * Returns the default notification provider structure with all expected fields.
+   * @returns {Object} Default provider config
+   */
+  _getDefaultNotificationProvider() {
+    return {
+      enabled: false,
+      user: false,
+      token: false,
+      url: '',
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: {},
+      alert_mapping: {},
+      color_prio: {}
+    };
+  }
+
+  /**
+   * Validates the provider name format and reserved names.
+   * @param {string} name - The provider name to validate
+   * @throws {Error} If name is invalid or reserved
+   */
+  _validateProviderName(name) {
+    if (!name || typeof name !== 'string') {
+      throw new Error('Provider name is required and must be a string.');
+    }
+    if (!/^[a-z0-9_-]+$/.test(name)) {
+      throw new Error('Provider name may only contain lowercase letters, numbers, dashes and underscores.');
+    }
+    if (name === 'email') {
+      throw new Error('The name "email" is reserved and cannot be used.');
+    }
+  }
+
+  /**
+   * Validates provider config fields (method, headers, body, alert_mapping, color_prio).
+   * @param {Object} data - The provider fields to validate
+   * @throws {Error} If any field has an invalid type
+   */
+  _validateProviderFields(data) {
+    const validMethods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
+
+    if (data.method !== undefined) {
+      if (typeof data.method !== 'string' || !validMethods.includes(data.method.toUpperCase())) {
+        throw new Error(`method must be one of: ${validMethods.join(', ')}`);
+      }
+    }
+    if (data.headers !== undefined) {
+      if (!data.headers || typeof data.headers !== 'object' || Array.isArray(data.headers)) {
+        throw new Error('headers must be a plain object.');
+      }
+    }
+    if (data.body !== undefined) {
+      if (!data.body || typeof data.body !== 'object' || Array.isArray(data.body)) {
+        throw new Error('body must be a plain object.');
+      }
+    }
+    if (data.alert_mapping !== undefined) {
+      if (!data.alert_mapping || typeof data.alert_mapping !== 'object' || Array.isArray(data.alert_mapping)) {
+        throw new Error('alert_mapping must be a plain object.');
+      }
+    }
+    if (data.color_prio !== undefined) {
+      if (data.color_prio !== false && (!data.color_prio || typeof data.color_prio !== 'object' || Array.isArray(data.color_prio))) {
+        throw new Error('color_prio must be a plain object or false.');
+      }
+    }
+  }
+
+  /**
+   * Reads all notification provider configs from the providers directory.
+   * Each config is merged with defaults to ensure all fields are present.
+   * @returns {Promise<Object>} Object with provider names as keys and configs as values
+   */
+  async getNotificationProviders() {
+    const defaults = this._getDefaultNotificationProvider();
+    const result = {};
+
+    let files;
+    try {
+      files = await fs.readdir(this.notifyProvidersPath);
+    } catch (error) {
+      if (error.code === 'ENOENT') return result;
+      throw new Error(`Error reading providers directory: ${error.message}`);
+    }
+
+    for (const file of files) {
+      if (!file.endsWith('.json')) continue;
+      const name = file.replace(/\.json$/, '');
+      try {
+        const data = await fs.readFile(path.join(this.notifyProvidersPath, file), 'utf8');
+        const loaded = JSON.parse(data);
+        result[name] = this._deepMerge(defaults, loaded);
+      } catch (error) {
+        console.warn(`Skipping invalid provider config ${file}: ${error.message}`);
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Reads a single notification provider config by name.
+   * Merged with defaults to ensure all fields are present.
+   * @param {string} name - The provider name
+   * @returns {Promise<Object>} The provider config
+   */
+  async getNotificationProvider(name) {
+    this._validateProviderName(name);
+    const defaults = this._getDefaultNotificationProvider();
+    const filePath = path.join(this.notifyProvidersPath, `${name}.json`);
+
+    let data;
+    try {
+      data = await fs.readFile(filePath, 'utf8');
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        throw new Error(`Provider "${name}" not found.`);
+      }
+      throw new Error(`Error reading provider "${name}": ${error.message}`);
+    }
+
+    const loaded = JSON.parse(data);
+    return this._deepMerge(defaults, loaded);
+  }
+
+  /**
+   * Creates a new notification provider config file.
+   * Merges with defaults, validates, writes file, and restarts notify service.
+   * @param {string} name - The provider name (becomes filename)
+   * @param {Object} config - The provider config fields
+   * @returns {Promise<Object>} The created provider config (merged with defaults)
+   */
+  async createNotificationProvider(name, config) {
+    this._validateProviderName(name);
+    this._validateProviderFields(config);
+
+    await fs.mkdir(this.notifyProvidersPath, { recursive: true });
+
+    const filePath = path.join(this.notifyProvidersPath, `${name}.json`);
+
+    try {
+      await fs.access(filePath);
+      throw new Error(`Provider "${name}" already exists.`);
+    } catch (error) {
+      if (error.message.includes('already exists')) throw error;
+    }
+
+    const defaults = this._getDefaultNotificationProvider();
+    const merged = this._deepMerge(defaults, config);
+
+    if (merged.method) merged.method = merged.method.toUpperCase();
+
+    await fs.writeFile(filePath, JSON.stringify(merged, null, 2), 'utf8');
+
+    try {
+      await execPromise('/etc/init.d/notify restart');
+    } catch (error) {
+      console.warn('Warning: Could not restart notify service:', error.message);
+    }
+
+    return merged;
+  }
+
+  /**
+   * Updates an existing notification provider config (partial update).
+   * Only allowed fields are updated. Restarts notify service after writing.
+   * @param {string} name - The provider name
+   * @param {Object} updates - The fields to update
+   * @returns {Promise<Object>} The updated provider config
+   */
+  async updateNotificationProvider(name, updates) {
+    this._validateProviderName(name);
+    this._validateProviderFields(updates);
+
+    const filePath = path.join(this.notifyProvidersPath, `${name}.json`);
+    const defaults = this._getDefaultNotificationProvider();
+
+    let current;
+    try {
+      const data = await fs.readFile(filePath, 'utf8');
+      current = this._deepMerge(defaults, JSON.parse(data));
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        throw new Error(`Provider "${name}" not found.`);
+      }
+      throw new Error(`Error reading provider "${name}": ${error.message}`);
+    }
+
+    const allowed = ['enabled', 'user', 'token', 'url', 'method', 'headers', 'body', 'alert_mapping', 'color_prio'];
+    for (const key of Object.keys(updates)) {
+      if (allowed.includes(key)) {
+        if (key === 'method' && typeof updates[key] === 'string') {
+          current[key] = updates[key].toUpperCase();
+        } else {
+          current[key] = updates[key];
+        }
+      }
+    }
+
+    await fs.writeFile(filePath, JSON.stringify(current, null, 2), 'utf8');
+
+    try {
+      await execPromise('/etc/init.d/notify restart');
+    } catch (error) {
+      console.warn('Warning: Could not restart notify service:', error.message);
+    }
+
+    return current;
+  }
+
+  /**
+   * Deletes a notification provider config file and restarts notify service.
+   * @param {string} name - The provider name to delete
+   * @returns {Promise<Object>} Success message
+   */
+  async deleteNotificationProvider(name) {
+    this._validateProviderName(name);
+    const filePath = path.join(this.notifyProvidersPath, `${name}.json`);
+
+    try {
+      await fs.access(filePath);
+    } catch (error) {
+      throw new Error(`Provider "${name}" not found.`);
+    }
+
+    await fs.unlink(filePath);
+
+    try {
+      await execPromise('/etc/init.d/notify restart');
+    } catch (error) {
+      console.warn('Warning: Could not restart notify service:', error.message);
+    }
+
+    return { message: `Provider "${name}" deleted successfully.` };
+  }
+
+  /**
+   * Returns the default email provider structure with all expected fields.
+   * @returns {Object} Default email provider config
+   */
+  _getDefaultEmailProvider() {
+    return {
+      enabled: false,
+      smtp_host: '',
+      smtp_port: 587,
+      smtp_tls: true,
+      smtp_user: '',
+      smtp_password: '',
+      from: '',
+      to: [],
+      subject: '{{.Title}}',
+      body: '{{.Message}}',
+      alert_mapping: {}
+    };
+  }
+
+  /**
+   * Validates email provider config fields.
+   * @param {Object} data - The email config to validate
+   * @param {boolean} checkRequired - Whether to enforce required fields (for enabled configs)
+   * @throws {Error} If any field has an invalid type or value
+   */
+  _validateEmailFields(data, checkRequired = false) {
+    if (data.smtp_port !== undefined) {
+      if (typeof data.smtp_port !== 'number' || data.smtp_port < 1 || data.smtp_port > 65535) {
+        throw new Error('smtp_port must be a number between 1 and 65535.');
+      }
+    }
+    if (data.smtp_tls !== undefined) {
+      if (typeof data.smtp_tls !== 'boolean') {
+        throw new Error('smtp_tls must be a boolean.');
+      }
+    }
+    if (data.to !== undefined) {
+      if (!Array.isArray(data.to)) {
+        throw new Error('to must be an array of email addresses.');
+      }
+      for (const addr of data.to) {
+        if (typeof addr !== 'string' || !addr.includes('@')) {
+          throw new Error(`Invalid email address in to: "${addr}"`);
+        }
+      }
+    }
+    if (data.from !== undefined && data.from !== '') {
+      if (typeof data.from !== 'string' || !data.from.includes('@')) {
+        throw new Error('from must be a valid email address.');
+      }
+    }
+    if (data.alert_mapping !== undefined) {
+      if (!data.alert_mapping || typeof data.alert_mapping !== 'object' || Array.isArray(data.alert_mapping)) {
+        throw new Error('alert_mapping must be a plain object.');
+      }
+    }
+
+    if (checkRequired && data.enabled === true) {
+      if (!data.smtp_host || typeof data.smtp_host !== 'string' || data.smtp_host.trim() === '') {
+        throw new Error('smtp_host is required when email is enabled.');
+      }
+      if (!data.from || typeof data.from !== 'string' || !data.from.includes('@')) {
+        throw new Error('from is required and must be a valid email address when email is enabled.');
+      }
+      if (!Array.isArray(data.to) || data.to.length === 0) {
+        throw new Error('At least one recipient (to) is required when email is enabled.');
+      }
+    }
+  }
+
+  /**
+   * Reads the email provider config from email.json.
+   * Merged with defaults to ensure all fields are present.
+   * @returns {Promise<Object>} The email provider config
+   */
+  async getEmailProvider() {
+    const defaults = this._getDefaultEmailProvider();
+    const filePath = path.join(this.notifyProvidersPath, 'email.json');
+
+    let data;
+    try {
+      data = await fs.readFile(filePath, 'utf8');
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        return defaults;
+      }
+      throw new Error(`Error reading email.json: ${error.message}`);
+    }
+
+    const loaded = JSON.parse(data);
+    return this._deepMerge(defaults, loaded);
+  }
+
+  /**
+   * Creates or updates the email provider config.
+   * Validates, writes file, and restarts notify service.
+   * @param {Object} config - The email provider config fields
+   * @returns {Promise<Object>} The saved email config (merged with defaults)
+   */
+  async updateEmailProvider(config) {
+    this._validateEmailFields(config, true);
+
+    await fs.mkdir(this.notifyProvidersPath, { recursive: true });
+
+    const filePath = path.join(this.notifyProvidersPath, 'email.json');
+    const defaults = this._getDefaultEmailProvider();
+
+    let current = { ...defaults };
+    try {
+      const data = await fs.readFile(filePath, 'utf8');
+      current = this._deepMerge(defaults, JSON.parse(data));
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+
+    const allowed = ['enabled', 'smtp_host', 'smtp_port', 'smtp_tls', 'smtp_user', 'smtp_password', 'from', 'to', 'subject', 'body', 'alert_mapping'];
+    for (const key of Object.keys(config)) {
+      if (allowed.includes(key)) {
+        current[key] = config[key];
+      }
+    }
+
+    await fs.writeFile(filePath, JSON.stringify(current, null, 2), 'utf8');
+
+    try {
+      await execPromise('/etc/init.d/notify restart');
+    } catch (error) {
+      console.warn('Warning: Could not restart notify service:', error.message);
+    }
+
+    return current;
   }
 }
 
