@@ -3470,6 +3470,7 @@ class MosService {
         powerdown: 60
       },
       persist_history: false,
+      persist_notifications: false,
       ntp: {
         enabled: true,
         server: 'pool.ntp.org'
@@ -3560,7 +3561,7 @@ class MosService {
         if (error.code !== 'ENOENT') throw error;
       }
       // Only allowed fields are updated
-      const allowed = ['hostname', 'global_spindown', 'keymap', 'timezone', 'display', 'persist_history', 'ntp', 'notification_sound', 'cpufreq', 'swapfile', 'binfmt', 'webui', 'update_check'];
+      const allowed = ['hostname', 'global_spindown', 'keymap', 'timezone', 'display', 'persist_history', 'persist_notifications', 'ntp', 'notification_sound', 'cpufreq', 'swapfile', 'binfmt', 'webui', 'update_check'];
       let ntpChanged = false;
       let swapfileUpdate = null;
       let keymapChanged = false;
