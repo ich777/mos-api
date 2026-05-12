@@ -549,7 +549,12 @@ class SharesService {
         sharesConfig = await this.getShares();
       } catch (error) {
         // If file does not exist, create empty configuration
-        sharesConfig = [];
+        sharesConfig = [{ smb: [], nfs: [] }];
+      }
+
+      // Ensure correct structure: single object with smb and nfs keys
+      if (sharesConfig.length === 0) {
+        sharesConfig = [{ smb: [], nfs: [] }];
       }
 
       // Check if share name already exists (only within SMB shares)
@@ -560,15 +565,13 @@ class SharesService {
       // Create SMB share configuration
       const smbConfig = this._createSmbShareConfig(shareName, sharePath, options);
 
-      // Find or create SMB section
-      let smbSection = sharesConfig.find(section => section.smb);
-      if (!smbSection) {
-        smbSection = { smb: [] };
-        sharesConfig.push(smbSection);
+      // Add smb key to first object if not present
+      if (!sharesConfig[0].smb) {
+        sharesConfig[0].smb = [];
       }
 
       // Add new share to SMB array
-      smbSection.smb.push(smbConfig);
+      sharesConfig[0].smb.push(smbConfig);
 
       // Save configuration
       await this._saveShares(sharesConfig);
@@ -747,7 +750,12 @@ class SharesService {
         sharesConfig = await this.getShares();
       } catch (error) {
         // If file does not exist, create empty configuration
-        sharesConfig = [];
+        sharesConfig = [{ smb: [], nfs: [] }];
+      }
+
+      // Ensure correct structure: single object with smb and nfs keys
+      if (sharesConfig.length === 0) {
+        sharesConfig = [{ smb: [], nfs: [] }];
       }
 
       // Check if share name already exists (only within NFS shares)
@@ -758,15 +766,13 @@ class SharesService {
       // Create NFS share configuration
       const nfsConfig = this._createNfsShareConfig(shareName, sharePath, options);
 
-      // Find or create NFS section
-      let nfsSection = sharesConfig.find(section => section.nfs);
-      if (!nfsSection) {
-        nfsSection = { nfs: [] };
-        sharesConfig.push(nfsSection);
+      // Add nfs key to first object if not present
+      if (!sharesConfig[0].nfs) {
+        sharesConfig[0].nfs = [];
       }
 
       // Add new share to NFS array
-      nfsSection.nfs.push(nfsConfig);
+      sharesConfig[0].nfs.push(nfsConfig);
 
       // Save configuration
       await this._saveShares(sharesConfig);
@@ -942,15 +948,8 @@ class SharesService {
       // Remove share from array
       section[shareType].splice(shareIndex, 1);
 
-      // Remove sections with empty arrays
-      const filteredConfig = sharesConfig.filter(section => {
-        return Object.keys(section).some(sectionType => {
-          return Array.isArray(section[sectionType]) && section[sectionType].length > 0;
-        });
-      });
-
-      // Save updated configuration
-      await this._saveShares(filteredConfig);
+      // Save updated configuration (keep structure intact, don't remove empty arrays)
+      await this._saveShares(sharesConfig);
 
       // Restart/Reload appropriate daemon based on share type
       let daemonReloadSuccess = false;
