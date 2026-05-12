@@ -6931,6 +6931,7 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
 
     for (const file of files) {
       if (!file.endsWith('.json')) continue;
+      if (file === 'email.json') continue;
       const name = file.replace(/\.json$/, '');
       try {
         const data = await fs.readFile(path.join(this.notifyProvidersPath, file), 'utf8');
@@ -7009,7 +7010,7 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
 
   /**
    * Updates an existing notification provider config (partial update).
-   * Only allowed fields are updated. Restarts notify service after writing.
+   * Only allowed fields are updated. Restarts notify service only if config actually changed.
    * @param {string} name - The provider name
    * @param {Object} updates - The fields to update
    * @returns {Promise<Object>} The updated provider config
@@ -7032,6 +7033,8 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
       throw new Error(`Error reading provider "${name}": ${error.message}`);
     }
 
+    const before = JSON.stringify(current);
+
     const allowed = ['enabled', 'user', 'token', 'url', 'method', 'headers', 'body', 'alert_mapping', 'color_prio'];
     for (const key of Object.keys(updates)) {
       if (allowed.includes(key)) {
@@ -7041,6 +7044,10 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
           current[key] = updates[key];
         }
       }
+    }
+
+    if (JSON.stringify(current) === before) {
+      return current;
     }
 
     await fs.writeFile(filePath, JSON.stringify(current, null, 2), 'utf8');
