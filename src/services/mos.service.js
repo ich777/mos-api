@@ -2122,7 +2122,7 @@ class MosService {
       ],
       services: {
         ssh: { enabled: true },
-        samba: { enabled: false, workgroup: 'WORKGROUP' },
+        samba: { enabled: false, workgroup: 'WORKGROUP', localmaster: false },
         samba_discovery: { enabled: false },
         nfs: { enabled: false },
         remote_mounting: { enabled: false },
@@ -2187,10 +2187,13 @@ class MosService {
       delete services.nmbd;
     }
 
-    // Ensure samba has workgroup
+    // Ensure samba has workgroup and localmaster
     if (services.samba) {
       if (services.samba.workgroup === undefined) {
         services.samba.workgroup = 'WORKGROUP';
+      }
+      if (services.samba.localmaster === undefined) {
+        services.samba.localmaster = false;
       }
     }
 
@@ -3241,6 +3244,10 @@ class MosService {
         // Handle workgroup
         if (services.samba.workgroup !== undefined) {
           current.services.samba.workgroup = services.samba.workgroup;
+        }
+        // Handle localmaster
+        if (typeof services.samba.localmaster === 'boolean') {
+          current.services.samba.localmaster = services.samba.localmaster;
         }
       }
 

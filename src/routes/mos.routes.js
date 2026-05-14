@@ -389,6 +389,10 @@ const { checkRole } = require('../middleware/auth.middleware');
  *                   type: string
  *                   description: Samba workgroup name
  *                   example: "WORKGROUP"
+ *                 localmaster:
+ *                   type: boolean
+ *                   description: Enable Samba local master browser
+ *                   example: false
  *             samba_discovery:
  *               type: object
  *               properties:
@@ -3105,6 +3109,14 @@ router.get('/certificates', async (req, res) => {
  *                       type: boolean
  *                       description: Samba service status
  *                       example: true
+ *                     workgroup:
+ *                       type: string
+ *                       description: Samba workgroup name
+ *                       example: "WORKGROUP"
+ *                     localmaster:
+ *                       type: boolean
+ *                       description: Samba local master browser status
+ *                       example: false
  *                 samba_discovery:
  *                   type: object
  *                   properties:
