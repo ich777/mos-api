@@ -5548,7 +5548,7 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
       }
 
       // Build command: bash /usr/local/bin/mos-install disk filesystem quiet extra_partition
-      const command = `bash /usr/local/bin/mos-install ${disk} ${filesystem} quiet ${extra_partition}`;
+      const command = `bash /usr/local/bin/mos-install ${disk} ${filesystem} quiet ${extra_partition} api`;
 
       // Execute script
       const { stdout, stderr } = await execPromise(command);
