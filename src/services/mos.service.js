@@ -3247,6 +3247,10 @@ class MosService {
         }
         // Handle localmaster
         if (typeof services.samba.localmaster === 'boolean') {
+          if (current.services.samba.localmaster !== services.samba.localmaster) {
+            sambaChanged = true;
+            sambaValue = current.services.samba.enabled;
+          }
           current.services.samba.localmaster = services.samba.localmaster;
         }
       }
@@ -3361,12 +3365,13 @@ class MosService {
         }
       }
 
-      // Services stop/start
+      // Services stop/start/restart
       if (sambaChanged) {
         if (sambaValue === false) {
           await execPromise('/etc/init.d/smbd stop');
         } else if (sambaValue === true) {
-          await execPromise('/etc/init.d/smbd start');
+          await execPromise('/etc/init.d/smbd restart');
+          await execPromise('/etc/init.d/nmbd restart');
         }
       }
       if (nfsChanged) {

@@ -2041,6 +2041,74 @@ class DockerService {
       throw new Error(`Failed to delete unused images: ${error.message}`);
     }
   }
+  /**
+   * Gets all Docker container port bindings via the Docker socket API
+   * @returns {Promise<Array>} Array of port objects sorted by port and proto
+   */
+  async getDockerPorts() {
+    try {
+      // Get all containers
+      const listResponse = await axios({
+        method: 'GET',
+        url: 'http://localhost/containers/json?all=true',
+        socketPath: '/var/run/docker.sock',
+        validateStatus: () => true,
+        timeout: 10000
+      });
+
+      if (listResponse.status !== 200 || !Array.isArray(listResponse.data)) {
+        throw new Error('Failed to list containers from Docker API');
+      }
+
+      const containers = listResponse.data;
+      const ports = [];
+
+      // Inspect each container for PortBindings
+      for (const container of containers) {
+        try {
+          const inspectResponse = await axios({
+            method: 'GET',
+            url: `http://localhost/containers/${container.Id}/json`,
+            socketPath: '/var/run/docker.sock',
+            validateStatus: () => true,
+            timeout: 5000
+          });
+
+          if (inspectResponse.status !== 200) continue;
+
+          const data = inspectResponse.data;
+          const portBindings = (data.HostConfig && data.HostConfig.PortBindings) || {};
+          const name = data.Name ? data.Name.replace(/^\//, '') : '';
+          const status = (data.State && data.State.Status) || 'unknown';
+
+          for (const [binding, hosts] of Object.entries(portBindings)) {
+            if (!Array.isArray(hosts)) continue;
+            const proto = binding.split('/')[1] || 'tcp';
+
+            for (const host of hosts) {
+              if (host && host.HostPort && host.HostPort !== '') {
+                ports.push({
+                  port: Number(host.HostPort),
+                  proto,
+                  name,
+                  status
+                });
+              }
+            }
+          }
+        } catch (inspectError) {
+          // Skip containers that can't be inspected
+        }
+      }
+
+      // Sort by port, then proto
+      ports.sort((a, b) => a.port - b.port || a.proto.localeCompare(b.proto));
+
+      return ports;
+    } catch (error) {
+      throw new Error(`Failed to get Docker ports: ${error.message}`);
+    }
+  }
 }
 
 module.exports = new DockerService();

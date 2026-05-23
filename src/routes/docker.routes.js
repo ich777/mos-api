@@ -456,6 +456,80 @@ router.get('/mos/containers', async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /docker/mos/ports:
+ *   get:
+ *     summary: Get Docker container port bindings
+ *     description: Retrieve all host port bindings from all Docker containers with container name, protocol and status (admin only)
+ *     tags: [Docker]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Port bindings retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: object
+ *                 properties:
+ *                   port:
+ *                     type: integer
+ *                     description: Host port number
+ *                     example: 8080
+ *                   proto:
+ *                     type: string
+ *                     description: Protocol (tcp/udp)
+ *                     example: "tcp"
+ *                   name:
+ *                     type: string
+ *                     description: Container name
+ *                     example: "nginx"
+ *                   status:
+ *                     type: string
+ *                     description: Container status
+ *                     example: "running"
+ *             example:
+ *               - port: 80
+ *                 proto: "tcp"
+ *                 name: "nginx"
+ *                 status: "running"
+ *               - port: 3306
+ *                 proto: "tcp"
+ *                 name: "mysql"
+ *                 status: "running"
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+
+// Get Docker container port bindings
+router.get('/mos/ports', async (req, res) => {
+  try {
+    const ports = await dockerService.getDockerPorts();
+    res.json(ports);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Update Docker container indices
 router.post('/mos/containers', async (req, res) => {
   try {

@@ -381,14 +381,15 @@ class SmartService {
   async _updateSerialMapping() {
     try {
       const { stdout } = await execPromise(
-        'lsblk -Jndo NAME,SERIAL,MODEL,ROTA,TRAN,TYPE 2>/dev/null'
+        'lsblk -Jndo NAME,SERIAL,MODEL,ROTA,TRAN,TYPE,DISC-GRAN 2>/dev/null'
       );
       const data = JSON.parse(stdout);
       this.serialDeviceMap.clear();
       if (data.blockdevices) {
         for (const dev of data.blockdevices) {
           if (dev.type !== 'disk' || !dev.serial) continue;
-          const diskType = dev.tran === 'nvme' ? 'nvme' : (dev.rota ? 'hdd' : 'ssd');
+          const diskType = dev.tran === 'nvme' ? 'nvme'
+            : (!dev.rota || dev['disc-gran']) ? 'ssd' : 'hdd';
           this.serialDeviceMap.set(dev.serial, {
             name: dev.name,
             model: dev.model || 'Unknown',
@@ -415,12 +416,13 @@ class SmartService {
     }
     try {
       const { stdout } = await execPromise(
-        `lsblk -Jndo NAME,SERIAL,MODEL,ROTA,TRAN /dev/${name} 2>/dev/null`
+        `lsblk -Jndo NAME,SERIAL,MODEL,ROTA,TRAN,DISC-GRAN /dev/${name} 2>/dev/null`
       );
       const data = JSON.parse(stdout);
       if (data.blockdevices && data.blockdevices[0]) {
         const dev = data.blockdevices[0];
-        const diskType = dev.tran === 'nvme' ? 'nvme' : (dev.rota ? 'hdd' : 'ssd');
+        const diskType = dev.tran === 'nvme' ? 'nvme'
+          : (!dev.rota || dev['disc-gran']) ? 'ssd' : 'hdd';
         if (dev.serial) {
           this.serialDeviceMap.set(dev.serial, {
             name: dev.name, model: dev.model || 'Unknown', diskType, tran: dev.tran
