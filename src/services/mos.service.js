@@ -3467,6 +3467,60 @@ class MosService {
   }
 
   /**
+   * Restarts spindown watchdog scripts for all disks or a specific device.
+   * Kills existing watchdog/set_spindown processes and starts new ones in background subshells.
+   * @param {string|null} device - Specific device path (e.g. '/dev/sda') or null for all sd? disks
+   * @returns {Promise<Object>} Result with list of restarted devices
+   */
+  async restartSpindownWatchdogs(device = null) {
+    try {
+      const restarted = [];
+
+      if (device) {
+        // Kill existing watchdog for specific device
+        try { await execPromise(`pkill -f "mos-spindown_watchdog ${device}"`); } catch (e) { /* no process found is ok */ }
+
+        // Small delay to ensure process is terminated
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        // Start new spindown scripts in background subshells
+        // mos-set_spindown runs once and exits, mos-spindown_watchdog is the persistent daemon
+        await execPromise(`nohup /usr/local/bin/mos-set_spindown ${device} >/dev/null 2>&1 &`);
+        await execPromise(`setsid /usr/local/bin/mos-spindown_watchdog ${device} &>/dev/null < /dev/null &`);
+        restarted.push(device);
+      } else {
+        // Kill all existing spindown watchdog processes
+        try { await execPromise('pkill -f "mos-spindown_watchdog"'); } catch (e) { /* no process found is ok */ }
+
+        // Small delay to ensure processes are terminated
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        // Find all sd block devices (sd[a-z]+ supports >26 devices: sda-sdz, sdaa, sdab, ...)
+        const { stdout } = await execPromise('find /dev/ -maxdepth 1 -regex ".*/sd[a-z]+" 2>/dev/null');
+        const disks = stdout.trim().split('\n').filter(d => d);
+
+        // Start all watchdogs in parallel - each exec returns instantly since processes are backgrounded
+        await Promise.all(disks.map(async (disk) => {
+          await execPromise(`nohup /usr/local/bin/mos-set_spindown ${disk} >/dev/null 2>&1 &`);
+          await execPromise(`setsid /usr/local/bin/mos-spindown_watchdog ${disk} &>/dev/null < /dev/null &`);
+          restarted.push(disk);
+        }));
+      }
+
+      if (restarted.length > 0) {
+        console.log(`Spindown watchdogs restarted for: ${restarted.join(', ')}`);
+      } else {
+        console.log('No sd devices found for spindown watchdog restart');
+      }
+
+      return { restarted };
+    } catch (error) {
+      console.warn('Warning: Could not restart spindown watchdogs:', error.message);
+      return { restarted: [], error: error.message };
+    }
+  }
+
+  /**
    * Returns the default system settings structure with all expected fields
    * @returns {Object} Default system settings
    */
@@ -3588,6 +3642,7 @@ class MosService {
       let webuiChanged = false;
       let localDnsSearchnameChanged = false;
       let updateCheckChanged = false;
+      let globalSpindownChanged = false;
 
       for (const key of Object.keys(updates)) {
         if (!allowed.includes(key)) {
@@ -3839,6 +3894,12 @@ class MosService {
             if (updates.update_check.update_check_schedule !== undefined)
               current.update_check.update_check_schedule = updates.update_check.update_check_schedule;
           }
+        } else if (key === 'global_spindown') {
+          const newValue = parseInt(updates.global_spindown, 10);
+          if (!isNaN(newValue) && newValue !== current.global_spindown) {
+            globalSpindownChanged = true;
+          }
+          current[key] = isNaN(newValue) ? current[key] : newValue;
         } else if (key === 'hostname') {
           if (updates.hostname !== current.hostname) {
             hostnameChanged = true;
@@ -3976,6 +4037,11 @@ class MosService {
         } catch (error) {
           console.warn('Warning: mos-cron_update could not be executed:', error.message);
         }
+      }
+
+      // Restart all spindown watchdogs if global_spindown changed
+      if (globalSpindownChanged) {
+        await this.restartSpindownWatchdogs();
       }
 
       // Handle swapfile configuration update
