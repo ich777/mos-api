@@ -2316,6 +2316,101 @@ router.post('/:id/parity/add', checkRole(['admin']), async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /pools/{id}/parity/replace:
+ *   post:
+ *     summary: Replace a parity device in a MergerFS pool
+ *     description: |
+ *       Replace an existing parity device with a new one in a MergerFS pool (admin only).
+ *       The old device will be unmounted and the new device will take over its parity slot.
+ *       SnapRAID configuration will be updated automatically.
+ *
+ *       **Size Requirements (default):**
+ *       - New parity device must be >= largest data device
+ *       - Use skip_size_check to bypass this validation
+ *
+ *       **Encryption:**
+ *       - For encrypted pools, the new device will be encrypted with the existing key
+ *       - Passphrase is required for encrypted pools
+ *     tags: [Pools]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Pool ID
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - oldDevice
+ *               - newDevice
+ *             properties:
+ *               oldDevice:
+ *                 type: string
+ *                 description: Path to the current parity device to replace
+ *                 example: "/dev/sdd1"
+ *               newDevice:
+ *                 type: string
+ *                 description: Path to the new parity device
+ *                 example: "/dev/sde"
+ *               format:
+ *                 type: boolean
+ *                 description: Whether to format the new device before adding
+ *                 default: false
+ *                 example: true
+ *               passphrase:
+ *                 type: string
+ *                 description: Encryption passphrase (required for encrypted pools)
+ *                 example: "my_secure_password"
+ *               skip_size_check:
+ *                 type: boolean
+ *                 description: Skip the parity device size validation (SnapRAID normally requires parity >= largest data device)
+ *                 default: false
+ *                 example: false
+ *     responses:
+ *       200:
+ *         description: Parity device replaced successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: "Successfully replaced parity device /dev/sdd1 with /dev/sde in pool 'media'"
+ *                 pool:
+ *                   type: object
+ *                   description: Updated pool object
+ *       400:
+ *         description: Bad request
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Pool or device not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 // Replace parity device in pool (admin only)
 router.post('/:id/parity/replace', checkRole(['admin']), async (req, res) => {
   try {
