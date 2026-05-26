@@ -6024,19 +6024,21 @@ class PoolsService {
         }
 
         // Verify snapraid device size is larger or equal to the largest data device
-        const snapraidSize = await this.getDeviceSize(snapraidDevice);
+        if (!options.skip_size_check) {
+          const snapraidSize = await this.getDeviceSize(snapraidDevice);
 
-        // Check all data devices and make sure snapraid device is at least as large as the largest
-        let largestDataDevice = 0;
-        for (const device of devices) {
-          const deviceSize = await this.getDeviceSize(device);
-          if (deviceSize > largestDataDevice) {
-            largestDataDevice = deviceSize;
+          // Check all data devices and make sure snapraid device is at least as large as the largest
+          let largestDataDevice = 0;
+          for (const device of devices) {
+            const deviceSize = await this.getDeviceSize(device);
+            if (deviceSize > largestDataDevice) {
+              largestDataDevice = deviceSize;
+            }
           }
-        }
 
-        if (snapraidSize < largestDataDevice) {
-          throw new Error('SnapRAID parity device must be at least as large as the largest data device');
+          if (snapraidSize < largestDataDevice) {
+            throw new Error('SnapRAID parity device must be at least as large as the largest data device');
+          }
         }
 
         // Prepare SnapRAID device
@@ -7874,24 +7876,26 @@ class PoolsService {
         }
 
         // Verify parity device size requirements (use original device for size check)
-        const paritySize = await this.getDeviceSize(originalDevice);
+        if (!options.skip_size_check) {
+          const paritySize = await this.getDeviceSize(originalDevice);
 
-        // Check all data devices and make sure parity device is at least as large as the largest
-        let largestDataDevice = 0;
-        for (let i = 0; i < pool.data_devices.length; i++) {
-          const dataDevice = pool.data_devices[i];
-          // For encrypted pools, get size from original devices
-          const deviceToMeasure = pool.config?.encrypted && pool.devices ?
-            pool.devices[i] :
-            dataDevice.device;
-          const deviceSize = await this.getDeviceSize(deviceToMeasure);
-          if (deviceSize > largestDataDevice) {
-            largestDataDevice = deviceSize;
+          // Check all data devices and make sure parity device is at least as large as the largest
+          let largestDataDevice = 0;
+          for (let i = 0; i < pool.data_devices.length; i++) {
+            const dataDevice = pool.data_devices[i];
+            // For encrypted pools, get size from original devices
+            const deviceToMeasure = pool.config?.encrypted && pool.devices ?
+              pool.devices[i] :
+              dataDevice.device;
+            const deviceSize = await this.getDeviceSize(deviceToMeasure);
+            if (deviceSize > largestDataDevice) {
+              largestDataDevice = deviceSize;
+            }
           }
-        }
 
-        if (paritySize < largestDataDevice) {
-          throw new Error(`Parity device ${originalDevice} must be at least as large as the largest data device`);
+          if (paritySize < largestDataDevice) {
+            throw new Error(`Parity device ${originalDevice} must be at least as large as the largest data device`);
+          }
         }
 
         // Check device format status

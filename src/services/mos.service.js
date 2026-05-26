@@ -2487,7 +2487,7 @@ class MosService {
    */
   async detectPhysicalInterfaces() {
     try {
-      const VIRTUAL_PREFIXES = ['lo', 'veth', 'docker', 'br-', 'virbr', 'tailscale', 'wt', 'bond', 'dummy', 'tunl', 'sit', 'vxlan', 'flannel', 'cni', 'lxc'];
+      const VIRTUAL_PREFIXES = ['lo', 'veth', 'docker', 'br-', 'virbr', 'tailscale', 'wt', 'bond', 'dummy', 'tunl', 'sit', 'vxlan', 'flannel', 'cni', 'lxc', 'shim'];
       const netDir = '/sys/class/net';
       const entries = await fs.readdir(netDir);
       const interfaces = [];

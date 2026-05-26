@@ -1192,6 +1192,11 @@ router.post('/multi', checkRole(['admin']), async (req, res) => {
  *                     description: MergerFS mount options
  *                     default: "defaults,allow_other,direct_io=auto,moveonenospc=true,category.create=mfs,minfree=5G"
  *                     example: "defaults,allow_other,direct_io=auto"
+ *               skip_size_check:
+ *                 type: boolean
+ *                 description: Skip the parity device size validation (SnapRAID normally requires parity >= largest data device)
+ *                 default: false
+ *                 example: false
  *     responses:
  *       201:
  *         description: Pool created successfully
@@ -1232,7 +1237,8 @@ router.post('/mergerfs', checkRole(['admin']), async (req, res) => {
       format,
       options = {},
       config = {},
-      passphrase
+      passphrase,
+      skip_size_check = false
     } = req.body;
 
     if (!name) {
@@ -1258,7 +1264,7 @@ router.post('/mergerfs', checkRole(['admin']), async (req, res) => {
       name,
       devices,
       filesystem,
-      { ...poolOptions, format: format }
+      { ...poolOptions, format: format, skip_size_check: skip_size_check === true }
     );
 
     return res.status(201).json(result);
@@ -2234,6 +2240,11 @@ router.get('/:id/status', authenticateToken, async (req, res) => {
  *                 description: Whether to force format the devices before adding
  *                 default: false
  *                 example: false
+ *               skip_size_check:
+ *                 type: boolean
+ *                 description: Skip the parity device size validation (SnapRAID normally requires parity >= largest data device)
+ *                 default: false
+ *                 example: false
  *     responses:
  *       200:
  *         description: Parity devices added successfully
@@ -2274,7 +2285,7 @@ router.get('/:id/status', authenticateToken, async (req, res) => {
 // Add parity devices to an existing MergerFS pool (admin only)
 router.post('/:id/parity/add', checkRole(['admin']), async (req, res) => {
   try {
-    const { devices, format = false } = req.body;
+    const { devices, format = false, skip_size_check = false } = req.body;
 
     if (!Array.isArray(devices) || devices.length === 0) {
       return res.status(400).json({ error: 'At least one parity device is required' });
@@ -2293,7 +2304,7 @@ router.post('/:id/parity/add', checkRole(['admin']), async (req, res) => {
     }
 
     // Get the appropriate service and add parity devices
-    const result = await poolsService.addParityDevicesToPool(req.params.id, devices, { format });
+    const result = await poolsService.addParityDevicesToPool(req.params.id, devices, { format, skip_size_check: skip_size_check === true });
 
     res.json(result);
   } catch (error) {
