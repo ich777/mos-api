@@ -2319,7 +2319,7 @@ router.post('/:id/parity/add', checkRole(['admin']), async (req, res) => {
 // Replace parity device in pool (admin only)
 router.post('/:id/parity/replace', checkRole(['admin']), async (req, res) => {
   try {
-    const { oldDevice, newDevice, format = false } = req.body;
+    const { oldDevice, newDevice, format = false, skip_size_check = false } = req.body;
 
     if (!oldDevice || !newDevice) {
       return res.status(400).json({ error: 'Both oldDevice and newDevice are required' });
@@ -2327,7 +2327,8 @@ router.post('/:id/parity/replace', checkRole(['admin']), async (req, res) => {
 
     const options = {
       format,
-      passphrase: req.body.passphrase
+      passphrase: req.body.passphrase,
+      skip_size_check: skip_size_check === true
     };
 
     const result = await poolsService.replaceParityDeviceInPool(req.params.id, oldDevice, newDevice, options);

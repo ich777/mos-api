@@ -8047,19 +8047,21 @@ class PoolsService {
       }
 
       // Verify new parity device size requirements
-      const newParitySize = await this.getDeviceSize(newDevice);
+      if (!options.skip_size_check) {
+        const newParitySize = await this.getDeviceSize(newDevice);
 
-      // Check all data devices and make sure new parity device is at least as large as the largest
-      let largestDataDevice = 0;
-      for (const dataDevice of pool.data_devices) {
-        const deviceSize = await this.getDeviceSize(dataDevice.device);
-        if (deviceSize > largestDataDevice) {
-          largestDataDevice = deviceSize;
+        // Check all data devices and make sure new parity device is at least as large as the largest
+        let largestDataDevice = 0;
+        for (const dataDevice of pool.data_devices) {
+          const deviceSize = await this.getDeviceSize(dataDevice.device);
+          if (deviceSize > largestDataDevice) {
+            largestDataDevice = deviceSize;
+          }
         }
-      }
 
-      if (newParitySize < largestDataDevice) {
-        throw new Error(`New parity device ${newDevice} must be at least as large as the largest data device`);
+        if (newParitySize < largestDataDevice) {
+          throw new Error(`New parity device ${newDevice} must be at least as large as the largest data device`);
+        }
       }
 
       // Get the old parity device info for preserving slot number
