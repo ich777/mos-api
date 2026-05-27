@@ -43,7 +43,7 @@ class TerminalService {
         rows: 24,
         shell: '/bin/bash',
         cwd: '/',
-        env: { ...process.env, TERM: 'xterm-color' }
+        env: { ...process.env, TERM: 'xterm-256color', LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8' }
       };
 
       const config = { ...defaultOptions, ...options };
@@ -67,7 +67,7 @@ class TerminalService {
         // Arbitrary command with arguments - no login shell
         const args = config.args || [];
         ptyProcess = pty.spawn(config.command, args, {
-          name: 'xterm-color',
+          name: 'xterm-256color',
           cols: config.cols,
           rows: config.rows,
           cwd: config.cwd,
@@ -78,7 +78,7 @@ class TerminalService {
         // Only for normal shell sessions (no command)
         const shellArgs = config.shell === '/bin/bash' ? ['-l'] : [];
         ptyProcess = pty.spawn(config.shell, shellArgs, {
-          name: 'xterm-color',
+          name: 'xterm-256color',
           cols: config.cols,
           rows: config.rows,
           cwd: config.cwd,
