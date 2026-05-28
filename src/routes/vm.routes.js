@@ -806,6 +806,10 @@ router.get('/machinetypes', async (req, res) => {
  *             schema:
  *               type: object
  *               properties:
+ *                 hugepages:
+ *                   type: boolean
+ *                   description: Whether hugepages are available (enabled in system settings AND pages allocated)
+ *                   example: true
  *                 qemuPath:
  *                   type: string
  *                   example: "/usr/bin/qemu-system-x86_64"
@@ -971,6 +975,10 @@ router.get('/binfmt_architectures', async (req, res) => {
  *                 items:
  *                   type: integer
  *                 example: [0, 10, 2, 12]
+ *               hugepages:
+ *                 type: boolean
+ *                 description: Use hugepages for this VM's memory. Requires hugepages to be enabled and allocated in VM system settings.
+ *                 default: false
  *               platform:
  *                 type: string
  *                 description: Machine type - use 'i440fx' or 'q35' for latest version, or specific like 'pc-q35-9.2'. Note - q35 is recommended for modern systems.
@@ -1480,6 +1488,9 @@ router.get('/machines/:name/config', async (req, res) => {
  *                 type: integer
  *               cpus:
  *                 type: integer
+ *               hugepages:
+ *                 type: boolean
+ *                 description: Use hugepages for this VM's memory
  *               platform:
  *                 type: string
  *               bios:

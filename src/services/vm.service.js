@@ -1045,8 +1045,16 @@ class VmService {
         path: path.join(VIRTIO_ISO_DIR, `${version}.iso`)
       }));
 
+      // Hugepages: enabled in system settings AND pages actually allocated
+      const hugepagesAvailable = !!(
+        vmSettings.hugepages &&
+        vmSettings.hugepages.enabled === true &&
+        vmSettings.hugepages.total > 0
+      );
+
       return {
         vdisk_directory: vmSettings.vdisk_directory || null,
+        hugepages: hugepagesAvailable,
         qemuPath: this.QEMU_PATH,
         libvirtPath: this.LIBVIRT_QEMU_PATH,
         biosTypes: this.VALID_BIOS_TYPES,
@@ -1103,6 +1111,7 @@ class VmService {
       memory = 1024,
       cpus = 1,
       cpuPins = null,
+      hugepages = false,
       platform = 'q35',
       bios = 'ovmf',
       disks = [],
@@ -1182,6 +1191,14 @@ class VmService {
   <uuid>${vmUuid}</uuid>
   <memory unit='MiB'>${memoryMiB}</memory>
   <vcpu placement='static'>${effectiveCpus}</vcpu>`;
+
+    // Hugepages - use host hugepages for this VM's memory
+    if (hugepages) {
+      xml += `
+  <memoryBacking>
+    <hugepages/>
+  </memoryBacking>`;
+    }
 
     // CPU pinning - map vCPUs to specific host cores
     // For TCG (cross-arch emulation), auto-pin vCPUs to physical cores if no explicit pins provided
@@ -2038,6 +2055,9 @@ class VmService {
         bios = 'ovmf-tpm';
       }
 
+      // Parse hugepages (memoryBacking with hugepages element)
+      const hugepages = xml.includes('<memoryBacking') && xml.includes('<hugepages');
+
       // Parse CPU pins (which host cores are assigned)
       const cpuPins = this._parseCpuPinsFromXml(xml);
 
@@ -2088,6 +2108,7 @@ class VmService {
         memoryHuman,
         cpus: vcpu,
         cpuPins,
+        hugepages,
         platform,
         bios,
         disks,
