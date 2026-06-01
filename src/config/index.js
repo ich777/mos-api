@@ -51,6 +51,8 @@ class Config {
         const jwtSecret = crypto.randomBytes(32).toString('hex');
         envVars = {
           PORT: '998',
+          SOCKET_PATH: '/run/mos-api.sock',
+          LISTEN_TCP: 'false',
           JWT_SECRET: jwtSecret,
           JWT_EXPIRY_DAYS: '7',
           RATE_LIMIT_WINDOW: '1',
@@ -65,6 +67,8 @@ class Config {
       // Ensure all required env vars exist with defaults
       const requiredEnvVars = {
         PORT: '998',
+        SOCKET_PATH: '/run/mos-api.sock',
+        LISTEN_TCP: 'false',
         JWT_SECRET: crypto.randomBytes(32).toString('hex'),
         JWT_EXPIRY_DAYS: '7',
         RATE_LIMIT_WINDOW: '1',

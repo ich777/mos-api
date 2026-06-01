@@ -9,6 +9,7 @@ const { Server } = require('socket.io');
 const { execSync } = require('child_process');
 const net = require('net');
 const WebSocket = require('ws');
+const fs = require('fs');
 
 // Enable timestamp logging and format as YYYY-MM-DD HH:MM:SS (local time)
 require('log-timestamp')(function() {
@@ -276,12 +277,14 @@ async function startServer() {
   });
 
   const PORT = process.env.PORT || 998;
+  const TCP_ENABLED = String(process.env.LISTEN_TCP).toLowerCase() === 'true';
+  const SOCKET_PATH = process.env.SOCKET_PATH || '/run/mos-api.sock';
 
-  // Create HTTP server for Socket.io
-  const server = http.createServer(app);
+  // Track all active HTTP servers
+  const servers = [];
 
   // Initialize Socket.io
-  const io = new Server(server, {
+  const io = new Server({
     path: "/api/v1/socket.io/",
     cors: {
       origin: "*",
@@ -517,7 +520,7 @@ async function startServer() {
   });
 
   // Handle HTTP upgrade requests for VNC WebSocket
-  server.on('upgrade', (req, socket, head) => {
+  function handleVncUpgrade(req, socket, head) {
     const pathname = req.url;
 
     // Check if this is a VNC WebSocket request
@@ -542,12 +545,10 @@ async function startServer() {
         vncWss.emit('connection', ws, req, session);
       });
     }
-  });
+  }
 
-  server.listen(PORT, '0.0.0.0', async () => {
-    console.info(`API running on port ${PORT}`);
-
-    // Initialize Startup-Caches after server start
+  // Initialize Startup-Caches, SMART monitoring and Pools
+  async function initServices() {
     try {
       const disksService = require('./services/disks.service');
       await disksService.initializeStartupCache({ wakeStandbyDisks: false });
@@ -555,7 +556,6 @@ async function startServer() {
       console.error(`Error initializing Disk Startup-Cache: ${error.message}`);
     }
 
-    // Initialize SMART monitoring service
     try {
       const smartService = require('./services/smart.service');
       await smartService.initialize();
@@ -563,7 +563,6 @@ async function startServer() {
       console.error(`Error initializing SMART service: ${error.message}`);
     }
 
-    // Initialize Pools after server start
     try {
       const PoolsService = require('./services/pools.service');
       const poolsService = new PoolsService();
@@ -571,13 +570,87 @@ async function startServer() {
     } catch (error) {
       console.error(`Error initializing Pools: ${error.message}`);
     }
-  });
+  }
+
+  // Create HTTP server, attach Socket.io and VNC upgrade handling
+  function createApiServer() {
+    const srv = http.createServer(app);
+    io.attach(srv);
+    srv.on('upgrade', handleVncUpgrade);
+    return srv;
+  }
+
+  // Start listening on the Unix socket, optional TCP
+  async function startListening() {
+    const transports = ['socket'];
+    if (TCP_ENABLED) transports.push('tcp');
+
+    for (const transport of transports) {
+      const srv = createApiServer();
+
+      if (transport === 'socket') {
+        // Remove stale socket file from a previous run
+        try {
+          if (fs.existsSync(SOCKET_PATH)) fs.unlinkSync(SOCKET_PATH);
+        } catch (err) {
+          console.warn(`Could not remove stale socket ${SOCKET_PATH}: ${err.message}`);
+        }
+
+        await new Promise((resolve, reject) => {
+          srv.once('error', reject);
+          srv.listen(SOCKET_PATH, () => {
+            srv.removeListener('error', reject);
+            // Set permissions so nginx can talk to the socket with fallback
+            const socketGroup = process.env.SOCKET_GROUP || 'www-data';
+            try {
+              execSync(`chgrp ${socketGroup} ${SOCKET_PATH}`, { stdio: 'ignore' });
+              fs.chmodSync(SOCKET_PATH, 0o660);
+            } catch (err) {
+              console.warn(`Could not set group "${socketGroup}" on ${SOCKET_PATH} (${err.message}); falling back to 0o666`);
+              try {
+                fs.chmodSync(SOCKET_PATH, 0o666);
+              } catch (chmodErr) {
+                console.warn(`Could not chmod socket ${SOCKET_PATH}: ${chmodErr.message}`);
+              }
+            }
+            console.info(`API listening on Unix socket ${SOCKET_PATH}`);
+            resolve();
+          });
+        });
+      } else {
+        await new Promise((resolve, reject) => {
+          srv.once('error', reject);
+          srv.listen(PORT, '0.0.0.0', () => {
+            srv.removeListener('error', reject);
+            console.info(`API listening on TCP port ${PORT}`);
+            resolve();
+          });
+        });
+      }
+
+      servers.push(srv);
+    }
+
+    await initServices();
+  }
+
+  await startListening();
 }
 
 startServer().catch(error => {
   console.error('Server startup failed:', error.message);
   process.exit(1);
 });
+
+// Remove the Unix socket file on shutdown so the next start can bind cleanly
+function cleanupSocketFile() {
+  const socketPath = process.env.SOCKET_PATH || '/run/mos-api.sock';
+  try {
+    if (fs.existsSync(socketPath)) fs.unlinkSync(socketPath);
+  } catch (err) {
+    console.warn(`Could not remove socket file ${socketPath} on shutdown: ${err.message}`);
+  }
+}
 
 // Graceful shutdown - end Terminal-Sessions and VNC sessions
 process.on('SIGTERM', () => {
@@ -586,6 +659,7 @@ process.on('SIGTERM', () => {
   const vncService = require('./services/vnc.service');
   terminalService.shutdown();
   vncService.shutdown();
+  cleanupSocketFile();
   process.exit(0);
 });
 
@@ -595,5 +669,6 @@ process.on('SIGINT', () => {
   const vncService = require('./services/vnc.service');
   terminalService.shutdown();
   vncService.shutdown();
+  cleanupSocketFile();
   process.exit(0);
 });
