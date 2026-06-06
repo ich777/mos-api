@@ -5709,9 +5709,10 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
    * @param {string} disk - Disk device (e.g., /dev/sda)
    * @param {string} filesystem - Filesystem type (vfat, ext4, btrfs, xfs)
    * @param {boolean} extra_partition - Whether to create an extra partition (default: false)
+   * @param {string} tar_file - Optional tar file path to restore from backup (default: '')
    * @returns {Promise<Object>} Installation status
    */
-  async installToDisk(disk, filesystem, extra_partition = false) {
+  async installToDisk(disk, filesystem, extra_partition = false, tar_file = '') {
     try {
       // Parameter validation
       if (!disk || typeof disk !== 'string') {
@@ -5728,8 +5729,8 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
         throw new Error(`filesystem must be one of: ${validFilesystems.join(', ')}`);
       }
 
-      // Build command: bash /usr/local/bin/mos-install disk filesystem quiet extra_partition
-      const command = `bash /usr/local/bin/mos-install ${disk} ${filesystem} quiet ${extra_partition} api`;
+      // Build command: bash /usr/local/bin/mos-install disk filesystem quiet extra_partition api tar_file
+      const command = `bash /usr/local/bin/mos-install ${disk} ${filesystem} quiet ${extra_partition} api ${tar_file}`;
 
       // Execute script
       const { stdout, stderr } = await execPromise(command);
@@ -5740,6 +5741,7 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
         disk,
         filesystem,
         extra_partition,
+        tar_file,
         command,
         output: stdout,
         error: null,
@@ -5753,6 +5755,8 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
         error: error.message,
         disk: disk || null,
         filesystem: filesystem || null,
+        extra_partition: extra_partition || null,
+        tar_file: tar_file || null,
         timestamp: new Date().toISOString()
       };
     }
@@ -7407,6 +7411,68 @@ lxc.net.0.hwaddr = 00:16:3e:xx:xx:xx
     }
 
     return current;
+  }
+
+  /**
+   * Get boot backup files from backup plugin settings
+   * Returns array of full paths to .tar and .tar.gz files in the boot backup destination
+   * Returns empty array if backup plugin not installed or no backup path configured
+   * @returns {Promise<Array<string>>} Array of full file paths to backup archives
+   */
+  async getBootBackupFiles() {
+    const backupSettingsPath = '/boot/optional/plugins/backup/settings.json';
+
+    // Check if backup plugin is installed
+    try {
+      await fs.access(backupSettingsPath);
+    } catch (error) {
+      // Backup plugin not installed
+      return [];
+    }
+
+    // Read backup settings
+    let settings;
+    try {
+      const data = await fs.readFile(backupSettingsPath, 'utf8');
+      settings = JSON.parse(data);
+    } catch (error) {
+      console.warn('Failed to read backup settings:', error.message);
+      return [];
+    }
+
+    // Extract boot backup destination
+    const bootDestination = settings?.boot?.destination;
+    if (!bootDestination || typeof bootDestination !== 'string' || bootDestination.trim() === '') {
+      return [];
+    }
+
+    // Check if destination directory exists
+    try {
+      await fs.access(bootDestination);
+    } catch (error) {
+      // Directory doesn't exist
+      return [];
+    }
+
+    // Read directory and filter for .tar and .tar.gz files
+    try {
+      const entries = await fs.readdir(bootDestination, { withFileTypes: true });
+      const backupFiles = [];
+
+      for (const entry of entries) {
+        if (entry.isFile()) {
+          const fileName = entry.name;
+          if (fileName.endsWith('.tar.gz') || fileName.endsWith('.tar')) {
+            backupFiles.push(path.join(bootDestination, fileName));
+          }
+        }
+      }
+
+      return backupFiles;
+    } catch (error) {
+      console.warn('Failed to read boot backup directory:', error.message);
+      return [];
+    }
   }
 }
 

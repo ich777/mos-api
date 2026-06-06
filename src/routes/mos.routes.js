@@ -4546,6 +4546,59 @@ router.post('/rollbackkernel', async (req, res) => {
 
 /**
  * @swagger
+ * /mos/bootbackupfiles:
+ *   get:
+ *     summary: Get boot backup files
+ *     description: Retrieve array of .tar and .tar.gz backup files from the boot backup destination (admin only). Returns empty array if backup plugin not installed or no backup path configured
+ *     tags: [MOS]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Boot backup files retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: string
+ *                 description: Full file path to backup archive
+ *                 example: "/mnt/cache/backup/boot/backup-2024-01-15.tar.gz"
+ *         example:
+ *           - "/mnt/cache/backup/boot/backup-2026-05-24_05-00-01.tar"
+ *           - "/mnt/cache/backup/boot/backup-2026-05-31_05-00-09.tar"
+ *       401:
+ *         description: Not authenticated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       403:
+ *         description: Admin permission required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
+
+// GET: Get boot backup files
+router.get('/bootbackupfiles', async (req, res) => {
+  try {
+    const files = await mosService.getBootBackupFiles();
+    res.json(files);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
  * /mos/installtodisk:
  *   post:
  *     summary: Install MOS to disk
@@ -4577,10 +4630,16 @@ router.post('/rollbackkernel', async (req, res) => {
  *                 description: Whether to create an extra partition
  *                 default: false
  *                 example: false
+ *               tar_file:
+ *                 type: string
+ *                 description: Optional path to tar backup file for restoration
+ *                 default: ""
+ *                 example: "/mnt/cache/backup/boot/backup-2026-05-31_05-00-09.tar"
  *           example:
  *             disk: "/dev/sda"
  *             filesystem: "ext4"
  *             extra_partition: false
+ *             tar_file: "/mnt/cache/backup/boot/backup-2026-05-31_05-00-09.tar"
  *     responses:
  *       200:
  *         description: MOS installation to disk initiated successfully
@@ -4604,6 +4663,9 @@ router.post('/rollbackkernel', async (req, res) => {
  *                 extra_partition:
  *                   type: boolean
  *                   example: false
+ *                 tar_file:
+ *                   type: string
+ *                   example: "/mnt/cache/backup/boot/backup-2026-05-31_05-00-09.tar"
  *                 command:
  *                   type: string
  *                   example: "bash /usr/local/bin/mos-install /dev/sda ext4 quiet false"
@@ -4653,7 +4715,7 @@ router.post('/rollbackkernel', async (req, res) => {
 // POST: Install MOS to disk
 router.post('/installtodisk', async (req, res) => {
   try {
-    const { disk, filesystem, extra_partition = false } = req.body;
+    const { disk, filesystem, extra_partition = false, tar_file = '' } = req.body;
 
     if (!disk) {
       return res.status(400).json({
@@ -4669,7 +4731,7 @@ router.post('/installtodisk', async (req, res) => {
       });
     }
 
-    const result = await mosService.installToDisk(disk, filesystem, extra_partition);
+    const result = await mosService.installToDisk(disk, filesystem, extra_partition, tar_file);
 
     if (result.success) {
       res.json(result);
