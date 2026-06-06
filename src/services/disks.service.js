@@ -3575,9 +3575,11 @@ class DisksService {
       throw new Error(`Mount point ${baseMountPoint} is already in use`);
     }
 
-    // Build mount command
+    // Build mount command with filesystem-specific handling
     let mountCommand;
-    if (deviceInfo.filesystem === 'btrfs') {
+    if (deviceInfo.filesystem === 'ntfs' || deviceInfo.filesystem === 'ntfs3' || deviceInfo.filesystem === 'ntfs-3g') {
+      mountCommand = `mount -t ntfs3 -o ${mountOptions} ${devicePath} ${baseMountPoint}`;
+    } else if (deviceInfo.filesystem === 'btrfs') {
       mountCommand = `mount -o ${mountOptions},degraded ${devicePath} ${baseMountPoint}`;
     } else {
       mountCommand = `mount -o ${mountOptions} ${devicePath} ${baseMountPoint}`;
