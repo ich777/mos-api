@@ -3578,7 +3578,7 @@ class DisksService {
     // Build mount command with filesystem-specific handling
     let mountCommand;
     if (deviceInfo.filesystem === 'ntfs' || deviceInfo.filesystem === 'ntfs3' || deviceInfo.filesystem === 'ntfs-3g') {
-      mountCommand = `mount -t ntfs3 -o ${mountOptions} ${devicePath} ${baseMountPoint}`;
+      mountCommand = `mount -t ntfs3 -o force ${devicePath} ${baseMountPoint}`;
     } else if (deviceInfo.filesystem === 'btrfs') {
       mountCommand = `mount -o ${mountOptions},degraded ${devicePath} ${baseMountPoint}`;
     } else {
