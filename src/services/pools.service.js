@@ -9,7 +9,7 @@ const PoolHelpers = require('./pools/pool-helpers');
 const disksService = require('./disks.service');
 const { sendNotification } = require('./plugins.service');
 
-// Timestamp-basierter ID-Generator
+// Timestamp-based ID-Generator
 const generateId = () => Date.now().toString();
 
 class PoolsService {
@@ -97,6 +97,15 @@ class PoolsService {
       this._initBtrfsScrubMonitor();
       this._initBtrfsBalanceMonitor();
       PoolsService._btrfsMonitorsInitialized = true;
+    }
+
+    // Pool usage alert monitor (singleton: only one interval across all instances)
+    if (!PoolsService._usageMonitorStarted) {
+      // poolId -> { level: 'normal'|'warning'|'alert', percent: number }
+      PoolsService._usageAlertState = new Map();
+      PoolsService._usageMonitorInterval = null;
+      this._startUsageAlertMonitor();
+      PoolsService._usageMonitorStarted = true;
     }
   }
 
@@ -2495,6 +2504,31 @@ class PoolsService {
       pool.config.sync.scrub = {
         enabled: false,
         schedule: "0 4 * * WED"
+      };
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Ensure that usage alert configuration exists in pool config.
+   * Defaults: warning at 70%, alert at 90% (percent of pool usage).
+   * A threshold value of 0 disables that level; warning=0 AND alert=0
+   * disables monitoring for the pool entirely.
+   * @param {Object} pool - Pool object
+   * @returns {boolean} - Whether the pool was modified
+   * @private
+   */
+  _ensureUsageAlertConfig(pool) {
+    if (!pool.config) {
+      pool.config = {};
+    }
+
+    if (!pool.config.usage_alert) {
+      pool.config.usage_alert = {
+        warning: 70,
+        alert: 90
       };
       return true;
     }
@@ -5752,6 +5786,10 @@ class PoolsService {
         if (this._ensureBtrfsBalanceConfig(pool)) {
           poolsModified = true;
         }
+        // Ensure usage alert config exists for all pools
+        if (this._ensureUsageAlertConfig(pool)) {
+          poolsModified = true;
+        }
       }
 
       // Save pools if any were modified
@@ -5843,6 +5881,10 @@ class PoolsService {
         await this._writePools(pools);
       }
       if (this._ensureBtrfsBalanceConfig(pool)) {
+        await this._writePools(pools);
+      }
+      // Ensure usage alert config exists
+      if (this._ensureUsageAlertConfig(pool)) {
         await this._writePools(pools);
       }
 
@@ -5983,6 +6025,11 @@ class PoolsService {
 
       if (!pool) {
         throw new Error(`Pool with ID "${poolId}" not found`);
+      }
+
+      // Ensure usage alert defaults (70/90) are present and persisted
+      if (this._ensureUsageAlertConfig(pool)) {
+        await this._writePools(pools);
       }
 
       return pool.config || {};
@@ -9465,6 +9512,165 @@ class PoolsService {
     } catch (error) {
       return 'unknown';
     }
+  }
+
+  /**
+   * Start the pool usage alert monitor.
+   * Runs a single interval (every 10 minutes) that checks the usage of all
+   * mounted, awake pools against their configured warning/alert thresholds.
+   * Cheap by design: df reads cached filesystem stats (no disk wake-up) and
+   * pools in standby are skipped entirely (their usage cannot change).
+   * @private
+   */
+  _startUsageAlertMonitor() {
+    const intervalMs = 10 * 60 * 1000; // 10 minutes
+
+    PoolsService._usageMonitorInterval = setInterval(() => {
+      this._checkPoolsUsage().catch(err =>
+        console.warn(`Pool usage check failed: ${err.message}`));
+    }, intervalMs);
+
+    // Don't keep the process alive just for this timer
+    if (PoolsService._usageMonitorInterval.unref) {
+      PoolsService._usageMonitorInterval.unref();
+    }
+
+    // Initial delayed run after startup
+    setTimeout(() => {
+      this._checkPoolsUsage().catch(err =>
+        console.warn(`Pool usage check failed: ${err.message}`));
+    }, 15 * 1000);
+
+    console.log('Pool usage alert monitor started (interval: 10min)');
+  }
+
+  /**
+   * Stop the pool usage alert monitor.
+   * @private
+   */
+  _stopUsageAlertMonitor() {
+    if (PoolsService._usageMonitorInterval) {
+      clearInterval(PoolsService._usageMonitorInterval);
+      PoolsService._usageMonitorInterval = null;
+    }
+  }
+
+  /**
+   * Check usage for all pools (processed sequentially to avoid load spikes).
+   * @private
+   */
+  async _checkPoolsUsage() {
+    let pools;
+    try {
+      pools = await this._readPools();
+    } catch (error) {
+      console.warn(`Pool usage monitor: could not read pools: ${error.message}`);
+      return;
+    }
+
+    // Sequential on purpose: spreads the few smartctl/df calls over time
+    for (const pool of pools) {
+      try {
+        await this._checkSinglePoolUsage(pool);
+      } catch (error) {
+        console.warn(`Usage check failed for pool ${pool.name}: ${error.message}`);
+      }
+    }
+  }
+
+  /**
+   * Check a single pool's usage against its thresholds and notify on changes.
+   * Notification rules (anti-spam):
+   * - Notify when the level changes (normal/warning/alert), in either direction.
+   * - Within an elevated level, notify only when the usage percent value changes.
+   * - Stable usage at the same level stays silent.
+   * @param {Object} pool - Pool object (raw, from _readPools)
+   * @private
+   */
+  async _checkSinglePoolUsage(pool) {
+    const cfg = pool.config && pool.config.usage_alert;
+    const warning = Number.isFinite(cfg && cfg.warning) ? cfg.warning : 70;
+    const alert = Number.isFinite(cfg && cfg.alert) ? cfg.alert : 90;
+
+    // Both thresholds disabled -> skip this pool entirely
+    if (warning === 0 && alert === 0) {
+      PoolsService._usageAlertState.delete(pool.id);
+      return;
+    }
+
+    const mountPoint = path.join(this.mountBasePath, pool.name);
+    if (!(await this._isMounted(mountPoint))) {
+      PoolsService._usageAlertState.delete(pool.id);
+      return;
+    }
+
+    // Skip sleeping pools: nothing can write, so usage cannot have changed.
+    // _getPoolPowerStatus uses smartctl -n standby and does NOT wake disks.
+    const powerStatus = await this._getPoolPowerStatus(pool.id);
+    if (powerStatus === 'standby') {
+      return; // keep last known state untouched
+    }
+
+    const space = await this.getDeviceSpace(mountPoint);
+    if (!space || !space.mounted || typeof space.usagePercent !== 'number') {
+      return;
+    }
+    const percent = Math.round(space.usagePercent);
+
+    // Determine current level (a threshold of 0 disables that level)
+    let level = 'normal';
+    if (alert > 0 && percent >= alert) {
+      level = 'alert';
+    } else if (warning > 0 && percent >= warning) {
+      level = 'warning';
+    }
+
+    const prev = PoolsService._usageAlertState.get(pool.id) || { level: 'normal', percent: null };
+
+    let notify = false;
+    if (level !== prev.level) {
+      notify = true; // escalation or recovery
+    } else if (level !== 'normal' && percent !== prev.percent) {
+      notify = true; // same elevated level, but usage value changed
+    }
+
+    if (notify) {
+      this._sendUsageNotification(pool, level, prev.level, percent);
+    }
+
+    PoolsService._usageAlertState.set(pool.id, { level, percent });
+  }
+
+  /**
+   * Send a pool usage notification for the given level transition.
+   * @param {Object} pool - Pool object
+   * @param {string} level - New level: 'normal' | 'warning' | 'alert'
+   * @param {string} prevLevel - Previous level
+   * @param {number} percent - Current usage percent
+   * @private
+   */
+  _sendUsageNotification(pool, level, prevLevel, percent) {
+    let message;
+    let priority;
+
+    if (level === 'alert') {
+      message = `Pool "${pool.name}" usage at ${percent}% - alert threshold reached`;
+      priority = 'alert';
+    } else if (level === 'warning') {
+      if (prevLevel === 'alert') {
+        message = `Pool "${pool.name}" usage dropped to ${percent}% - back to warning level`;
+      } else {
+        message = `Pool "${pool.name}" usage at ${percent}% - warning threshold reached`;
+      }
+      priority = 'warning';
+    } else {
+      // Recovery to normal
+      message = `Pool "${pool.name}" usage back to normal at ${percent}%`;
+      priority = 'normal';
+    }
+
+    sendNotification('Pool Usage', message, priority)
+      .catch(err => console.warn(`Failed to send pool usage notification: ${err.message}`));
   }
 
   /**

@@ -706,6 +706,14 @@ router.patch('/:id/comment', checkRole(['admin']), async (req, res) => {
  *               sync.schedule:
  *                 type: string
  *                 description: SnapRAID sync cron schedule (dot-notation example)
+ *               usage_alert.warning:
+ *                 type: integer
+ *                 description: "Usage warning threshold in percent (default 70). 0 disables the warning level."
+ *                 example: 70
+ *               usage_alert.alert:
+ *                 type: integer
+ *                 description: "Usage alert threshold in percent (default 90). 0 disables the alert level. warning=0 AND alert=0 disables usage monitoring for the pool."
+ *                 example: 90
  *           examples:
  *             shared:
  *               summary: Toggle shared status
