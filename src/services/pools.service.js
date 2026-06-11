@@ -2771,6 +2771,7 @@ class PoolsService {
           shared: options.config?.shared || false,
           raid_level: raidLevel,
           unclean_check: true,
+          usage_alert: { warning: 70, alert: 90 },
           ...(options.config || {})
         }
       };
@@ -4084,6 +4085,7 @@ class PoolsService {
         config: {
           encrypted: options.config?.encrypted || false,
           shared: options.config?.shared || false,
+          usage_alert: { warning: 70, alert: 90 },
           ...(options.config || {})
         }
       };
@@ -6072,6 +6074,17 @@ class PoolsService {
         }
       });
 
+      // Store usage alert thresholds as integers, so numeric strings like "50"
+      // are not silently ignored by the monitor's Number.isFinite check later.
+      if (pool.config.usage_alert && typeof pool.config.usage_alert === 'object') {
+        ['warning', 'alert'].forEach(level => {
+          const value = pool.config.usage_alert[level];
+          if (value !== undefined) {
+            pool.config.usage_alert[level] = parseInt(value, 10);
+          }
+        });
+      }
+
       await this._writePools(pools);
 
       // Execute mos-cron_update after pool configuration changes (schedule updates)
@@ -7228,6 +7241,7 @@ class PoolsService {
           ...mergerfsConfig,
           encrypted: options.config?.encrypted || false,
           unclean_check: true,
+          usage_alert: { warning: 70, alert: 90 },
           ...(options.config || {})
         }
       };
@@ -7688,6 +7702,7 @@ class PoolsService {
         shared: options.config?.shared || false,
         unclean_check: true,
         md_writemode: options.config?.md_writemode || 'normal', // normal or turbo
+        usage_alert: { warning: 70, alert: 90 },
         ...(options.config || {})
       };
 
