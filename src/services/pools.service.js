@@ -6062,6 +6062,11 @@ class PoolsService {
         pool.config = {};
       }
 
+      // Capture whether usage monitoring was active before this update, so we
+      // can notify once when it gets disabled (both thresholds set to 0).
+      const prevUsageAlert = pool.config.usage_alert;
+      const usageWasEnabled = !prevUsageAlert || prevUsageAlert.warning !== 0 || prevUsageAlert.alert !== 0;
+
       // Update config with provided values
       // Supports both direct properties and dot-notation (e.g., "sync.enabled")
       Object.keys(configUpdates).forEach(key => {
@@ -6086,6 +6091,19 @@ class PoolsService {
       }
 
       await this._writePools(pools);
+
+      // Notify once when usage monitoring was just turned off (both thresholds
+      // set to 0). Otherwise a pool that was at warning/alert level would stay
+      // silent with no closing message.
+      const newUsageAlert = pool.config.usage_alert;
+      const usageNowDisabled = newUsageAlert && newUsageAlert.warning === 0 && newUsageAlert.alert === 0;
+      if (usageNowDisabled && usageWasEnabled) {
+        if (PoolsService._usageAlertState) {
+          PoolsService._usageAlertState.delete(pool.id);
+        }
+        sendNotification('Pool Usage', `Pool "${pool.name}" usage monitoring disabled`, 'normal')
+          .catch(err => console.warn(`Failed to send pool usage notification: ${err.message}`));
+      }
 
       // Execute mos-cron_update after pool configuration changes (schedule updates)
       try {
