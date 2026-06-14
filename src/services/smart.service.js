@@ -67,6 +67,7 @@ class SmartService {
     this._attrCooldowns = new Map();
     this._tempWarnings = new Map();
     this._tempCriticals = new Map();
+    this._rotationCache = new Map();
     this._initialized = false;
     this._lastStateChange = null;
   }
@@ -388,8 +389,7 @@ class SmartService {
       if (data.blockdevices) {
         for (const dev of data.blockdevices) {
           if (dev.type !== 'disk' || !dev.serial) continue;
-          const diskType = dev.tran === 'nvme' ? 'nvme'
-            : (!dev.rota || dev['disc-gran']) ? 'ssd' : 'hdd';
+          const diskType = this._detectDiskType(dev.serial, dev);
           this.serialDeviceMap.set(dev.serial, {
             name: dev.name,
             model: dev.model || 'Unknown',
@@ -400,6 +400,43 @@ class SmartService {
       }
     } catch (error) {
       console.warn(`[SmartService] Serial mapping update failed: ${error.message}`);
+    }
+  }
+
+  /**
+   * Detect disk type from lsblk data + smartctl rotation cache.
+   * USB SSDs often report rota=true; the rotation cache (fed by smartctl) corrects this.
+   * @param {string} serial - Disk serial number
+   * @param {Object} dev - lsblk block device entry
+   * @returns {string} 'nvme', 'ssd', or 'hdd'
+   * @private
+   */
+  _detectDiskType(serial, dev) {
+    if (dev.tran === 'nvme') return 'nvme';
+    const cached = serial ? this._rotationCache.get(serial) : null;
+    if (cached) return cached;
+    if (dev.rota === false || dev.rota === 0 || dev.rota === '0') return 'ssd';
+    if (parseInt(dev['disc-gran']) > 0) return 'ssd';
+    return 'hdd';
+  }
+
+  /**
+   * Record authoritative disk type from smartctl rotation_rate into cache and config.
+   * Called from _buildFromSmartctlJson — no extra disk wakeup.
+   * @param {string} serial - Disk serial number
+   * @param {string} rtype - 'ssd' or 'hdd'
+   * @private
+   */
+  _updateRotationType(serial, rtype) {
+    if (!serial || (rtype !== 'ssd' && rtype !== 'hdd')) return;
+    this._rotationCache.set(serial, rtype);
+    const info = this.serialDeviceMap.get(serial);
+    if (info && info.diskType !== 'nvme') info.diskType = rtype;
+    if (this.config && this.config.disks[serial] &&
+        this.config.disks[serial].diskType !== 'nvme' &&
+        this.config.disks[serial].diskType !== rtype) {
+      this.config.disks[serial].diskType = rtype;
+      this._saveConfig().catch(() => {});
     }
   }
 
@@ -421,8 +458,7 @@ class SmartService {
       const data = JSON.parse(stdout);
       if (data.blockdevices && data.blockdevices[0]) {
         const dev = data.blockdevices[0];
-        const diskType = dev.tran === 'nvme' ? 'nvme'
-          : (!dev.rota || dev['disc-gran']) ? 'ssd' : 'hdd';
+        const diskType = this._detectDiskType(dev.serial, dev);
         if (dev.serial) {
           this.serialDeviceMap.set(dev.serial, {
             name: dev.name, model: dev.model || 'Unknown', diskType, tran: dev.tran
@@ -924,9 +960,13 @@ class SmartService {
       return response;
     }
 
+    // USB bridges need -d sat for SMART access
+    const dFlag = { usb: 'sat', sas: 'scsi' }[deviceInfo.tran] || '';
+    const dArg = dFlag ? `-d ${dFlag} ` : '';
+
     // Try smartctl JSON mode
     try {
-      const { stdout } = await execPromise(`smartctl -j -a ${devicePath} 2>&1 || true`);
+      const { stdout } = await execPromise(`smartctl -j -a ${dArg}${devicePath} 2>&1 || true`);
       const data = JSON.parse(stdout);
 
       if (data.smartctl && (data.smartctl.exit_status & 2)) {
@@ -934,20 +974,22 @@ class SmartService {
         return response;
       }
 
-      return this._buildFromSmartctlJson(response, data);
+      this._buildFromSmartctlJson(response, data);
+      if (response.attributes || response.smartStatus) return response;
     } catch { /* JSON mode not available or parse failed */ }
 
     // Fallback: smartctl text mode
     try {
-      const { stdout } = await execPromise(`smartctl -a ${devicePath} 2>&1 || true`);
+      const { stdout } = await execPromise(`smartctl -a ${dArg}${devicePath} 2>&1 || true`);
       if (stdout.includes('Device is in STANDBY mode')) {
         response.sleeping = true;
         return response;
       }
-      return this._buildFromSmartctlText(response, stdout);
+      this._buildFromSmartctlText(response, stdout);
+      if (response.attributes || response.smartStatus) return response;
     } catch { /* smartctl failed entirely */ }
 
-    // Last resort: state file data
+    // Last resort: state file (has attributes even when smartctl can't read over USB)
     if (serial) {
       const stateData = this._findStateForSerial(serial);
       if (stateData) return this._buildFromStateFile(response, stateData);
@@ -986,6 +1028,13 @@ class SmartService {
     if (data.serial_number) response.serial = data.serial_number;
     if (data.model_name) response.model = data.model_name;
 
+    // Authoritative disk type from rotation_rate (0 = SSD, >0 = spinning HDD)
+    if (typeof data.rotation_rate === 'number' && response.serial) {
+      const rtype = data.rotation_rate === 0 ? 'ssd' : 'hdd';
+      this._updateRotationType(response.serial, rtype);
+      if (response.diskType !== 'nvme') response.diskType = rtype;
+    }
+
     if (data.ata_smart_attributes?.table) {
       response.attributes = data.ata_smart_attributes.table.map(attr => ({
         id: attr.id,
@@ -1007,28 +1056,31 @@ class SmartService {
       response.powerOnHours = nvme.power_on_hours ?? null;
       response.powerCycleCount = nvme.power_cycles ?? null;
       response.errorCount = nvme.media_errors ?? null;
+      const a = (id, name, rawValue, status = 'ok') => ({
+        id, name, value: null, worst: null, threshold: null, rawValue, status
+      });
       response.attributes = [
-        {
-          id: 0, name: 'Critical_Warning', value: null, worst: null,
+        { id: 0, name: 'Critical_Warning', value: null, worst: null,
           threshold: null, rawValue: nvme.critical_warning ?? 0,
-          status: nvme.critical_warning ? 'failing' : 'ok'
-        },
-        {
-          id: 1, name: 'Available_Spare', value: nvme.available_spare ?? null, worst: null,
+          status: nvme.critical_warning ? 'failing' : 'ok' },
+        { id: 1, name: 'Available_Spare', value: nvme.available_spare ?? null, worst: null,
           threshold: nvme.available_spare_threshold ?? null, rawValue: nvme.available_spare ?? null,
-          status: (nvme.available_spare ?? 100) < (nvme.available_spare_threshold ?? 0) ? 'failing' : 'ok'
-        },
-        {
-          id: 2, name: 'Media_Errors', value: null, worst: null,
+          status: (nvme.available_spare ?? 100) < (nvme.available_spare_threshold ?? 0) ? 'failing' : 'ok' },
+        { id: 2, name: 'Media_Errors', value: null, worst: null,
           threshold: null, rawValue: nvme.media_errors ?? 0,
-          status: nvme.media_errors ? 'warning' : 'ok'
-        },
-        {
-          id: 3, name: 'Percentage_Used', value: null, worst: null,
-          threshold: null, rawValue: nvme.percentage_used ?? 0,
-          status: (nvme.percentage_used ?? 0) >= 100 ? 'warning' : 'ok'
-        }
-      ];
+          status: nvme.media_errors ? 'warning' : 'ok' },
+        a(3, 'Percentage_Used', nvme.percentage_used ?? 0,
+          (nvme.percentage_used ?? 0) >= 100 ? 'warning' : 'ok'),
+        a(4, 'Data_Units_Read', nvme.data_units_read ?? null),
+        a(5, 'Data_Units_Written', nvme.data_units_written ?? null),
+        a(6, 'Host_Read_Commands', nvme.host_reads ?? null),
+        a(7, 'Host_Write_Commands', nvme.host_writes ?? null),
+        a(8, 'Controller_Busy_Time', nvme.controller_busy_time ?? null),
+        a(9, 'Unsafe_Shutdowns', nvme.unsafe_shutdowns ?? null),
+        a(10, 'Error_Log_Entries', nvme.num_err_log_entries ?? null),
+        a(11, 'Warning_Comp_Temp_Time', nvme.warning_temp_time ?? null),
+        a(12, 'Critical_Comp_Temp_Time', nvme.critical_comp_time ?? null)
+      ].filter(attr => attr.rawValue !== null);
     }
 
     return response;
@@ -1285,7 +1337,9 @@ class SmartService {
         const disk = this.config.disks[serial];
         disk.lastSeen = new Date().toISOString();
         if (disk.model === 'Unknown' && info.model) disk.model = info.model;
-        if (disk.diskType === 'unknown' && info.diskType !== 'unknown') disk.diskType = info.diskType;
+        if (info.diskType && info.diskType !== 'unknown' && disk.diskType !== info.diskType) {
+          disk.diskType = info.diskType;
+        }
         configChanged = true;
       }
     }
