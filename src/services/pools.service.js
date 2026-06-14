@@ -9372,27 +9372,22 @@ class PoolsService {
   _getBaseDiskFromPartition(devicePath) {
     if (!devicePath) return devicePath;
 
-    // NVMe devices: /dev/nvme2n1p1 -> /dev/nvme2n1
-    if (devicePath.includes('nvme') && devicePath.match(/p\d+$/)) {
+    // Disks whose name ends in a digit use a 'p' separator for partitions
+    // (nvme, mmcblk, bcache, loop, md, mtdblk, zram, ...):
+    //   /dev/nvme2n1p1 -> /dev/nvme2n1, /dev/mmcblk0p1 -> /dev/mmcblk0
+    // A name WITHOUT a trailing 'pN' (e.g. /dev/nvme2n1) is already a base disk.
+    if (/\dp\d+$/.test(devicePath)) {
       return devicePath.replace(/p\d+$/, '');
     }
 
-    // bcache devices: /dev/bcache0p1 -> /dev/bcache0
-    if (devicePath.includes('bcache') && devicePath.match(/p\d+$/)) {
-      return devicePath.replace(/p\d+$/, '');
-    }
-
-    // MMC devices: /dev/mmcblk0p1 -> /dev/mmcblk0
-    if (devicePath.includes('mmcblk') && devicePath.match(/p\d+$/)) {
-      return devicePath.replace(/p\d+$/, '');
-    }
-
-    // Standard SATA/SAS devices: /dev/sdj1 -> /dev/sdj
-    if (devicePath.match(/\d+$/)) {
+    // SCSI/SATA/virtio/IDE style names end in a letter, so partitions are bare
+    // trailing digits (sdX/vdX/hdX/xvdX/srX): /dev/sdj1 -> /dev/sdj.
+    // Anchored so base disks ending in a digit are never falsely stripped.
+    if (/^\/dev\/(?:sd|vd|hd|xvd|sr)[a-z]+\d+$/.test(devicePath)) {
       return devicePath.replace(/\d+$/, '');
     }
 
-    // If no partition number, return as-is (already a base disk)
+    // Already a base disk (or mapper/unknown device) -> return unchanged
     return devicePath;
   }
 

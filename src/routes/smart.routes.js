@@ -109,6 +109,16 @@ const { checkRole } = require('../middleware/auth.middleware');
  *           type: string
  *           enum: [hdd, ssd, nvme, unknown]
  *           example: "hdd"
+ *         acknowledged:
+ *           type: object
+ *           description: |
+ *             Map of acknowledged SMART attribute baselines (attribute ID -> raw value at acknowledge time).
+ *             Notifications stay silent until an attribute's raw value rises above its baseline, but the
+ *             disk still reports warning=true so the error remains visible (unlike removing it from monitoring).
+ *           additionalProperties:
+ *             type: integer
+ *           example:
+ *             "5": 8
  *         warning:
  *           type: boolean
  *           readOnly: true
@@ -140,6 +150,31 @@ const { checkRole } = require('../middleware/auth.middleware');
  *           enum: [hdd, ssd, nvme, unknown]
  *           description: Type of disk as detected at last sync
  *           example: "hdd"
+ *     SmartAcknowledgeRequest:
+ *       type: object
+ *       description: |
+ *         Optional body for acknowledging SMART errors. Three modes:
+ *         (1) empty body -> acknowledge all currently reported monitored attributes (rawValue > 0);
+ *         (2) attributes -> acknowledge the listed attribute IDs at their current cached raw value;
+ *         (3) acknowledged -> set explicit baselines; an empty string or null clears that baseline.
+ *         Values are read from the cached smartd state, so no disk wakeup is triggered.
+ *       properties:
+ *         attributes:
+ *           type: array
+ *           items:
+ *             type: integer
+ *           description: Attribute IDs to acknowledge at their current cached raw value
+ *           example: [5, 187]
+ *         acknowledged:
+ *           type: object
+ *           description: Explicit baselines per attribute ID; empty string or null clears the baseline
+ *           additionalProperties:
+ *             oneOf:
+ *               - type: integer
+ *               - type: string
+ *           example:
+ *             "5": 8
+ *             "187": ""
  */
 
 /**
@@ -401,6 +436,162 @@ router.delete('/config/disks/:device', checkRole(['admin']), async (req, res) =>
   } catch (error) {
     if (error.message.includes('not found')) {
       return res.status(404).json({ error: error.message });
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /disks/smart/config/disks/{device}/acknowledge:
+ *   post:
+ *     summary: Acknowledge current SMART errors for a disk
+ *     description: |
+ *       Acknowledge the current raw values of a disk's monitored SMART attributes as a baseline.
+ *       Unlike removing an attribute from monitoring ("ignore"), acknowledged errors stay visible
+ *       (the disk keeps warning=true) but no further boot/live notifications are sent until a
+ *       value rises above its acknowledged baseline. Values are taken from the cached smartd state
+ *       (no disk wakeup). Send an empty body to acknowledge all currently reported attributes, or
+ *       { attributes: [187] } to acknowledge a specific attribute at its current value (no number needed).
+ *       A baseline can also be cleared inline by sending "" or null for an attribute under
+ *       "acknowledged"; to clear baselines explicitly use DELETE on the same path.
+ *     tags: [SMART]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: device
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Device name (e.g. sda, nvme0n1) or serial number
+ *         example: "sda"
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/SmartAcknowledgeRequest'
+ *           examples:
+ *             all:
+ *               summary: Acknowledge all current errors
+ *               value: {}
+ *             specific:
+ *               summary: Acknowledge specific attributes at current value
+ *               value:
+ *                 attributes: [5, 187]
+ *             explicit:
+ *               summary: Set explicit baselines ("" clears a baseline)
+ *               value:
+ *                 acknowledged:
+ *                   "5": 8
+ *                   "187": ""
+ *     responses:
+ *       200:
+ *         description: Errors acknowledged, returns updated disk configuration
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/SmartDiskConfig'
+ *       400:
+ *         description: Invalid request body
+ *       403:
+ *         description: Admin permission required
+ *       404:
+ *         description: Disk not found
+ *       500:
+ *         description: Server error
+ */
+router.post('/config/disks/:device/acknowledge', checkRole(['admin']), async (req, res) => {
+  try {
+    const serial = smartService.resolveToSerial(req.params.device);
+    if (!serial) {
+      return res.status(404).json({ error: `Disk ${req.params.device} not found` });
+    }
+    const config = await smartService.acknowledgeDiskErrors(serial, req.body || {});
+    res.json(config);
+  } catch (error) {
+    if (error.message.includes('not found')) {
+      return res.status(404).json({ error: error.message });
+    }
+    if (error.message.startsWith('Invalid')) {
+      return res.status(400).json({ error: error.message });
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /disks/smart/config/disks/{device}/acknowledge:
+ *   delete:
+ *     summary: Clear acknowledged SMART errors for a disk
+ *     description: |
+ *       Remove acknowledgement baselines for a disk. Send an empty body to clear all baselines,
+ *       or { attributes: [...] } to clear only specific attribute IDs. After clearing, the normal
+ *       boot/live notification behaviour applies again for those attributes.
+ *     tags: [SMART]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: device
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Device name (e.g. sda, nvme0n1) or serial number
+ *         example: "sda"
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               attributes:
+ *                 type: array
+ *                 items:
+ *                   type: integer
+ *                 description: Attribute IDs to clear; omit to clear all
+ *           examples:
+ *             all:
+ *               summary: Clear all baselines
+ *               value: {}
+ *             specific:
+ *               summary: Clear specific attributes
+ *               value:
+ *                 attributes: [5]
+ *     responses:
+ *       200:
+ *         description: Acknowledgement cleared, returns updated disk configuration
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/SmartDiskConfig'
+ *       400:
+ *         description: Invalid request body
+ *       403:
+ *         description: Admin permission required
+ *       404:
+ *         description: Disk not found
+ *       500:
+ *         description: Server error
+ */
+router.delete('/config/disks/:device/acknowledge', checkRole(['admin']), async (req, res) => {
+  try {
+    const serial = smartService.resolveToSerial(req.params.device);
+    if (!serial) {
+      return res.status(404).json({ error: `Disk ${req.params.device} not found` });
+    }
+    const attributeIds = req.body && Array.isArray(req.body.attributes) ? req.body.attributes : null;
+    const config = await smartService.clearDiskAcknowledgement(serial, attributeIds);
+    res.json(config);
+  } catch (error) {
+    if (error.message.includes('not found')) {
+      return res.status(404).json({ error: error.message });
+    }
+    if (error.message.startsWith('Invalid')) {
+      return res.status(400).json({ error: error.message });
     }
     res.status(500).json({ error: error.message });
   }

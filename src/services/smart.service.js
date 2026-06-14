@@ -115,11 +115,14 @@ class SmartService {
       const devName = deviceInfo ? deviceInfo.name : serial;
       const model = deviceInfo ? deviceInfo.model : diskConfig.model;
       const nonZero = [];
+      const ack = diskConfig.acknowledged || {};
 
       for (const attrId of monitored) {
         const attr = state.attributes[attrId];
         if (!attr || attr.rawValue === null || attr.rawValue === undefined) continue;
         if (attr.rawValue > 0) {
+          const baseline = ack[attrId];
+          if (baseline !== undefined && baseline !== null && attr.rawValue <= baseline) continue;
           const name = ATTRIBUTE_DISPLAY_NAMES[attrId] || ATTRIBUTE_NAMES[attrId] || `Attribute ${attrId}`;
           nonZero.push(`${name} (${attrId}): ${attr.rawValue}`);
         }
@@ -247,7 +250,11 @@ class SmartService {
     if (!this.config) return null;
     const result = { ...this.config, disks: {} };
     for (const [serial, diskConf] of Object.entries(this.config.disks)) {
-      result.disks[serial] = { ...diskConf, warning: this._hasDiskWarning(serial, diskConf) };
+      result.disks[serial] = {
+        ...diskConf,
+        acknowledged: diskConf.acknowledged || {},
+        warning: this._hasDiskWarning(serial, diskConf)
+      };
     }
     return result;
   }
@@ -275,7 +282,11 @@ class SmartService {
     if (!this.config) return null;
     const diskConf = this.config.disks[serial];
     if (!diskConf) return null;
-    return { ...diskConf, warning: this._hasDiskWarning(serial, diskConf) };
+    return {
+      ...diskConf,
+      acknowledged: diskConf.acknowledged || {},
+      warning: this._hasDiskWarning(serial, diskConf)
+    };
   }
 
   /**
@@ -289,7 +300,7 @@ class SmartService {
     if (!this.config.disks[serial]) {
       throw new Error(`Disk with serial ${serial} not found in configuration`);
     }
-    const { lastSeen, model, diskType, ...updatable } = partial;
+    const { lastSeen, model, diskType, acknowledged, ...updatable } = partial;
     this.config.disks[serial] = this._deepMerge(this.config.disks[serial], updatable);
     this.config.disks[serial].lastSeen = new Date().toISOString();
     await this._saveConfig();
@@ -312,6 +323,116 @@ class SmartService {
     await this._syncDisks();
     await this._generateSmartdConf();
     return { success: true, message: `Config for ${serial} deleted, will be re-added with defaults if disk is present` };
+  }
+
+  /**
+   * Acknowledge SMART errors for a disk by storing a baseline raw value per attribute.
+   * Notifications (boot + live) stay silent until a value rises above its baseline, but the
+   * warning indicator stays on so the error remains visible (unlike removing it from monitoring).
+   *
+   * Modes (combinable in a single call):
+   *  - attributes: number[]            -> acknowledge these at their current cached raw value (no number needed)
+   *  - acknowledged: { [id]: number }  -> set an explicit baseline (re-sending the same value is a no-op, no error)
+   *  - acknowledged: { [id]: ""|null } -> clear that baseline
+   *  - empty payload                   -> acknowledge all currently reported monitored attributes (rawValue > 0)
+   * Values are read from the cached smartd state (no disk wakeup).
+   * @param {string} serial - Disk serial number
+   * @param {Object} payload - Optional: { attributes?: number[], acknowledged?: { [id]: number|""|null } }
+   * @returns {Object} Updated disk configuration
+   */
+  async acknowledgeDiskErrors(serial, payload = {}) {
+    if (!this.config) await this._loadConfig();
+    const diskConf = this.config.disks[serial];
+    if (!diskConf) throw new Error(`Disk with serial ${serial} not found in configuration`);
+    if (!diskConf.acknowledged || typeof diskConf.acknowledged !== 'object') diskConf.acknowledged = {};
+
+    const hasExplicit = payload && payload.acknowledged && typeof payload.acknowledged === 'object';
+    const hasAttributes = Array.isArray(payload.attributes) && payload.attributes.length > 0;
+
+    // Explicit baselines: a number sets it, "" / null clears it
+    if (hasExplicit) {
+      for (const [id, value] of Object.entries(payload.acknowledged)) {
+        const attrId = this._parseAttributeId(id);
+        const parsed = this._parseAcknowledgedValue(value);
+        if (parsed === null) delete diskConf.acknowledged[attrId];
+        else diskConf.acknowledged[attrId] = parsed;
+      }
+    }
+
+    // Acknowledge at current cached value (no number needed): an explicit attribute list,
+    // or - when nothing at all was specified - every currently reported error.
+    if (hasAttributes || !hasExplicit) {
+      const state = this._findStateForSerial(serial);
+      const stateAttrs = state && state.attributes ? state.attributes : {};
+      let targetIds;
+      if (hasAttributes) {
+        targetIds = payload.attributes.map(id => this._parseAttributeId(id));
+      } else {
+        const monitored = this._getEffectiveMonitoredAttributes(diskConf);
+        targetIds = monitored.filter(id => {
+          const a = stateAttrs[id];
+          return a && a.rawValue !== null && a.rawValue !== undefined && a.rawValue > 0;
+        });
+      }
+      for (const attrId of targetIds) {
+        const a = stateAttrs[attrId];
+        if (!a || a.rawValue === null || a.rawValue === undefined) continue;
+        diskConf.acknowledged[attrId] = a.rawValue;
+      }
+    }
+
+    diskConf.lastSeen = new Date().toISOString();
+    await this._saveConfig();
+    return this.getDiskConfig(serial);
+  }
+
+  /**
+   * Clear acknowledgement baselines for a disk (all, or only specific attributes).
+   * After clearing, the normal notification behaviour applies again for those attributes.
+   * @param {string} serial - Disk serial number
+   * @param {Array<number|string>|null} attributeIds - Attribute IDs to clear, or null/empty for all
+   * @returns {Object} Updated disk configuration
+   */
+  async clearDiskAcknowledgement(serial, attributeIds = null) {
+    if (!this.config) await this._loadConfig();
+    const diskConf = this.config.disks[serial];
+    if (!diskConf) throw new Error(`Disk with serial ${serial} not found in configuration`);
+    if (!diskConf.acknowledged || typeof diskConf.acknowledged !== 'object') diskConf.acknowledged = {};
+
+    if (Array.isArray(attributeIds) && attributeIds.length > 0) {
+      for (const id of attributeIds) delete diskConf.acknowledged[this._parseAttributeId(id)];
+    } else {
+      diskConf.acknowledged = {};
+    }
+    diskConf.lastSeen = new Date().toISOString();
+    await this._saveConfig();
+    return this.getDiskConfig(serial);
+  }
+
+  /**
+   * Parse and validate a SMART attribute ID (accepts number or numeric string)
+   * @param {number|string} id
+   * @returns {number}
+   * @private
+   */
+  _parseAttributeId(id) {
+    const n = parseInt(id, 10);
+    if (Number.isNaN(n) || n < 0) throw new Error(`Invalid attribute id: ${id}`);
+    return n;
+  }
+
+  /**
+   * Parse an acknowledged baseline value. Empty string / null / undefined => null (unset),
+   * otherwise a non-negative integer.
+   * @param {number|string|null} value
+   * @returns {number|null}
+   * @private
+   */
+  _parseAcknowledgedValue(value) {
+    if (value === '' || value === null || value === undefined) return null;
+    const n = parseInt(value, 10);
+    if (Number.isNaN(n) || n < 0) throw new Error(`Invalid acknowledged value: ${value}`);
+    return n;
   }
 
   /**
@@ -858,12 +979,16 @@ class SmartService {
     const devName = deviceInfo ? deviceInfo.name : serial;
     const model = deviceInfo ? deviceInfo.model : serial;
 
+    const ack = config.acknowledged || {};
     for (const attrId of monitored) {
       const oldAttr = oldAttrs[attrId];
       const newAttr = newAttrs[attrId];
       if (!oldAttr || !newAttr) continue;
       if (newAttr.rawValue === null || oldAttr.rawValue === null) continue;
       if (newAttr.rawValue <= oldAttr.rawValue) continue;
+
+      const baseline = ack[attrId];
+      if (baseline !== undefined && baseline !== null && newAttr.rawValue <= baseline) continue;
 
       if (!this._canNotifyAttribute(serial, attrId, config)) continue;
 
@@ -945,6 +1070,7 @@ class SmartService {
       diskType: deviceInfo.diskType,
       sleeping: false,
       warning: diskConf ? this._hasDiskWarning(serial, diskConf) : false,
+      acknowledged: this._buildAcknowledgedMap(diskConf),
       smartStatus: null,
       temperature: null,
       powerOnHours: null,
@@ -1476,6 +1602,25 @@ class SmartService {
       }
     }
     return false;
+  }
+
+  /**
+   * Build a map of monitored attribute id -> acknowledged baseline (number), or null if not set.
+   * Always lists every monitored attribute so the consumer gets a consistent null/value shape.
+   * @param {Object|null} diskConf - Disk configuration
+   * @returns {Object} Map of attribute id to baseline value or null
+   * @private
+   */
+  _buildAcknowledgedMap(diskConf) {
+    const result = {};
+    if (!diskConf) return result;
+    const ack = diskConf.acknowledged || {};
+    const monitored = this._getEffectiveMonitoredAttributes(diskConf);
+    for (const id of monitored) {
+      const v = ack[id];
+      result[id] = (v === undefined || v === null) ? null : v;
+    }
+    return result;
   }
 
   /**
