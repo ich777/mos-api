@@ -1083,7 +1083,66 @@ class HubService {
       template.name = template.name.replace(/ /g, '_');
     }
 
+    // Remap appdata paths to the configured docker appdata directory
+    await this._remapAppdataPaths(template);
+
     return template;
+  }
+
+  /**
+   * Remaps template path hosts to the configured docker appdata directory.
+   * @param {Object} template - The docker template (mutated in place)
+   */
+  async _remapAppdataPaths(template) {
+    if (!template || !Array.isArray(template.paths) || template.paths.length === 0) {
+      return;
+    }
+
+    let appdata;
+    try {
+      // Lazy require to avoid circular dependency
+      const mosService = require('./mos.service');
+      const dockerSettings = await mosService.getDockerSettings();
+      appdata = dockerSettings && dockerSettings.appdata;
+    } catch (error) {
+      console.warn(`Could not load docker appdata setting for path remap: ${error.message}`);
+      return;
+    }
+
+    if (!appdata || typeof appdata !== 'string') {
+      return;
+    }
+
+    // Derive the pool root from the configured appdata path
+    let base;
+    if (appdata.includes('/mnt/')) {
+      base = appdata.split('/').slice(0, 3).join('/');
+    } else if (appdata.includes('/var/mergerfs/')) {
+      base = appdata.split('/').slice(0, 5).join('/');
+    } else {
+      base = appdata;
+    }
+
+    for (const p of template.paths) {
+      if (!p || typeof p !== 'object') continue;
+
+      const original = typeof p.host === 'string' ? p.host : null;
+      let host = original || '';
+
+      // Build host from container when empty
+      if (host === '' && typeof p.container === 'string' && p.container !== '') {
+        host = appdata + p.container;
+      }
+
+      // Replace the leading pool root
+      if (host && (host.startsWith('/mnt/user') || host.startsWith('/mnt/cache'))) {
+        host = host.replace(/^\/mnt\/(user|cache)/, () => base);
+      }
+
+      if (host !== '' && host !== original) {
+        p.host = host;
+      }
+    }
   }
 
   /**
