@@ -372,6 +372,58 @@ async function _verifyMd5(filePath, md5Path) {
   return actualMd5.toLowerCase() === expectedMd5;
 }
 
+const APT_OPTS = '-o Acquire::Retries=1 -o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10 -o Acquire::ftp::Timeout=10';
+
+/**
+ * Install optional additional packages listed in a plugin's source-root "packages" file.
+ * Persisted to <pluginBaseDir>/packages/packages for the boot-time installer.
+ * Failures (e.g. no network) are non-fatal.
+ * @private
+ */
+async function _installAdditionalPackages(sourceDir, pluginBaseDir) {
+  const sourceList = path.join(sourceDir, 'packages');
+  try {
+    const stat = await fs.stat(sourceList);
+    if (!stat.isFile()) return;
+  } catch {
+    return;
+  }
+
+  const pkgDir = path.join(pluginBaseDir, 'packages');
+  const listPath = path.join(pkgDir, 'packages');
+
+  await fs.mkdir(path.join(pkgDir, 'partial'), { recursive: true });
+  await fs.copyFile(sourceList, listPath);
+
+  let packages;
+  try {
+    const content = await fs.readFile(listPath, 'utf8');
+    const validToken = /^[a-zA-Z0-9][a-zA-Z0-9+._:=~-]*$/;
+    packages = content
+      .split('\n')
+      .map(l => l.trim())
+      .filter(l => l && !l.startsWith('#') && validToken.test(l));
+  } catch {
+    return;
+  }
+  if (packages.length === 0) return;
+
+  const pkgArgs = packages.map(p => `"${p}"`).join(' ');
+  const env = { ...process.env, DEBIAN_FRONTEND: 'noninteractive' };
+
+  try {
+    await execPromise(`apt-get.orig ${APT_OPTS} update`, { timeout: 20000, env });
+    await execPromise(
+      `apt-get.orig ${APT_OPTS} install -y --download-only --no-install-recommends -o Dir::Cache::archives="${pkgDir}" ${pkgArgs}`,
+      { timeout: 60000, env }
+    );
+    await execPromise(`dpkg -i "${pkgDir}"/*.deb`, { timeout: 30000, env });
+    await execPromise('dpkg --configure -a', { timeout: 15000, env });
+  } catch {
+    // Plugin installation init script will fix that on boot
+  }
+}
+
 /**
  * Fetch GitHub releases for a repository
  * @param {string} repository - GitHub repository URL
@@ -816,8 +868,23 @@ async function installPlugin(templatePath, tag) {
       await fs.rm(oldTagDir, { recursive: true, force: true }).catch(() => {});
     }
 
+    // Execute pre_install function from functions file before any package installation
+    const preInstallFunctions = path.join(pluginTagDir, 'functions');
+    try {
+      await fs.access(preInstallFunctions);
+      await execPromise(`bash -c 'source "${preInstallFunctions}"; if declare -f pre_install &>/dev/null; then pre_install; fi'`, {
+        cwd: pluginTagDir,
+        timeout: 60000 // 1min timeout for pre_install function
+      });
+    } catch (preInstallError) {
+      if (preInstallError.code !== 'ENOENT') {
+        await _sendNotification('Plugin', `Pre-install function for ${notifyName} reported an error`, 'alert');
+      }
+    }
+
     // Install .deb package (force to handle downgrades and same version reinstalls)
     await execPromise(`dpkg -i --force-downgrade "${targetDebPath}"`, { timeout: 120000 });
+    await _installAdditionalPackages(extractedPath, pluginBaseDir);
 
     // Cleanup temp directory
     await fs.rm(tempDir, { recursive: true, force: true });
@@ -829,7 +896,7 @@ async function installPlugin(templatePath, tag) {
       // Source the functions file and run the install function
       await execPromise(`bash -c 'source "${functionsPath}"; if declare -f install &>/dev/null; then install; fi'`, {
         cwd: pluginTagDir,
-        timeout: 600000 // 10min timeout for install
+        timeout: 60000 // 1min timeout for install function
       });
     } catch (installError) {
       // Only log if it's not a missing functions file
@@ -1214,6 +1281,7 @@ async function updatePlugins(pluginName = null) {
 
         // Install .deb (force to handle downgrades and same version reinstalls)
         await execPromise(`dpkg -i --force-downgrade "${path.join(newTagDir, debAsset.name)}"`, { timeout: 300000 });
+        await _installAdditionalPackages(extractedPath, path.join(PLUGINS_CONFIG_DIR, plugin.plugin));
 
         // Execute plugin-update function
         const functionsPath = path.join(newTagDir, 'functions');
@@ -1412,7 +1480,7 @@ async function uninstallPlugin(pluginName) {
 }
 
 // Blocked functions that cannot be executed via executeFunction
-const BLOCKED_FUNCTIONS = ['install', 'uninstall', 'mos_start', 'mos_start_after_services', 'plugin_update', 'mos_osupdate'];
+const BLOCKED_FUNCTIONS = ['pre_install', 'install', 'uninstall', 'mos_start', 'mos_start_after_services', 'plugin_update', 'mos_osupdate'];
 
 /**
  * Execute a function from a plugin's functions file
