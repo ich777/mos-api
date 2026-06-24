@@ -17,6 +17,10 @@ const getPoolsService = () => {
   const PoolsService = getService('pools');
   return new PoolsService();
 };
+const getVpoolsService = () => {
+  const VpoolsService = getService('vpools');
+  return new VpoolsService();
+};
 
 /**
  * Collector types:
@@ -30,6 +34,7 @@ const getPoolsService = () => {
 const collectors = [
   // Service calls (processed API data, skipped when running via CLI)
   { type: 'service', call: () => getPoolsService().listPools(), target: 'api/pools.json' },
+  { type: 'service', call: () => getVpoolsService().listVpools(), target: 'api/vpools.json' },
   { type: 'service', call: () => getService('disks').getAllDisks(), target: 'api/disks.json' },
   { type: 'service', call: () => getService('shares').getShares(), target: 'api/shares.json' },
   { type: 'service', call: () => getService('cron').getCronJobs(), target: 'api/cron.json' },
@@ -43,6 +48,7 @@ const collectors = [
   { type: 'file', source: '/boot/config/lxc.json', target: 'config/lxc.json' },
   { type: 'file', source: '/boot/config/network.json', target: 'config/network.json' },
   { type: 'file', source: '/boot/config/pools.json', target: 'config/pools.json' },
+  { type: 'file', source: '/boot/config/vpools.json', target: 'config/vpools.json' },
   { type: 'file', source: '/boot/config/remotes.json', target: 'config/remotes.json' },
   { type: 'file', source: '/boot/config/shares.json', target: 'config/shares.json' },
   { type: 'file', source: '/boot/config/system.json', target: 'config/system.json' },

@@ -574,6 +574,14 @@ async function startServer() {
     }
 
     try {
+      const VpoolsService = require('./services/vpools.service');
+      const vpoolsService = new VpoolsService();
+      await vpoolsService.listVpools();
+    } catch (error) {
+      console.error(`Error initializing Vpools: ${error.message}`);
+    }
+
+    try {
       const mosService = require('./services/mos.service');
       await mosService.initSupporterStatus();
     } catch (error) {

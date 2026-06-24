@@ -2684,6 +2684,9 @@ class PoolsService {
         throw new Error(`Pool with name "${name}" already exists`);
       }
 
+      // Check name does not collide with a MergerFS Path Pool (vpool)
+      await PoolHelpers.assertNameNotInVpools(name);
+
       // Check each device
       for (const device of devices) {
         await fs.access(device).catch(() => {
@@ -3992,6 +3995,9 @@ class PoolsService {
       if (pools.some(p => p.name === name)) {
         throw new Error(`Pool with name "${name}" already exists`);
       }
+
+      // Check name does not collide with a MergerFS Path Pool (vpool)
+      await PoolHelpers.assertNameNotInVpools(name);
 
       // Check if device is already mounted
       const mountStatus = await this._isDeviceMounted(device);
@@ -6936,6 +6942,9 @@ class PoolsService {
         throw new Error(`Pool with name "${name}" already exists`);
       }
 
+      // Check name does not collide with a MergerFS Path Pool (vpool)
+      await PoolHelpers.assertNameNotInVpools(name);
+
       const mountPoint = path.join(this.mountBasePath, name);
       const mergerfsBasePath = path.join(this.mergerfsBasePath, name);
 
@@ -7445,6 +7454,9 @@ class PoolsService {
       if (pools.some(p => p.name === name)) {
         throw new Error(`Pool with name "${name}" already exists`);
       }
+
+      // Check name does not collide with a MergerFS Path Pool (vpool)
+      await PoolHelpers.assertNameNotInVpools(name);
 
       // Handle parity devices if provided
       let parityDevices = [];

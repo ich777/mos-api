@@ -1,6 +1,10 @@
+const fs = require('fs').promises;
 const { exec } = require('child_process');
 const util = require('util');
 const execPromise = util.promisify(exec);
+
+const POOLS_FILE = '/boot/config/pools.json';
+const VPOOLS_FILE = '/boot/config/vpools.json';
 
 /**
  * Helper functions for pool operations
@@ -81,12 +85,61 @@ class PoolHelpers {
     }
 
     // Reserved pool names that are not allowed
-    const reservedNames = ['remotes'];
+    // 'remotes' -> /mnt/remotes (SMB/NFS), 'disks' -> /mnt/disks (single disk mounts)
+    const reservedNames = ['remotes', 'disks'];
     if (reservedNames.includes(name.toLowerCase())) {
       throw new Error(`Pool name '${name}' is reserved and cannot be used`);
     }
 
     return true;
+  }
+
+  /**
+   * Read a JSON array file, returning [] when the file does not exist
+   * @param {string} filePath - Absolute path to the JSON file
+   * @returns {Promise<Array>} Parsed array (empty if missing)
+   * @private
+   */
+  static async _readJsonArray(filePath) {
+    try {
+      const data = await fs.readFile(filePath, 'utf8');
+      const parsed = JSON.parse(data);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        return [];
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Ensure a pool name is not already used by a vpool (MergerFS Path Pool).
+   * @param {string} name - Pool name to check
+   * @throws {Error} If the name already exists in vpools.json
+   */
+  static async assertNameNotInVpools(name) {
+    const vpools = await PoolHelpers._readJsonArray(VPOOLS_FILE);
+    if (vpools.some(v => v.name === name)) {
+      throw new Error(`Pool with name "${name}" already exists`);
+    }
+  }
+
+  /**
+   * Ensure a pool name is globally available across pools.json and vpools.json.
+   * Also validates the name format and reserved names.
+   * @param {string} name - Pool name to check
+   * @throws {Error} If the name is invalid or already used
+   */
+  static async assertGlobalPoolNameAvailable(name) {
+    PoolHelpers.validatePoolName(name);
+
+    const pools = await PoolHelpers._readJsonArray(POOLS_FILE);
+    if (pools.some(p => p.name === name)) {
+      throw new Error(`Pool with name "${name}" already exists`);
+    }
+
+    await PoolHelpers.assertNameNotInVpools(name);
   }
 
   /**

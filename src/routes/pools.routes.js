@@ -8,6 +8,9 @@ const smartService = require('../services/smart.service');
 // Initialize pools service for all operations
 const poolsService = new PoolsService();
 
+// Sub-router for MergerFS Path Pools (vpools).
+router.use('/vpools', require('./vpools.routes'));
+
 /**
  * @swagger
  * tags:
