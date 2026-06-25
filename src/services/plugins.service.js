@@ -910,6 +910,11 @@ async function installPlugin(templatePath, tag) {
     // Cleanup cache directory (files already copied to plugin dir)
     if (cacheDir) await fs.rm(cacheDir, { recursive: true, force: true }).catch(() => {});
 
+    // Refresh hub "installed" detection immediately
+    try {
+      require('./hub.service').invalidateInstalledCache();
+    } catch { }
+
     return {
       success: true,
       plugin: configName,
@@ -1462,6 +1467,11 @@ async function uninstallPlugin(pluginName) {
     // Clean up cache
     const cacheDir = path.join(PLUGINS_CACHE_DIR, safeName);
     await fs.rm(cacheDir, { recursive: true, force: true }).catch(() => {});
+
+    // Refresh hub "installed" detection immediately
+    try {
+      require('./hub.service').invalidateInstalledCache();
+    } catch { }
 
     return {
       success: true,

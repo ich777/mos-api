@@ -9,8 +9,17 @@ class HubService {
   constructor() {
     this.hubConfigPath = '/boot/config/system/hub.json';
     this.indexPath = '/var/mos/hub/repositories.json';
+    this.installedPluginsPath = '/boot/optional/plugins';
+    this.installedDockerTemplatesPath = '/boot/config/system/docker/templates';
     this.allowedTypes = ['docker', 'compose', 'lxc', 'plugin', 'vm'];
     this.allowedCategories = ['AI', 'Backup', 'Hosting', 'Crypto', 'Downloader', 'Driver', 'Game Server', 'Home Automation', 'Media', 'Network', 'Productivity', 'Monitoring', 'Security', 'System', 'Utilities', 'Misc'];
+
+    // In-memory caches of installed identifiers to avoid hitting the USB /boot
+    // path on every index read. Invalidated explicitly on install/uninstall
+    // and otherwise refreshed after a short TTL.
+    this._installedPluginReposCache = null;
+    this._installedDockerImagesCache = null;
+    this._installedCacheTtlMs = 30000;
   }
 
   /**
@@ -554,6 +563,9 @@ class HubService {
     if (skip && skip > 0) filtered = filtered.slice(skip);
     if (limit && limit > 0) filtered = filtered.slice(0, limit);
 
+    // Annotate only the returned page with installed status (cheap)
+    await this._annotateInstalled(filtered);
+
     const config = await this._readConfig();
     return {
       results: filtered,
@@ -634,6 +646,145 @@ class HubService {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Normalizes a repository URL for reliable comparison
+   * (lowercase, strip trailing .git and slashes)
+   * @param {string} url - Repository URL
+   * @returns {string} Normalized URL
+   */
+  _normalizeRepoUrl(url) {
+    if (!url || typeof url !== 'string') return '';
+    return url.trim().toLowerCase().replace(/\.git$/, '').replace(/\/+$/, '');
+  }
+
+  /**
+   * Builds a Set of normalized repository URLs of currently installed plugins.
+   * Reads /boot/optional/plugins/<name>/template.json. Result is cached in
+   * memory (TTL) to avoid repeated reads from the USB /boot path.
+   * @returns {Promise<Set<string>>} Set of normalized repository URLs
+   */
+  async _getInstalledPluginRepos() {
+    const now = Date.now();
+    if (this._installedPluginReposCache &&
+        (now - this._installedPluginReposCache.timestamp) < this._installedCacheTtlMs) {
+      return this._installedPluginReposCache.repos;
+    }
+
+    const repos = new Set();
+    try {
+      const entries = await fs.readdir(this.installedPluginsPath, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const template = await this._readJsonFile(
+          path.join(this.installedPluginsPath, entry.name, 'template.json')
+        );
+        if (template && template.repository) {
+          repos.add(this._normalizeRepoUrl(template.repository));
+        }
+      }
+    } catch {
+      // No installed plugins / directory missing -> empty set
+    }
+
+    this._installedPluginReposCache = { timestamp: now, repos };
+    return repos;
+  }
+
+  /**
+   * Normalizes a docker image reference for reliable comparison.
+   * Strips an optional digest, lowercases, and defaults the tag to ":latest"
+   * when none is given (so "nginx" matches "nginx:latest").
+   * @param {string} ref - Image reference (e.g. "owner/img:tag", "img", "host:5000/img")
+   * @returns {string} Normalized image reference
+   */
+  _normalizeImageRef(ref) {
+    if (!ref || typeof ref !== 'string') return '';
+    let s = ref.trim().toLowerCase();
+
+    // Strip digest (e.g. "@sha256:...")
+    const atIdx = s.indexOf('@');
+    if (atIdx !== -1) s = s.slice(0, atIdx);
+
+    // A ':' only denotes a tag if it appears after the last '/'.
+    // Otherwise it's a registry port (e.g. "host:5000/img") -> no tag present.
+    const lastSlash = s.lastIndexOf('/');
+    const lastColon = s.lastIndexOf(':');
+    if (lastColon <= lastSlash) {
+      s = `${s}:latest`;
+    }
+    return s;
+  }
+
+  /**
+   * Builds a Set of normalized image references of currently installed docker
+   * containers. Reads /boot/config/system/docker/templates/<name>.json and uses
+   * the `repo` field (which is the container image). Cached in memory (TTL).
+   * @returns {Promise<Set<string>>} Set of normalized image references
+   */
+  async _getInstalledDockerImages() {
+    const now = Date.now();
+    if (this._installedDockerImagesCache &&
+        (now - this._installedDockerImagesCache.timestamp) < this._installedCacheTtlMs) {
+      return this._installedDockerImagesCache.images;
+    }
+
+    const images = new Set();
+    try {
+      const files = await fs.readdir(this.installedDockerTemplatesPath);
+      for (const file of files) {
+        if (!file.endsWith('.json')) continue;
+        const template = await this._readJsonFile(
+          path.join(this.installedDockerTemplatesPath, file)
+        );
+        if (template && template.repo) {
+          images.add(this._normalizeImageRef(template.repo));
+        }
+      }
+    } catch {
+      // No installed containers / directory missing -> empty set
+    }
+
+    this._installedDockerImagesCache = { timestamp: now, images };
+    return images;
+  }
+
+  /**
+   * Invalidates the cached installed identifier sets (plugins + docker).
+   * Should be called after an install/uninstall so the hub index reflects
+   * the change immediately instead of waiting for the TTL.
+   */
+  invalidateInstalledCache() {
+    this._installedPluginReposCache = null;
+    this._installedDockerImagesCache = null;
+  }
+
+  /**
+   * Annotates templates with an `installed` flag.
+   * - plugins: matched by repository URL
+   * - docker: matched by image reference (image:tag, defaulting to :latest)
+   * @param {Array} templates - Array of template objects (mutated in place)
+   * @returns {Promise<Array>} The annotated templates
+   */
+  async _annotateInstalled(templates) {
+    if (!Array.isArray(templates) || templates.length === 0) return templates;
+
+    const hasPlugin = templates.some(t => t.type === 'plugin');
+    const hasDocker = templates.some(t => t.type === 'docker');
+    const pluginRepos = hasPlugin ? await this._getInstalledPluginRepos() : null;
+    const dockerImages = hasDocker ? await this._getInstalledDockerImages() : null;
+
+    for (const t of templates) {
+      if (t.type === 'plugin') {
+        t.installed = pluginRepos.has(this._normalizeRepoUrl(t.repository));
+      } else if (t.type === 'docker') {
+        t.installed = dockerImages.has(this._normalizeImageRef(t.repository));
+      } else {
+        t.installed = false;
+      }
+    }
+    return templates;
   }
 
   /**

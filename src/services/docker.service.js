@@ -513,6 +513,11 @@ class DockerService {
         // Don't fail the main operation if cleanup fails, just continue
       }
 
+      // Refresh hub "installed" detection immediately
+      try {
+        require('./hub.service').invalidateInstalledCache();
+      } catch { }
+
       try {
         const result = JSON.parse(stdout);
 
@@ -633,6 +638,11 @@ class DockerService {
       if (templateExists) {
         await fs.rename(templatePath, removedPath);
       }
+
+      // Refresh hub "installed" detection immediately
+      try {
+        require('./hub.service').invalidateInstalledCache();
+      } catch { }
 
       // Remove container entry from containers file and reindex
       try {

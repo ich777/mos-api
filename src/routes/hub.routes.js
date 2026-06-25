@@ -350,6 +350,9 @@ router.post('/update', async (req, res) => {
  *                         type: string
  *                       repository:
  *                         type: string
+ *                       installed:
+ *                         type: boolean
+ *                         description: True if the template is installed (plugins match by repository, docker by image reference).
  *                       created_at:
  *                         type: integer
  *                         description: Unix timestamp when template was first added

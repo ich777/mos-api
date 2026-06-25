@@ -38,6 +38,11 @@ const CACHE_DURATION = 60000; // 1 minute
 const containerMetadataCache = new Map();
 const METADATA_CACHE_DURATION = 300000; // 5 minutes
 
+// Short-lived cache for container resource usage (shared between REST and WebSocket)
+let resourceUsageCache = null;
+let resourceUsageCacheTimestamp = 0;
+const RESOURCE_USAGE_CACHE_DURATION = 2000; // 2 seconds
+
 // Track active backup/restore operations
 const activeOperations = new Map();
 
@@ -1726,6 +1731,11 @@ lxc.mount.auto = cgroup:mixed:force
    * @returns {Promise<Array>} Array of containers with CPU, memory, and IP information
    */
   async getContainerResourceUsage() {
+    // Serve from cache if still fresh
+    if (resourceUsageCache && (Date.now() - resourceUsageCacheTimestamp) < RESOURCE_USAGE_CACHE_DURATION) {
+      return resourceUsageCache;
+    }
+
     try {
       // Get list of all containers
       const containers = await this.listContainers();
@@ -1740,10 +1750,15 @@ lxc.mount.auto = cgroup:mixed:force
       const cpuSnapshots = new Map();
       runningContainers.forEach((c, i) => cpuSnapshots.set(c.name, cpuSnapshotResults[i]));
 
-      // Get memory and IP data for all containers in parallel (doesn't need waiting)
+      // Gather memory + IP concurrently with the 1s CPU measurement window
+      const sleepPromise = runningContainers.length > 0
+        ? new Promise(r => setTimeout(r, 1000))
+        : Promise.resolve();
+
       const [memoryData, ipData] = await Promise.all([
         Promise.all(runningContainers.map(c => this.getContainerMemoryUsage(c.name))),
-        Promise.all(containers.map(c => this.getContainerIpAddresses(c.name)))
+        Promise.all(containers.map(c => this.getContainerIpAddresses(c.name))),
+        sleepPromise
       ]);
 
       // Create memory lookup map
@@ -1753,11 +1768,6 @@ lxc.mount.auto = cgroup:mixed:force
       // Create IP lookup map
       const ipMap = new Map();
       containers.forEach((c, i) => ipMap.set(c.name, ipData[i]));
-
-      // Wait 1 second ONCE for all CPU measurements
-      if (runningContainers.length > 0) {
-        await new Promise(r => setTimeout(r, 1000));
-      }
 
       // Calculate CPU usage for all running containers in parallel (async cgroup reads)
       const cpuUsageResults = await Promise.all(
@@ -1796,8 +1806,11 @@ lxc.mount.auto = cgroup:mixed:force
         };
       });
 
-      // Sort by container name and return directly
-      return containerData.sort((a, b) => a.name.localeCompare(b.name));
+      // Sort by container name, cache, and return
+      const sorted = containerData.sort((a, b) => a.name.localeCompare(b.name));
+      resourceUsageCache = sorted;
+      resourceUsageCacheTimestamp = Date.now();
+      return sorted;
     } catch (error) {
       throw new Error(`Failed to get container resource usage: ${error.message}`);
     }

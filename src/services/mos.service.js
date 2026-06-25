@@ -3544,7 +3544,6 @@ class MosService {
           await execPromise('/etc/init.d/smbd stop');
         } else if (sambaValue === true) {
           await execPromise('/etc/init.d/smbd restart');
-          await execPromise('/etc/init.d/nmbd restart');
         }
       }
       if (nfsChanged) {
@@ -3572,10 +3571,10 @@ class MosService {
       }
       if (sambaDiscoveryChanged) {
         if (sambaDiscoveryValue === false) {
-          await execPromise('/etc/init.d/nmbd stop');
+          //await execPromise('/etc/init.d/nmbd stop');
           await execPromise('/etc/init.d/wsddn stop');
         } else if (sambaDiscoveryValue === true) {
-          await execPromise('/etc/init.d/nmbd start');
+          //await execPromise('/etc/init.d/nmbd start');
           await execPromise('/etc/init.d/wsddn start');
         }
       }
