@@ -206,6 +206,39 @@ router.post('/repositories', async (req, res) => {
 
 /**
  * @swagger
+ * /mos/hub/recommended:
+ *   get:
+ *     summary: Get recommended repository URLs
+ *     description: Returns the cached list of recommended repository URLs (empty array if none).
+ *     tags: [MOS Hub]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: List of recommended repository URLs
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: string
+ *             example:
+ *               - https://github.com/s3ppo/docker_json_templates
+ *               - https://github.com/ich777/mos-templates
+ *       500:
+ *         description: Server error
+ */
+router.get('/recommended', async (req, res) => {
+  try {
+    const recommended = await hubService.getRecommendedRepositories();
+    res.json(recommended);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * @swagger
  * /mos/hub/update:
  *   post:
  *     summary: Update repositories

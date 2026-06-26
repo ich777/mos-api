@@ -1,11 +1,13 @@
 const fs = require('fs').promises;
-const { exec } = require('child_process');
+const { exec, execFile } = require('child_process');
 const util = require('util');
 const path = require('path');
 const axios = require('axios');
 
 // Promisify exec for easier use with async/await
 const execPromise = util.promisify(exec);
+// Promisify execFile to run binaries without shell interpolation (safer for user input)
+const execFilePromise = util.promisify(execFile);
 
 class DockerService {
 
@@ -1088,6 +1090,103 @@ class DockerService {
   }
 
   /**
+   * Get the directory where group icons (PNG) are stored
+   * @returns {string} Path to the group icons directory
+   */
+  _getGroupIconsDirectory() {
+    return '/var/lib/docker/mos/icons/groups';
+  }
+
+  /**
+   * Build the absolute icon path for a group, guarding against path traversal
+   * @param {string} groupName - Group name (used as the file name)
+   * @returns {string} Absolute path to the group's PNG icon
+   */
+  _getGroupIconPath(groupName) {
+    const safeName = String(groupName).replace(/[/\\]/g, '_');
+    return path.join(this._getGroupIconsDirectory(), `${safeName}.png`);
+  }
+
+  /**
+   * Check whether a value is an http(s) URL
+   * @param {*} value - Value to test
+   * @returns {boolean} True if the value is an http(s) URL
+   */
+  _isHttpUrl(value) {
+    return typeof value === 'string' && /^https?:\/\//i.test(value.trim());
+  }
+
+  /**
+   * Check whether an icon value is considered "empty" (no icon set)
+   * @param {*} value - Value to test
+   * @returns {boolean} True for null, undefined or empty/whitespace strings
+   */
+  _isEmptyIcon(value) {
+    return value === null || value === undefined ||
+      (typeof value === 'string' && value.trim() === '');
+  }
+
+  /**
+   * Download a group icon (PNG) from a URL via wget (5s timeout) and validate it
+   * @param {string} iconUrl - HTTP(S) URL pointing to a PNG image
+   * @param {string} groupName - Group name (used as the file name)
+   * @returns {Promise<string>} Absolute path to the saved icon
+   */
+  async _downloadGroupIcon(iconUrl, groupName) {
+    const iconDir = this._getGroupIconsDirectory();
+    const iconPath = this._getGroupIconPath(groupName);
+
+    await fs.mkdir(iconDir, { recursive: true });
+
+    try {
+      // execFile avoids shell interpolation of the user-provided URL
+      await execFilePromise(
+        'wget',
+        ['-q', '--tries=1', '--timeout=5', '-O', iconPath, iconUrl],
+        { timeout: 5000 }
+      );
+    } catch (error) {
+      await fs.unlink(iconPath).catch(() => {});
+      throw new Error(`Failed to download icon from '${iconUrl}': ${error.message}`);
+    }
+
+    // Must be non-empty and start with the PNG magic number
+    let isValidPng = false;
+    try {
+      const stats = await fs.stat(iconPath);
+      if (stats.size > 0) {
+        const handle = await fs.open(iconPath, 'r');
+        try {
+          const header = Buffer.alloc(8);
+          await handle.read(header, 0, 8, 0);
+          isValidPng = header.equals(
+            Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+          );
+        } finally {
+          await handle.close();
+        }
+      }
+    } catch (error) {
+      isValidPng = false;
+    }
+
+    if (!isValidPng) {
+      await fs.unlink(iconPath).catch(() => {});
+      throw new Error(`Downloaded icon from '${iconUrl}' is not a valid PNG image`);
+    }
+
+    return iconPath;
+  }
+
+  /**
+   * Remove a group's downloaded icon file if present (best-effort cleanup)
+   * @param {string} groupName - Group name (used as the file name)
+   */
+  async _removeGroupIcon(groupName) {
+    await fs.unlink(this._getGroupIconPath(groupName)).catch(() => {});
+  }
+
+  /**
    * Generate timestamp-based ID for container groups
    * @private
    * @returns {string} Timestamp ID in milliseconds
@@ -1288,6 +1387,11 @@ class DockerService {
         compose: options.compose || false
       };
 
+      // Download the PNG if the icon is a URL (stored value stays the URL)
+      if (this._isHttpUrl(newGroup.icon)) {
+        await this._downloadGroupIcon(newGroup.icon, newGroup.name);
+      }
+
       groups.push(newGroup);
       await this._writeGroups(groups);
 
@@ -1311,8 +1415,12 @@ class DockerService {
         throw new Error(`Group with ID '${groupId}' not found`);
       }
 
+      const removedGroup = groups[groupIndex];
       groups.splice(groupIndex, 1);
       await this._writeGroups(groups);
+
+      // Best-effort cleanup of any downloaded icon for this group
+      await this._removeGroupIcon(removedGroup.name);
 
       return true;
     } catch (error) {
@@ -1705,6 +1813,10 @@ class DockerService {
         throw new Error(`Group with ID ${groupId} not found`);
       }
 
+      // Snapshot values needed to keep the on-disk icon in sync after the update
+      const previousName = group.name;
+      const previousIcon = group.icon;
+
       // Update name if provided
       if (updateData.name !== undefined) {
         if (!updateData.name || typeof updateData.name !== 'string') {
@@ -1726,7 +1838,8 @@ class DockerService {
         if (updateData.icon !== null && typeof updateData.icon !== 'string') {
           throw new Error('Icon must be a string or null');
         }
-        group.icon = updateData.icon;
+        // Normalize empty/whitespace to null
+        group.icon = this._isEmptyIcon(updateData.icon) ? null : updateData.icon;
       }
 
       // Handle containers updates
@@ -1791,6 +1904,24 @@ class DockerService {
             !updateData.removeContainers.includes(container)
           );
         }
+      }
+
+      // Keep the on-disk icon PNG in sync with the icon URL / group name
+      const iconProvided = updateData.icon !== undefined;
+      const iconIsUrl = this._isHttpUrl(group.icon);
+      const nameChanged = group.name !== previousName;
+      if (iconIsUrl && (group.icon !== previousIcon || nameChanged)) {
+        // New URL or rename: (re)download
+        await this._downloadGroupIcon(group.icon, group.name);
+        if (nameChanged) {
+          await this._removeGroupIcon(previousName);
+        }
+      } else if (iconProvided && this._isEmptyIcon(group.icon)) {
+        // Icon cleared: drop the PNG
+        await this._removeGroupIcon(previousName);
+      } else if (!iconIsUrl && this._isHttpUrl(previousIcon)) {
+        // URL replaced by another identifier: drop the old PNG
+        await this._removeGroupIcon(previousName);
       }
 
       group.updated_at = new Date().toISOString();

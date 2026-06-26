@@ -1230,6 +1230,15 @@ router.get('/mos/groups', async (req, res) => {
  *                   type: string
  *                 description: Array of container names to add to group
  *                 example: ["nginx", "apache"]
+ *               icon:
+ *                 type: string
+ *                 nullable: true
+ *                 description: >
+ *                   Icon identifier (e.g. an MDI name) or an http(s) URL to a PNG.
+ *                   When a URL is provided the PNG is downloaded synchronously
+ *                   (max 5s) to /var/lib/docker/mos/icons/groups/<groupName>.png
+ *                   and validated to be a real, non-empty PNG.
+ *                 example: "https://example.com/logo.png"
  *     responses:
  *       201:
  *         description: Group created successfully
@@ -1258,13 +1267,13 @@ router.get('/mos/groups', async (req, res) => {
  */
 router.post('/mos/groups', async (req, res) => {
   try {
-    const { name, containers = [] } = req.body;
+    const { name, containers = [], icon } = req.body;
 
     if (!name) {
       return res.status(400).json({ error: 'Group name is required' });
     }
 
-    const group = await dockerService.createContainerGroup(name, containers);
+    const group = await dockerService.createContainerGroup(name, containers, { icon });
     res.status(201).json(group);
   } catch (error) {
     res.status(400).json({ error: error.message });
@@ -1435,8 +1444,13 @@ router.put('/mos/groups/order', async (req, res) => {
  *               icon:
  *                 type: string
  *                 nullable: true
- *                 description: Icon name/identifier (null to remove icon)
- *                 example: "fas fa-server"
+ *                 description: >
+ *                   Icon identifier (e.g. an MDI name) or an http(s) URL to a PNG
+ *                   (null to remove icon). When the URL changes the PNG is
+ *                   re-downloaded synchronously (max 5s) to
+ *                   /var/lib/docker/mos/icons/groups/<groupName>.png and validated
+ *                   to be a real, non-empty PNG.
+ *                 example: "https://example.com/logo.png"
  *               containers:
  *                 type: array
  *                 items:

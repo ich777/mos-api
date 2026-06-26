@@ -4,6 +4,7 @@ const os = require('os');
 const { exec } = require('child_process');
 const util = require('util');
 const execPromise = util.promisify(exec);
+const axios = require('axios');
 
 class HubService {
   constructor() {
@@ -20,6 +21,15 @@ class HubService {
     this._installedPluginReposCache = null;
     this._installedDockerImagesCache = null;
     this._installedCacheTtlMs = 30000;
+
+    // Recommended repositories: cached to disk when the hub is enabled,
+    // refetched hourly on failure.
+    this.recommendedReposUrl = 'https://mos-official.net/recommended-repos.json';
+    this.recommendedReposPath = '/var/mos/hub/recommended_repositories.json';
+    this._recommendedReposFetchTimeoutMs = 10000;
+    this._recommendedReposRetryMs = 60 * 60 * 1000;
+    this._recommendedReposRetryTimer = null;
+    this._recommendedReposFetching = false;
   }
 
   /**
@@ -162,9 +172,11 @@ class HubService {
     try {
       const current = await this._readConfig();
       let hubCronChanged = false;
+      let hubEnabledTurnedOn = false;
 
       // Update only provided fields
       if (typeof settings.enabled === 'boolean' && current.enabled !== settings.enabled) {
+        hubEnabledTurnedOn = settings.enabled === true;
         current.enabled = settings.enabled;
         hubCronChanged = true;
       }
@@ -232,6 +244,11 @@ class HubService {
         }
       }
 
+      // Refresh recommended repositories in the background when the hub is enabled
+      if (hubEnabledTurnedOn) {
+        this.initRecommendedRepositories().catch(() => {});
+      }
+
       const { repositories, ...result } = current;
       return result;
     } catch (error) {
@@ -294,6 +311,141 @@ class HubService {
     } catch (error) {
       throw new Error(`Error saving repositories: ${error.message}`);
     }
+  }
+
+  /**
+   * Fetches the recommended repositories and caches them to disk.
+   * Returns false on failure so the caller can schedule a retry.
+   * @returns {Promise<boolean>}
+   */
+  async _fetchAndCacheRecommendedRepositories() {
+    let body;
+    try {
+      const response = await axios.get(this.recommendedReposUrl, {
+        timeout: this._recommendedReposFetchTimeoutMs,
+        // Fetch as raw text and parse ourselves so we can reject non-JSON
+        // (e.g. an HTML error page served with status 200)
+        responseType: 'text',
+        transformResponse: [(d) => d],
+        maxContentLength: 1024 * 1024,
+        maxBodyLength: 1024 * 1024,
+        // axios rejects status >= 400 by default; keep it explicit
+        validateStatus: (status) => status >= 200 && status < 300
+      });
+      body = response.data;
+    } catch (error) {
+      console.warn(`Hub: Could not fetch recommended repositories: ${error.message}`);
+      return false;
+    }
+
+    let data;
+    try {
+      data = JSON.parse(body);
+    } catch {
+      console.warn('Hub: Recommended repositories response is not valid JSON');
+      return false;
+    }
+
+    if (!Array.isArray(data)) {
+      console.warn('Hub: Recommended repositories response is not an array');
+      return false;
+    }
+
+    const repos = [];
+    for (const url of data) {
+      if (typeof url !== 'string') continue;
+      const trimmed = url.trim();
+      if (this._isValidGitUrl(trimmed) && !repos.includes(trimmed)) {
+        repos.push(trimmed);
+      }
+    }
+
+    try {
+      await fs.mkdir(path.dirname(this.recommendedReposPath), { recursive: true });
+      await fs.writeFile(this.recommendedReposPath, JSON.stringify(repos, null, 2), 'utf8');
+    } catch (error) {
+      console.warn(`Hub: Could not write recommended repositories cache: ${error.message}`);
+      return false;
+    }
+
+    // Cancel any pending retry now that we have a valid list
+    this._clearRecommendedReposRetry();
+    return true;
+  }
+
+  /**
+   * Clears a pending recommended repositories retry timer.
+   */
+  _clearRecommendedReposRetry() {
+    if (this._recommendedReposRetryTimer) {
+      clearTimeout(this._recommendedReposRetryTimer);
+      this._recommendedReposRetryTimer = null;
+    }
+  }
+
+  /**
+   * Schedules an hourly retry until a fetch succeeds. Timer is unref'd.
+   */
+  _scheduleRecommendedReposRetry() {
+    if (this._recommendedReposRetryTimer) return;
+
+    this._recommendedReposRetryTimer = setTimeout(async () => {
+      this._recommendedReposRetryTimer = null;
+      await this.initRecommendedRepositories();
+    }, this._recommendedReposRetryMs);
+
+    if (this._recommendedReposRetryTimer.unref) {
+      this._recommendedReposRetryTimer.unref();
+    }
+  }
+
+  /**
+   * Fetches and caches recommended repositories when the hub is enabled.
+   * On failure, schedules an hourly retry. Safe to call at startup or on enable.
+   * @returns {Promise<void>}
+   */
+  async initRecommendedRepositories() {
+    if (this._recommendedReposFetching) return;
+
+    let enabled = false;
+    try {
+      const config = await this._readConfig();
+      enabled = config.enabled === true;
+    } catch {
+      enabled = false;
+    }
+    if (!enabled) {
+      this._clearRecommendedReposRetry();
+      return;
+    }
+
+    this._recommendedReposFetching = true;
+    let ok = false;
+    try {
+      ok = await this._fetchAndCacheRecommendedRepositories();
+    } finally {
+      this._recommendedReposFetching = false;
+    }
+    if (!ok) this._scheduleRecommendedReposRetry();
+  }
+
+  /**
+   * Returns the cached recommended repository URLs (empty array if none).
+   * When the cache is missing/invalid, triggers a background refresh
+   * (respects hub-enabled, same timeout/validation/retry).
+   * @returns {Promise<Array<string>>}
+   */
+  async getRecommendedRepositories() {
+    try {
+      const data = await fs.readFile(this.recommendedReposPath, 'utf8');
+      const parsed = JSON.parse(data);
+      if (Array.isArray(parsed)) return parsed;
+    } catch {
+      // Cache missing or invalid -> fall through to background refresh
+    }
+
+    this.initRecommendedRepositories().catch(() => {});
+    return [];
   }
 
   /**
