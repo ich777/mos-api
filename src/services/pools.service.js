@@ -186,20 +186,24 @@ class PoolsService {
    * @private
    */
   _handleUdevBlock(block) {
-    // Only care about remove events
-    if (!block.includes('ACTION=remove')) return;
+    const isAdd = block.includes('ACTION=add');
+    const isRemove = block.includes('ACTION=remove');
+    if (!isAdd && !isRemove) return;
 
-    // Must be a disk or partition
-    if (!block.includes('DEVTYPE=disk') && !block.includes('DEVTYPE=partition')) return;
+    // Whole-disk events only; partition matching is normalized to base disk below
+    if (!block.includes('DEVTYPE=disk')) return;
 
-    // Extract device path (DEVNAME=/dev/sdX or /dev/sdX1)
     const devMatch = block.match(/DEVNAME=(.+)/);
     if (!devMatch) return;
+    const device = devMatch[1].trim();
 
-    const removedDevice = devMatch[1].trim();
+    if (isAdd) {
+      // Re-arm: a re-attached disk should be able to alert again on next removal
+      PoolsService._udevAlertedDevices.delete(device);
+      return;
+    }
 
-    // Check against mounted pools (async, fire-and-forget)
-    this._checkRemovedDeviceAgainstPools(removedDevice)
+    this._checkRemovedDeviceAgainstPools(device)
       .catch(err => console.warn(`[PoolsService] Disk offline check error: ${err.message}`));
   }
 

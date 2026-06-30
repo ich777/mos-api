@@ -2574,6 +2574,14 @@ class VmService {
         throw statError;
       }
 
+      // Give QEMU (libvirt-qemu) access, otherwise it can't open the disk on start
+      try {
+        await execPromise(`chown libvirt-qemu:libvirt-qemu "${diskPath}" "${dir}"`);
+        await execPromise(`chmod 0750 "${dir}"`);
+      } catch (e) {
+        console.warn(`Could not set ownership for "${diskPath}": ${e.message}`);
+      }
+
       return {
         success: true,
         message: `Disk created successfully`,

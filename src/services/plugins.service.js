@@ -344,17 +344,140 @@ async function _sendNotification(title, message, priority = 'normal') {
 }
 
 /**
- * Get GitHub token if available
+ * Parse a repository URL into provider metadata.
+ * GitHub is detected by host; every other host is treated as a Gitea instance
+ * (this also covers Codeberg, which is a hosted Gitea).
+ * @param {string} repository - Repository URL (https://host/owner/repo[.git])
+ * @returns {{provider: string, host: string, owner: string, repo: string, apiBase: string}}
  * @private
  */
-async function _getGitHubToken() {
+function _parseRepoUrl(repository) {
+  if (!repository || typeof repository !== 'string') {
+    throw new Error('Repository URL is required');
+  }
+
+  let host, owner, repo;
+  try {
+    const cleaned = repository.trim().replace(/\.git$/, '').replace(/\/+$/, '');
+    const url = new URL(cleaned);
+    host = url.hostname.toLowerCase();
+    const segments = url.pathname.split('/').filter(Boolean);
+    if (segments.length < 2) {
+      throw new Error('missing owner/repo');
+    }
+    owner = segments[segments.length - 2];
+    repo = segments[segments.length - 1];
+  } catch {
+    throw new Error('Invalid repository URL');
+  }
+
+  // github.com -> GitHub API; anything else (incl. codeberg.org and
+  // self-hosted Gitea) -> Gitea API at <host>/api/v1
+  const provider = host === 'github.com' ? 'github' : 'gitea';
+  const apiBase = provider === 'github'
+    ? 'https://api.github.com'
+    : `https://${host}/api/v1`;
+
+  return { provider, host, owner, repo, apiBase };
+}
+
+/**
+ * Get the API token for a provider if available.
+ * @param {string} provider - 'github' or 'gitea'
+ * @returns {Promise<string|null>}
+ * @private
+ */
+async function _getProviderToken(provider) {
   try {
     const mosService = require('./mos.service');
     const tokens = await mosService.getTokens();
-    return tokens.github || null;
+    if (provider === 'github') return tokens.github || null;
+    // Gitea/Codeberg share the same API; allow either token key if configured
+    if (provider === 'gitea') return tokens.gitea || tokens.codeberg || null;
+    return null;
   } catch {
     return null;
   }
+}
+
+/**
+ * Build request headers for a provider's JSON API.
+ * @param {string} provider - 'github' or 'gitea'
+ * @param {string|null} token - Optional auth token
+ * @returns {Object}
+ * @private
+ */
+function _apiHeaders(provider, token) {
+  const headers = {
+    'Accept': provider === 'github' ? 'application/vnd.github.v3+json' : 'application/json',
+    'User-Agent': 'MOS-API'
+  };
+  if (token) headers['Authorization'] = `token ${token}`;
+  return headers;
+}
+
+/**
+ * Build the releases list URL for a provider.
+ * @private
+ */
+function _releasesUrl(info) {
+  const base = `${info.apiBase}/repos/${info.owner}/${info.repo}/releases`;
+  return info.provider === 'github' ? `${base}?per_page=50` : `${base}?limit=50`;
+}
+
+/**
+ * Build the tags list URL for a provider.
+ * @private
+ */
+function _tagsUrl(info) {
+  const base = `${info.apiBase}/repos/${info.owner}/${info.repo}/tags`;
+  return info.provider === 'github' ? `${base}?per_page=50` : `${base}?limit=50`;
+}
+
+/**
+ * Build the "release by tag" URL for a provider.
+ * @private
+ */
+function _releaseByTagUrl(info, tag) {
+  return `${info.apiBase}/repos/${info.owner}/${info.repo}/releases/tags/${encodeURIComponent(tag)}`;
+}
+
+/**
+ * Build the source tarball URL for a provider.
+ * @private
+ */
+function _tarballUrl(info, tag) {
+  if (info.provider === 'github') {
+    return `${info.apiBase}/repos/${info.owner}/${info.repo}/tarball/${encodeURIComponent(tag)}`;
+  }
+  // Gitea archive endpoint
+  return `${info.apiBase}/repos/${info.owner}/${info.repo}/archive/${encodeURIComponent(tag)}.tar.gz`;
+}
+
+/**
+ * Resolve the binary download URL for a release asset.
+ * GitHub exposes an API url (asset.url, requires octet-stream Accept);
+ * Gitea exposes a direct browser_download_url.
+ * @private
+ */
+function _assetDownloadUrl(info, asset) {
+  return info.provider === 'github' ? asset.url : asset.browser_download_url;
+}
+
+/**
+ * Build headers for downloading a release asset binary.
+ * @private
+ */
+function _assetDownloadHeaders(provider, token) {
+  const headers = {
+    'Accept': 'application/octet-stream',
+    'User-Agent': 'MOS-API'
+  };
+  if (provider === 'github') {
+    headers['X-GitHub-Api-Version'] = '2022-11-28';
+  }
+  if (token) headers['Authorization'] = `token ${token}`;
+  return headers;
 }
 
 /**
@@ -435,14 +558,9 @@ async function getReleases(repository, forceRefresh = false) {
     throw new Error('Repository URL is required');
   }
 
-  // Parse GitHub URL to get owner/repo
-  const match = repository.match(/github\.com\/([^/]+)\/([^/]+?)(\.git)?$/);
-  if (!match) {
-    throw new Error('Invalid GitHub repository URL');
-  }
-
-  const owner = match[1];
-  const repo = match[2];
+  // Parse repository URL (GitHub or Gitea/Codeberg)
+  const repoInfo = _parseRepoUrl(repository);
+  const { owner, repo } = repoInfo;
   const pluginName = repo.replace(/^mos-/, ''); // Remove mos- prefix if present
   const cacheDir = path.join(PLUGINS_CACHE_DIR, pluginName);
   const cachePath = path.join(cacheDir, 'releases.json');
@@ -461,17 +579,11 @@ async function getReleases(repository, forceRefresh = false) {
     }
   }
 
-  // Fetch from GitHub API
-  const token = await _getGitHubToken();
-  const headers = {
-    'Accept': 'application/vnd.github.v3+json',
-    'User-Agent': 'MOS-API'
-  };
-  if (token) {
-    headers['Authorization'] = `token ${token}`;
-  }
+  // Fetch from provider API
+  const token = await _getProviderToken(repoInfo.provider);
+  const headers = _apiHeaders(repoInfo.provider, token);
 
-  const apiUrl = `https://api.github.com/repos/${owner}/${repo}/releases?per_page=50`;
+  const apiUrl = _releasesUrl(repoInfo);
 
   const response = await fetch(apiUrl, { headers });
   if (!response.ok) {
@@ -481,7 +593,7 @@ async function getReleases(repository, forceRefresh = false) {
     if (response.status === 403) {
       throw new Error('Rate limit exceeded or authentication required');
     }
-    throw new Error(`GitHub API error: ${response.status}`);
+    throw new Error(`${repoInfo.provider === 'github' ? 'GitHub' : 'Gitea'} API error: ${response.status}`);
   }
 
   const releases = await response.json();
@@ -505,17 +617,17 @@ async function getReleases(repository, forceRefresh = false) {
         prerelease: r.prerelease,
         latest: index === 0,
         architectures,
-        assets: r.assets.map(a => ({
+        assets: (r.assets || []).map(a => ({
           name: a.name,
           size: a.size,
           download_url: a.browser_download_url,
-          api_url: a.url  // For authenticated downloads
+          api_url: a.url || a.browser_download_url  // For authenticated downloads
         }))
       };
     });
   } else {
     // Fallback: fetch tags if no releases found
-    const tagsUrl = `https://api.github.com/repos/${owner}/${repo}/tags?per_page=50`;
+    const tagsUrl = _tagsUrl(repoInfo);
     const tagsResponse = await fetch(tagsUrl, { headers });
 
     if (tagsResponse.ok) {
@@ -612,15 +724,14 @@ async function installPlugin(templatePath, tag) {
   const hubAuthor = hubTemplate.author || null;
   const hubSettings = hubTemplate.settings === true;
 
-  // Parse GitHub URL
-  const match = repository.match(/github\.com\/([^/]+)\/([^/]+?)(\.git)?$/);
-  if (!match) {
-    throw new Error('Invalid GitHub repository URL in template');
+  // Parse repository URL (GitHub or Gitea/Codeberg)
+  let repoInfo;
+  try {
+    repoInfo = _parseRepoUrl(repository);
+  } catch {
+    throw new Error('Invalid repository URL in template');
   }
-
-  const owner = match[1];
-  const repo = match[2];
-  const pluginName = repo.replace(/^mos-/, '');
+  const pluginName = repoInfo.repo.replace(/^mos-/, '');
 
   // Check if plugin is already installed
   const existingPluginDir = path.join(PLUGINS_CONFIG_DIR, pluginName);
@@ -667,17 +778,11 @@ async function installPlugin(templatePath, tag) {
   let pluginTagDir = null;
 
   try {
-    const token = await _getGitHubToken();
-    const headers = {
-      'Accept': 'application/vnd.github.v3+json',
-      'User-Agent': 'MOS-API'
-    };
-    if (token) {
-      headers['Authorization'] = `token ${token}`;
-    }
+    const token = await _getProviderToken(repoInfo.provider);
+    const headers = _apiHeaders(repoInfo.provider, token);
 
     // Get release info for the specific tag
-    const releaseUrl = `https://api.github.com/repos/${owner}/${repo}/releases/tags/${tag}`;
+    const releaseUrl = _releaseByTagUrl(repoInfo, tag);
     const releaseRes = await fetch(releaseUrl, { headers });
     if (!releaseRes.ok) {
       throw new Error(`Release ${tag} not found`);
@@ -704,17 +809,10 @@ async function installPlugin(templatePath, tag) {
     cacheDir = path.join(PLUGINS_CACHE_DIR, pluginName, tag);
     await fs.mkdir(tempDir, { recursive: true });
     await fs.mkdir(cacheDir, { recursive: true });
-    // Download .deb file via API URL (works for public and private repos)
+    // Download .deb file via provider download URL (works for public and private repos)
     const debPath = path.join(cacheDir, debAsset.name);
-    const downloadHeaders = {
-      'Accept': 'application/octet-stream',
-      'User-Agent': 'MOS-API',
-      'X-GitHub-Api-Version': '2022-11-28'
-    };
-    if (token) {
-      downloadHeaders['Authorization'] = `token ${token}`;
-    }
-    const debRes = await fetch(debAsset.url, { headers: downloadHeaders, redirect: 'follow' });
+    const downloadHeaders = _assetDownloadHeaders(repoInfo.provider, token);
+    const debRes = await fetch(_assetDownloadUrl(repoInfo, debAsset), { headers: downloadHeaders, redirect: 'follow' });
     if (!debRes.ok) throw new Error(`Failed to download .deb file: ${debRes.status}`);
     const debBuffer = Buffer.from(await debRes.arrayBuffer());
     await fs.writeFile(debPath, debBuffer);
@@ -723,7 +821,7 @@ async function installPlugin(templatePath, tag) {
     let md5Path = null;
     if (md5Asset) {
       md5Path = path.join(cacheDir, md5Asset.name);
-      const md5Res = await fetch(md5Asset.url, { headers: downloadHeaders, redirect: 'follow' });
+      const md5Res = await fetch(_assetDownloadUrl(repoInfo, md5Asset), { headers: downloadHeaders, redirect: 'follow' });
       if (md5Res.ok) {
         const md5Buffer = Buffer.from(await md5Res.arrayBuffer());
         await fs.writeFile(md5Path, md5Buffer);
@@ -731,7 +829,7 @@ async function installPlugin(templatePath, tag) {
     }
 
     // Download source tarball
-    const tarballUrl = `https://api.github.com/repos/${owner}/${repo}/tarball/${tag}`;
+    const tarballUrl = _tarballUrl(repoInfo, tag);
     const tarballRes = await fetch(tarballUrl, { headers, redirect: 'follow' });
     if (!tarballRes.ok) throw new Error('Failed to download source');
 
@@ -1146,24 +1244,15 @@ async function updatePlugins(pluginName = null) {
 
       await _sendNotification('Plugin', `Updating ${notifyName} to Version: ${plugin.available}`, 'normal');
 
-      // Get GitHub headers
-      const token = await _getGitHubToken();
-      const headers = {
-        'Accept': 'application/vnd.github.v3+json',
-        'User-Agent': 'MOS-API'
-      };
-      if (token) {
-        headers['Authorization'] = `token ${token}`;
-      }
+      // Parse repository (GitHub or Gitea/Codeberg)
+      const repoInfo = _parseRepoUrl(plugin.repository);
 
-      // Parse repository
-      const match = plugin.repository.match(/github\.com\/([^/]+)\/([^/]+?)(\.git)?$/);
-      if (!match) throw new Error('Invalid repository URL');
-      const owner = match[1];
-      const repo = match[2];
+      // Get provider headers
+      const token = await _getProviderToken(repoInfo.provider);
+      const headers = _apiHeaders(repoInfo.provider, token);
 
       // Get release info
-      const releaseUrl = `https://api.github.com/repos/${owner}/${repo}/releases/tags/${newTag}`;
+      const releaseUrl = _releaseByTagUrl(repoInfo, newTag);
       const releaseRes = await fetch(releaseUrl, { headers });
       if (!releaseRes.ok) throw new Error(`Release ${newTag} not found`);
       const release = await releaseRes.json();
@@ -1185,24 +1274,17 @@ async function updatePlugins(pluginName = null) {
       await fs.mkdir(cacheDir, { recursive: true });
 
       try {
-        // Download .deb via API URL
+        // Download .deb via provider download URL
         const debPath = path.join(cacheDir, debAsset.name);
-        const downloadHeaders = {
-          'Accept': 'application/octet-stream',
-          'User-Agent': 'MOS-API',
-          'X-GitHub-Api-Version': '2022-11-28'
-        };
-        if (token) {
-          downloadHeaders['Authorization'] = `token ${token}`;
-        }
-        const debRes = await fetch(debAsset.url, { headers: downloadHeaders, redirect: 'follow' });
+        const downloadHeaders = _assetDownloadHeaders(repoInfo.provider, token);
+        const debRes = await fetch(_assetDownloadUrl(repoInfo, debAsset), { headers: downloadHeaders, redirect: 'follow' });
         if (!debRes.ok) throw new Error(`Failed to download .deb: ${debRes.status}`);
         await fs.writeFile(debPath, Buffer.from(await debRes.arrayBuffer()));
 
         // Download and verify MD5
         if (md5Asset) {
           const md5Path = path.join(cacheDir, md5Asset.name);
-          const md5Res = await fetch(md5Asset.url, { headers: downloadHeaders, redirect: 'follow' });
+          const md5Res = await fetch(_assetDownloadUrl(repoInfo, md5Asset), { headers: downloadHeaders, redirect: 'follow' });
           if (md5Res.ok) {
             await fs.writeFile(md5Path, Buffer.from(await md5Res.arrayBuffer()));
             const md5Valid = await _verifyMd5(debPath, md5Path);
@@ -1211,7 +1293,7 @@ async function updatePlugins(pluginName = null) {
         }
 
         // Download and extract source
-        const tarballUrl = `https://api.github.com/repos/${owner}/${repo}/tarball/${newTag}`;
+        const tarballUrl = _tarballUrl(repoInfo, newTag);
         const tarballRes = await fetch(tarballUrl, { headers, redirect: 'follow' });
         if (!tarballRes.ok) throw new Error('Failed to download source');
         const tarballBuffer = Buffer.from(await tarballRes.arrayBuffer());
